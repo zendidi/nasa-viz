@@ -36,17 +36,38 @@ scene.add(sunLight)
 
 let starPoints = null
 let starNames = []
+let starConstellations = []
 let starBaseSizes = null
 let starBaseColors = null
 loadRealStarfield()
-  .then(({ points, names, baseSizes, baseColors }) => {
+  .then(({ points, names, constellations, baseSizes, baseColors }) => {
     starPoints = points
     starNames = names
+    starConstellations = constellations
     starBaseSizes = baseSizes
     starBaseColors = baseColors
     scene.add(points)
   })
   .catch(() => scene.add(makeFallbackStarfield()))
+
+// { code: "Orion" } (French common names — falls back to the international/Latin
+// name in the source data where no French one exists). Fetched separately from
+// the line geometry since it's tiny and only needed for the hover tooltip.
+let constellationNames = {}
+fetch('/constellation-names.json')
+  .then((res) => (res.ok ? res.json() : {}))
+  .then((data) => {
+    constellationNames = data
+  })
+  .catch(() => {})
+
+let constellationGroups = new Map()
+loadConstellationLines()
+  .then(({ parent, groups }) => {
+    constellationGroups = groups
+    scene.add(parent)
+  })
+  .catch(() => {})
 
 const globe = makeGlobe()
 scene.add(globe)
@@ -137,20 +158,23 @@ const STAR_SHELL_RADIUS = 80
  * and B-V color index — this is a real sky, not decoration. A 5th element
  * per star carries its traditional/IAU proper name where one exists
  * (~450 of ~1600 — most naked-eye stars have no common name), empty string
- * otherwise, used to power the hover tooltip.
+ * otherwise, used to power the hover tooltip. A 6th carries its IAU
+ * constellation code (e.g. "Ori"), used to draw that constellation's lines
+ * on hover — see loadConstellationLines().
  */
 async function loadRealStarfield() {
   const res = await fetch('/stars.json')
   if (!res.ok) throw new Error(`stars.json: ${res.status}`)
-  /** @type {Array<[number, number, number, number, string]>} */
+  /** @type {Array<[number, number, number, number, string, string]>} */
   const stars = await res.json()
 
   const positions = new Float32Array(stars.length * 3)
   const colors = new Float32Array(stars.length * 3)
   const sizes = new Float32Array(stars.length)
   const names = new Array(stars.length)
+  const constellations = new Array(stars.length)
 
-  stars.forEach(([ra, dec, mag, bv, name], i) => {
+  stars.forEach(([ra, dec, mag, bv, name, con], i) => {
     const p = latLngToVector3(dec, ra, STAR_SHELL_RADIUS)
     positions[i * 3] = p.x
     positions[i * 3 + 1] = p.y
@@ -164,6 +188,7 @@ async function loadRealStarfield() {
     // Flux ~ 10^(-0.4*mag), apparent radius ~ sqrt(flux) ~ 10^(-0.2*mag).
     sizes[i] = THREE.MathUtils.clamp(3 * Math.pow(10, -0.2 * mag), 0.6, 5)
     names[i] = name || ''
+    constellations[i] = con || ''
   })
 
   const geometry = new THREE.BufferGeometry()
@@ -199,7 +224,51 @@ async function loadRealStarfield() {
   // Clones: the "size"/"color" BufferAttributes above wrap these same typed
   // arrays, so hover highlighting (which mutates them in place) needs an
   // untouched copy to restore from.
-  return { points: new THREE.Points(geometry, material), names, baseSizes: sizes.slice(), baseColors: colors.slice() }
+  return {
+    points: new THREE.Points(geometry, material),
+    names,
+    constellations,
+    baseSizes: sizes.slice(),
+    baseColors: colors.slice(),
+  }
+}
+
+/**
+ * Constellation stick-figure lines (d3-celestial, BSD-3, same source as the
+ * star catalog — ra/dec already share its -180..180 convention, so no
+ * reprojection needed). web/public/constellations.json maps each IAU code to
+ * its polylines: `{ code: [[[ra, dec], [ra, dec], ...], ...] }`. Built as one
+ * hidden THREE.LineSegments per constellation so hovering a star can toggle
+ * just that constellation's figure on.
+ */
+async function loadConstellationLines() {
+  const res = await fetch('/constellations.json')
+  if (!res.ok) throw new Error(`constellations.json: ${res.status}`)
+  /** @type {Record<string, Array<Array<[number, number]>>>} */
+  const lines = await res.json()
+
+  const parent = new THREE.Group()
+  const material = new THREE.LineBasicMaterial({ color: 0x6fb7ff, transparent: true, opacity: 0.55, depthWrite: false })
+  const groups = new Map()
+
+  for (const [code, polylines] of Object.entries(lines)) {
+    const segmentPoints = []
+    for (const polyline of polylines) {
+      for (let i = 0; i < polyline.length - 1; i++) {
+        const [ra1, dec1] = polyline[i]
+        const [ra2, dec2] = polyline[i + 1]
+        segmentPoints.push(latLngToVector3(dec1, ra1, STAR_SHELL_RADIUS))
+        segmentPoints.push(latLngToVector3(dec2, ra2, STAR_SHELL_RADIUS))
+      }
+    }
+    const geometry = new THREE.BufferGeometry().setFromPoints(segmentPoints)
+    const segments = new THREE.LineSegments(geometry, material)
+    segments.visible = false
+    groups.set(code, segments)
+    parent.add(segments)
+  }
+
+  return { parent, groups }
 }
 
 /** Ballesteros' B-V → Kelvin, then the Tanner Helland blackbody → RGB approximation. */
@@ -303,6 +372,11 @@ starTooltip.id = 'star-tooltip'
 starTooltip.className = 'hidden'
 document.body.appendChild(starTooltip)
 
+const constellationTooltip = document.createElement('div')
+constellationTooltip.id = 'constellation-tooltip'
+constellationTooltip.className = 'hidden'
+document.body.appendChild(constellationTooltip)
+
 const style = document.createElement('style')
 style.textContent = `
   #ui { position: fixed; top: 0; left: 0; padding: 16px 20px; color: #eaf4ff;
@@ -342,6 +416,12 @@ style.textContent = `
                   font-family: system-ui, sans-serif; font-size: 12px; white-space: nowrap;
                   transform: translate(14px, -50%); }
   #star-tooltip.hidden { display: none; }
+
+  #constellation-tooltip { position: fixed; pointer-events: none; z-index: 4; background: rgba(10,22,34,.85);
+                  color: #9fd2ff; border: 1px solid #6fb7ff; border-radius: 4px; padding: 2px 9px;
+                  font-family: system-ui, sans-serif; font-size: 11px; letter-spacing: 0.03em;
+                  text-transform: uppercase; white-space: nowrap; transform: translate(14px, -50%); }
+  #constellation-tooltip.hidden { display: none; }
 `
 document.head.appendChild(style)
 
@@ -417,10 +497,6 @@ window.addEventListener('keydown', (event) => {
 
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
-// World-space distance from the ray to a star point still counts as a hit —
-// generous enough to aim at a faint point, small enough to stay precise
-// against neighbouring stars.
-raycaster.params.Points.threshold = 2
 
 function setPointerFromEvent(clientX, clientY) {
   const rect = renderer.domElement.getBoundingClientRect()
@@ -435,12 +511,63 @@ function pickNeoAt(clientX, clientY) {
   return intersects.length > 0 ? intersects[0].object.userData.neo : null
 }
 
-/** Index of the star nearest the cursor (named or not), or null. */
+// Star picking is done by hand in screen space rather than via
+// Raycaster.intersectObject(starPoints): that built-in path tests a fixed
+// world-space distance from the ray to each point, which doesn't track the
+// point's actual on-screen size (driven by our custom per-vertex shader) —
+// on a shell as large as STAR_SHELL_RADIUS, that mismatch reads as picking
+// the "wrong" star next to the one under the cursor. Projecting every star
+// to screen space and comparing pixel distance instead makes the hit target
+// match what's actually visible.
+const STAR_PICK_RADIUS_PX = 12
+const starPickWorldPos = new THREE.Vector3()
+const starPickScreenPos = new THREE.Vector3()
+const starPickRayDir = new THREE.Vector3()
+
+/** True if the globe sits between the camera and this star (so it's not actually visible). */
+function isOccludedByGlobe(worldPos) {
+  const camPos = camera.position
+  starPickRayDir.subVectors(worldPos, camPos)
+  const distToStar = starPickRayDir.length()
+  starPickRayDir.normalize()
+
+  const b = camPos.dot(starPickRayDir)
+  const c = camPos.dot(camPos) - EARTH_RADIUS * EARTH_RADIUS
+  const discriminant = b * b - c
+  if (discriminant < 0) return false // ray misses the globe entirely
+
+  const tHit = -b - Math.sqrt(discriminant)
+  return tHit > 0 && tHit < distToStar
+}
+
+/** Index of the star nearest the cursor on screen (named or not), or null. */
 function pickStarIndexAt(clientX, clientY) {
   if (!starPoints) return null
-  setPointerFromEvent(clientX, clientY)
-  const intersects = raycaster.intersectObject(starPoints)
-  return intersects.length > 0 ? intersects[0].index : null
+  const rect = renderer.domElement.getBoundingClientRect()
+  const positionAttr = starPoints.geometry.getAttribute('position')
+
+  let bestIndex = null
+  let bestDistSq = STAR_PICK_RADIUS_PX * STAR_PICK_RADIUS_PX
+
+  for (let i = 0; i < positionAttr.count; i++) {
+    starPickWorldPos.fromBufferAttribute(positionAttr, i)
+    if (isOccludedByGlobe(starPickWorldPos)) continue
+
+    starPickScreenPos.copy(starPickWorldPos).project(camera)
+    if (starPickScreenPos.z > 1) continue // behind the camera
+
+    const sx = (starPickScreenPos.x * 0.5 + 0.5) * rect.width + rect.left
+    const sy = (starPickScreenPos.y * -0.5 + 0.5) * rect.height + rect.top
+    const dx = sx - clientX
+    const dy = sy - clientY
+    const distSq = dx * dx + dy * dy
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq
+      bestIndex = i
+    }
+  }
+
+  return bestIndex
 }
 
 function showStarTooltip(name, clientX, clientY) {
@@ -494,6 +621,38 @@ function setStarHighlight(index) {
   colorAttr.needsUpdate = true
 }
 
+function showConstellationTooltip(name, clientX, clientY) {
+  constellationTooltip.textContent = name
+  constellationTooltip.style.left = `${clientX}px`
+  // Offset below the star tooltip's row so the two don't overlap when both show at once.
+  constellationTooltip.style.top = `${clientY + 22}px`
+  constellationTooltip.classList.remove('hidden')
+}
+
+function hideConstellationTooltip() {
+  constellationTooltip.classList.add('hidden')
+}
+
+/**
+ * Shows one constellation's line figure (by IAU code) and its name tooltip,
+ * hiding whichever was shown before. `code` may be '' or null (no figure at
+ * this cursor position) — clears both cleanly either way.
+ */
+let shownConstellationCode = null
+function showConstellation(code, clientX, clientY) {
+  if (code !== shownConstellationCode) {
+    const prev = constellationGroups.get(shownConstellationCode)
+    if (prev) prev.visible = false
+    shownConstellationCode = code
+    const next = constellationGroups.get(code)
+    if (next) next.visible = true
+  }
+
+  const name = code && constellationNames[code]
+  if (name) showConstellationTooltip(name, clientX, clientY)
+  else hideConstellationTooltip()
+}
+
 renderer.domElement.addEventListener('click', (event) => {
   const neo = pickNeoAt(event.clientX, event.clientY)
   if (neo) showNeoModal(neo)
@@ -504,6 +663,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
     renderer.domElement.style.cursor = 'pointer'
     hideStarTooltip()
     if (starPoints) setStarHighlight(null)
+    showConstellation(null)
     return
   }
 
@@ -511,6 +671,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
   if (starIndex !== null) {
     renderer.domElement.style.cursor = 'pointer'
     setStarHighlight(starIndex)
+    showConstellation(starConstellations[starIndex], event.clientX, event.clientY)
     const name = starNames[starIndex]
     if (name) showStarTooltip(name, event.clientX, event.clientY)
     else hideStarTooltip()
@@ -518,11 +679,13 @@ renderer.domElement.addEventListener('pointermove', (event) => {
     renderer.domElement.style.cursor = 'default'
     hideStarTooltip()
     if (starPoints) setStarHighlight(null)
+    showConstellation(null)
   }
 })
 
 renderer.domElement.addEventListener('pointerleave', () => {
   if (starPoints) setStarHighlight(null)
+  showConstellation(null)
   hideStarTooltip()
 })
 
