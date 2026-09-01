@@ -1,0 +1,7 @@
+# Belt-and-braces at the repo root — backend/ and web/ each also have their
+# own .gitignore scoping their build output, but this catches OS/editor
+# cruft anywhere in the tree.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
