@@ -5,3 +5,7 @@
 Thumbs.db
 .vscode/
 .idea/
+
+# Agent-facing working notes — local only, not part of the public repo.
+/CLAUDE.md
+/docs/agent/
