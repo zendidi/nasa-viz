@@ -34,8 +34,18 @@ const sunLight = new THREE.DirectionalLight(0xffffff, 1.2)
 sunLight.position.set(5, 3, 5)
 scene.add(sunLight)
 
+let starPoints = null
+let starNames = []
+let starBaseSizes = null
+let starBaseColors = null
 loadRealStarfield()
-  .then((points) => scene.add(points))
+  .then(({ points, names, baseSizes, baseColors }) => {
+    starPoints = points
+    starNames = names
+    starBaseSizes = baseSizes
+    starBaseColors = baseColors
+    scene.add(points)
+  })
   .catch(() => scene.add(makeFallbackStarfield()))
 
 const globe = makeGlobe()
@@ -124,19 +134,23 @@ const STAR_SHELL_RADIUS = 80
  * Hipparcos-derived catalog (d3-celestial, BSD-3), trimmed to naked-eye
  * stars (mag <= 5, ~1600 stars) and bundled at web/public/stars.json.
  * Point size and color follow physically-motivated formulas from magnitude
- * and B-V color index — this is a real sky, not decoration.
+ * and B-V color index — this is a real sky, not decoration. A 5th element
+ * per star carries its traditional/IAU proper name where one exists
+ * (~450 of ~1600 — most naked-eye stars have no common name), empty string
+ * otherwise, used to power the hover tooltip.
  */
 async function loadRealStarfield() {
   const res = await fetch('/stars.json')
   if (!res.ok) throw new Error(`stars.json: ${res.status}`)
-  /** @type {Array<[number, number, number, number]>} */
+  /** @type {Array<[number, number, number, number, string]>} */
   const stars = await res.json()
 
   const positions = new Float32Array(stars.length * 3)
   const colors = new Float32Array(stars.length * 3)
   const sizes = new Float32Array(stars.length)
+  const names = new Array(stars.length)
 
-  stars.forEach(([ra, dec, mag, bv], i) => {
+  stars.forEach(([ra, dec, mag, bv, name], i) => {
     const p = latLngToVector3(dec, ra, STAR_SHELL_RADIUS)
     positions[i * 3] = p.x
     positions[i * 3 + 1] = p.y
@@ -149,6 +163,7 @@ async function loadRealStarfield() {
 
     // Flux ~ 10^(-0.4*mag), apparent radius ~ sqrt(flux) ~ 10^(-0.2*mag).
     sizes[i] = THREE.MathUtils.clamp(3 * Math.pow(10, -0.2 * mag), 0.6, 5)
+    names[i] = name || ''
   })
 
   const geometry = new THREE.BufferGeometry()
@@ -181,7 +196,10 @@ async function loadRealStarfield() {
     depthWrite: false,
   })
 
-  return new THREE.Points(geometry, material)
+  // Clones: the "size"/"color" BufferAttributes above wrap these same typed
+  // arrays, so hover highlighting (which mutates them in place) needs an
+  // untouched copy to restore from.
+  return { points: new THREE.Points(geometry, material), names, baseSizes: sizes.slice(), baseColors: colors.slice() }
 }
 
 /** Ballesteros' B-V → Kelvin, then the Tanner Helland blackbody → RGB approximation. */
@@ -280,6 +298,11 @@ modal.innerHTML = `
 `
 document.body.appendChild(modal)
 
+const starTooltip = document.createElement('div')
+starTooltip.id = 'star-tooltip'
+starTooltip.className = 'hidden'
+document.body.appendChild(starTooltip)
+
 const style = document.createElement('style')
 style.textContent = `
   #ui { position: fixed; top: 0; left: 0; padding: 16px 20px; color: #eaf4ff;
@@ -313,6 +336,12 @@ style.textContent = `
   #modal .muted { opacity: 0.6; }
   #modal-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
                  color: #eaf4ff; font-size: 20px; cursor: pointer; line-height: 1; }
+
+  #star-tooltip { position: fixed; pointer-events: none; z-index: 5; background: rgba(10,22,34,.92);
+                  color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px; padding: 3px 9px;
+                  font-family: system-ui, sans-serif; font-size: 12px; white-space: nowrap;
+                  transform: translate(14px, -50%); }
+  #star-tooltip.hidden { display: none; }
 `
 document.head.appendChild(style)
 
@@ -388,14 +417,81 @@ window.addEventListener('keydown', (event) => {
 
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
+// World-space distance from the ray to a star point still counts as a hit —
+// generous enough to aim at a faint point, small enough to stay precise
+// against neighbouring stars.
+raycaster.params.Points.threshold = 2
 
-function pickNeoAt(clientX, clientY) {
+function setPointerFromEvent(clientX, clientY) {
   const rect = renderer.domElement.getBoundingClientRect()
   pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1
   pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1
   raycaster.setFromCamera(pointer, camera)
+}
+
+function pickNeoAt(clientX, clientY) {
+  setPointerFromEvent(clientX, clientY)
   const intersects = raycaster.intersectObjects(neoGroup.children)
   return intersects.length > 0 ? intersects[0].object.userData.neo : null
+}
+
+/** Index of the star nearest the cursor (named or not), or null. */
+function pickStarIndexAt(clientX, clientY) {
+  if (!starPoints) return null
+  setPointerFromEvent(clientX, clientY)
+  const intersects = raycaster.intersectObject(starPoints)
+  return intersects.length > 0 ? intersects[0].index : null
+}
+
+function showStarTooltip(name, clientX, clientY) {
+  starTooltip.textContent = name
+  starTooltip.style.left = `${clientX}px`
+  starTooltip.style.top = `${clientY}px`
+  starTooltip.classList.remove('hidden')
+}
+
+function hideStarTooltip() {
+  starTooltip.classList.add('hidden')
+}
+
+// The raycaster threshold makes several neighbouring points plausible hits at
+// once (it's a coarse click target, not a per-pixel test) — magnifying and
+// brightening whichever one actually won the pick tells the user exactly
+// which star the tooltip is talking about.
+const STAR_HIGHLIGHT_SIZE_FACTOR = 1
+const STAR_HIGHLIGHT_MIN_SIZE = 4
+const STAR_HIGHLIGHT_WHITEN = 0.6 // 0 = original color, 1 = full white
+let hoveredStarIndex = null
+
+function setStarHighlight(index) {
+  if (hoveredStarIndex === index) return
+  const sizeAttr = starPoints.geometry.getAttribute('size')
+  const colorAttr = starPoints.geometry.getAttribute('color')
+
+  if (hoveredStarIndex !== null) {
+    sizeAttr.array[hoveredStarIndex] = starBaseSizes[hoveredStarIndex]
+    colorAttr.setXYZ(
+      hoveredStarIndex,
+      starBaseColors[hoveredStarIndex * 3],
+      starBaseColors[hoveredStarIndex * 3 + 1],
+      starBaseColors[hoveredStarIndex * 3 + 2],
+    )
+  }
+
+  hoveredStarIndex = index
+
+  if (index !== null) {
+    sizeAttr.array[index] = Math.max(starBaseSizes[index] * STAR_HIGHLIGHT_SIZE_FACTOR, STAR_HIGHLIGHT_MIN_SIZE)
+    colorAttr.setXYZ(
+      index,
+      THREE.MathUtils.lerp(starBaseColors[index * 3], 1, STAR_HIGHLIGHT_WHITEN),
+      THREE.MathUtils.lerp(starBaseColors[index * 3 + 1], 1, STAR_HIGHLIGHT_WHITEN),
+      THREE.MathUtils.lerp(starBaseColors[index * 3 + 2], 1, STAR_HIGHLIGHT_WHITEN),
+    )
+  }
+
+  sizeAttr.needsUpdate = true
+  colorAttr.needsUpdate = true
 }
 
 renderer.domElement.addEventListener('click', (event) => {
@@ -404,7 +500,30 @@ renderer.domElement.addEventListener('click', (event) => {
 })
 
 renderer.domElement.addEventListener('pointermove', (event) => {
-  renderer.domElement.style.cursor = pickNeoAt(event.clientX, event.clientY) ? 'pointer' : 'default'
+  if (pickNeoAt(event.clientX, event.clientY)) {
+    renderer.domElement.style.cursor = 'pointer'
+    hideStarTooltip()
+    if (starPoints) setStarHighlight(null)
+    return
+  }
+
+  const starIndex = pickStarIndexAt(event.clientX, event.clientY)
+  if (starIndex !== null) {
+    renderer.domElement.style.cursor = 'pointer'
+    setStarHighlight(starIndex)
+    const name = starNames[starIndex]
+    if (name) showStarTooltip(name, event.clientX, event.clientY)
+    else hideStarTooltip()
+  } else {
+    renderer.domElement.style.cursor = 'default'
+    hideStarTooltip()
+    if (starPoints) setStarHighlight(null)
+  }
+})
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  if (starPoints) setStarHighlight(null)
+  hideStarTooltip()
 })
 
 // --- data loading (cache-first — the free NASA API key is rate-limited) --------
