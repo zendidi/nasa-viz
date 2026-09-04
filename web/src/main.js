@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
-import { getSunEquatorial, getMoonEclipticLongitude } from './astronomy.js'
+import { getSunEquatorial, getMoonEclipticLongitude, getGreenwichSiderealTime } from './astronomy.js'
 
 const EARTH_RADIUS = 2
 // Real ISS altitude is ~0.06x Earth's radius (barely off the surface visually).
@@ -84,8 +84,11 @@ loadConstellationLines()
 const globe = makeGlobe()
 scene.add(globe)
 
+// Child of globe (not scene) so it turns with the real Earth rotation set in
+// animate() — its position is computed in the globe's own unrotated
+// lat/lng frame, same as the texture, so it always sits over the right spot.
 const issMarker = makeIssMarker()
-scene.add(issMarker)
+globe.add(issMarker)
 
 const sunMarker = makeSunMarker()
 scene.add(sunMarker)
@@ -102,10 +105,11 @@ scene.add(neoGroup)
  * Real equatorial Sun direction (right ascension/declination, same convention
  * as star placement) drives the light, the visible Sun marker, and (via the
  * globe's shader uniform, in world space) the day/night terminator. This is a
- * fixed-stars-style frame, deliberately NOT tied to the globe's own decorative
- * spin (see docs/agent/decisions.md) — the shader transforms its own normal
- * into world space via modelMatrix each fragment, so the spin sweeps the
- * terminator across the texture with no extra per-frame JS work needed.
+ * fixed-stars-style frame, deliberately NOT tied to the globe's own real
+ * rotation (set from GMST in animate(), see docs/agent/decisions.md) — the
+ * shader transforms its own normal into world space via modelMatrix each
+ * fragment, so the globe's spin sweeps the terminator across the texture with
+ * no extra per-frame JS work needed.
  */
 const sunDirWorld = new THREE.Vector3()
 
@@ -117,8 +121,9 @@ function updateAstronomy() {
   sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
   sunMarker.position.copy(sunDirWorld).multiplyScalar(SUN_MARKER_DISTANCE)
   // The globe shader reads sunDirection in world space and does its own
-  // modelMatrix transform per-fragment, so the globe's decorative spin
-  // sweeps the terminator across the texture with no extra per-frame work.
+  // modelMatrix transform per-fragment, so the globe's real rotation (set
+  // from GMST in animate()) sweeps the terminator across the texture with
+  // no extra per-frame work here.
   globeMaterial.uniforms.sunDirection.value.copy(sunDirWorld)
 
   const moonLng = getMoonEclipticLongitude(now)
@@ -163,10 +168,11 @@ function hashToDirection(id) {
  * fragment's world-space normal faces the real Sun direction
  * (`sunDirection`, updated in updateAstronomy() from real RA/dec — see the
  * "astronomy" section above). Everything here works in world space, so the
- * globe's own decorative spin (animate()'s `globe.rotation.y += …`) naturally
- * sweeps the terminator across the texture via the standard `modelMatrix`
- * transform — no extra per-frame bookkeeping needed. Normal mapping (for the
- * subtle terrain relief the old MeshPhongMaterial had) is done without a
+ * globe's real rotation (animate()'s `globe.rotation.y = ...GMST...`)
+ * naturally sweeps the terminator across the texture via the standard
+ * `modelMatrix` transform — no extra per-frame bookkeeping needed. Normal
+ * mapping (for the subtle terrain relief the old MeshPhongMaterial had) is
+ * done without a
  * precomputed tangent attribute, via Schüler's screen-space-derivative method.
  */
 function makeGlobe() {
@@ -1003,7 +1009,10 @@ window.addEventListener('resize', () => {
 
 function animate() {
   requestAnimationFrame(animate)
-  globe.rotation.y += 0.0006
+  // Recomputed fresh from wall-clock time every frame (not accumulated per
+  // frame) so it's exactly right regardless of frame rate or a backgrounded
+  // tab, with no drift to correct for.
+  globe.rotation.y = (getGreenwichSiderealTime(new Date()) * Math.PI) / 180
   controls.update()
   renderer.render(scene, camera)
 }

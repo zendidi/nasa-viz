@@ -42,3 +42,19 @@ export function getMoonEclipticLongitude(date = new Date()) {
   const n = daysSinceJ2000(date)
   return normalizeDeg(218.316 + 13.176396 * n)
 }
+
+/**
+ * Greenwich Mean Sidereal Time, in degrees [0, 360) — Earth's rotation angle
+ * relative to the fixed-stars (RA/dec) frame used everywhere else in this
+ * file. Low-precision (drops the T² and T³ terms of the full IAU formula,
+ * worth a fraction of a second even decades from J2000 — irrelevant next to
+ * the few-degrees accuracy of the Sun/Moon formulas above). main.js sets the
+ * globe's rotation.y directly to this (in radians): rotating the geographic
+ * (lat/lng) frame by this angle around Y lines it up with the RA/dec frame,
+ * which is exactly what GMST measures by definition (the RA currently over
+ * Greenwich).
+ */
+export function getGreenwichSiderealTime(date = new Date()) {
+  const n = daysSinceJ2000(date)
+  return normalizeDeg(280.46061837 + 360.98564736629 * n)
+}
