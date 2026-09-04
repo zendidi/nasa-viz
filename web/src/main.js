@@ -1,13 +1,22 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { fetchIssPosition, fetchNeoFeed, fetchUsage } from './api.js'
+import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
+import { getSunEquatorial, getMoonEclipticLongitude } from './astronomy.js'
 
 const EARTH_RADIUS = 2
 // Real ISS altitude is ~0.06x Earth's radius (barely off the surface visually).
 // Exaggerated here so the marker reads clearly against the globe.
 const ISS_ALTITUDE_EXAGGERATION = 8
 const EARTH_RADIUS_KM = 6371
+
+// Real Sun/Moon distances would put both far outside the star shell (or make
+// the Moon invisibly small) — distances below are exaggerated for visibility,
+// same spirit as ISS_ALTITUDE_EXAGGERATION, not a claim of real scale.
+const SUN_LIGHT_DISTANCE = 30
+const SUN_MARKER_DISTANCE = 30
+const MOON_ORBIT_RADIUS = EARTH_RADIUS * 6
+const MOON_RADIUS = EARTH_RADIUS * 0.27 // real Moon/Earth radius ratio
 
 const app = document.getElementById('app')
 
@@ -29,11 +38,14 @@ controls.maxDistance = 20
 
 renderer.outputColorSpace = THREE.SRGBColorSpace
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.6))
+// Dimmed vs. the old flat-shaded globe (0.6): the day/night shader now handles
+// day-side lighting explicitly and the night texture supplies its own city
+// lights, so a strong ambient would wash both out.
+scene.add(new THREE.AmbientLight(0xffffff, 0.15))
 const sunLight = new THREE.DirectionalLight(0xffffff, 1.2)
-sunLight.position.set(5, 3, 5)
 scene.add(sunLight)
 
+let globeMaterial = null
 let starPoints = null
 let starNames = []
 let starConstellations = []
@@ -75,8 +87,47 @@ scene.add(globe)
 const issMarker = makeIssMarker()
 scene.add(issMarker)
 
+const sunMarker = makeSunMarker()
+scene.add(sunMarker)
+
+const moon = makeMoon()
+scene.add(moon)
+
 const neoGroup = new THREE.Group()
 scene.add(neoGroup)
+
+// --- astronomy (real Sun/Moon positions) --------------------------------------
+
+/**
+ * Real equatorial Sun direction (right ascension/declination, same convention
+ * as star placement) drives the light, the visible Sun marker, and (via the
+ * globe's shader uniform, in world space) the day/night terminator. This is a
+ * fixed-stars-style frame, deliberately NOT tied to the globe's own decorative
+ * spin (see docs/agent/decisions.md) — the shader transforms its own normal
+ * into world space via modelMatrix each fragment, so the spin sweeps the
+ * terminator across the texture with no extra per-frame JS work needed.
+ */
+const sunDirWorld = new THREE.Vector3()
+
+function updateAstronomy() {
+  const now = new Date()
+
+  const { ra, dec } = getSunEquatorial(now)
+  sunDirWorld.copy(latLngToVector3(dec, ra, 1))
+  sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
+  sunMarker.position.copy(sunDirWorld).multiplyScalar(SUN_MARKER_DISTANCE)
+  // The globe shader reads sunDirection in world space and does its own
+  // modelMatrix transform per-fragment, so the globe's decorative spin
+  // sweeps the terminator across the texture with no extra per-frame work.
+  globeMaterial.uniforms.sunDirection.value.copy(sunDirWorld)
+
+  const moonLng = getMoonEclipticLongitude(now)
+  moon.position.copy(latLngToVector3(0, moonLng, MOON_ORBIT_RADIUS))
+}
+
+updateAstronomy()
+// Real drift is slow (~1°/day for the Sun) — no need to recompute every frame.
+setInterval(updateAstronomy, 60_000)
 
 // --- geo helpers -----------------------------------------------------------
 
@@ -105,27 +156,109 @@ function hashToDirection(id) {
 
 // --- scene objects -----------------------------------------------------------
 
+/**
+ * Day/night terminator: a hand-rolled shader rather than MeshPhongMaterial,
+ * blending the day map against a city-lights night map (mrdoob/three.js
+ * examples, same source as the other Earth textures) by how much each
+ * fragment's world-space normal faces the real Sun direction
+ * (`sunDirection`, updated in updateAstronomy() from real RA/dec — see the
+ * "astronomy" section above). Everything here works in world space, so the
+ * globe's own decorative spin (animate()'s `globe.rotation.y += …`) naturally
+ * sweeps the terminator across the texture via the standard `modelMatrix`
+ * transform — no extra per-frame bookkeeping needed. Normal mapping (for the
+ * subtle terrain relief the old MeshPhongMaterial had) is done without a
+ * precomputed tangent attribute, via Schüler's screen-space-derivative method.
+ */
 function makeGlobe() {
   const group = new THREE.Group()
   const textureLoader = new THREE.TextureLoader()
 
-  // Day map + clouds baked in (mrdoob/three.js examples, derived from NASA
-  // Blue Marble / public domain imagery), with a specular mask so oceans
-  // catch the sun and a normal map for subtle terrain relief.
   const dayMap = textureLoader.load('/textures/earth_atmos_2048.jpg')
   dayMap.colorSpace = THREE.SRGBColorSpace
+  const nightMap = textureLoader.load('/textures/earth_lights_2048.png')
+  nightMap.colorSpace = THREE.SRGBColorSpace
 
-  const sphere = new THREE.Mesh(
-    new THREE.SphereGeometry(EARTH_RADIUS, 64, 64),
-    new THREE.MeshPhongMaterial({
-      map: dayMap,
-      specularMap: textureLoader.load('/textures/earth_specular_2048.jpg'),
-      normalMap: textureLoader.load('/textures/earth_normal_2048.jpg'),
-      normalScale: new THREE.Vector2(0.6, 0.6),
-      specular: new THREE.Color(0x333333),
-      shininess: 12,
-    }),
-  )
+  globeMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      dayTexture: { value: dayMap },
+      nightTexture: { value: nightMap },
+      specularTexture: { value: textureLoader.load('/textures/earth_specular_2048.jpg') },
+      normalTexture: { value: textureLoader.load('/textures/earth_normal_2048.jpg') },
+      normalScale: { value: 0.6 },
+      sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+      shininess: { value: 35.0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vWorldNormal;
+      varying vec3 vWorldPosition;
+      void main() {
+        vUv = uv;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D dayTexture;
+      uniform sampler2D nightTexture;
+      uniform sampler2D specularTexture;
+      uniform sampler2D normalTexture;
+      uniform float normalScale;
+      uniform vec3 sunDirection;
+      uniform float shininess;
+      varying vec2 vUv;
+      varying vec3 vWorldNormal;
+      varying vec3 vWorldPosition;
+
+      // Normal mapping without precomputed tangents (Schüler's screen-space
+      // derivative method) — avoids reconstructing Three's full TBN pipeline
+      // for a single hand-rolled material.
+      vec3 perturbNormal(vec3 worldPos, vec3 worldNormal, vec2 uv, vec3 mapN) {
+        vec3 q0 = dFdx(worldPos);
+        vec3 q1 = dFdy(worldPos);
+        vec2 st0 = dFdx(uv);
+        vec2 st1 = dFdy(uv);
+        vec3 N = normalize(worldNormal);
+        vec3 T = normalize(q0 * st1.t - q1 * st0.t);
+        vec3 B = normalize(cross(N, T));
+        mat3 tsn = mat3(T, B, N);
+        return normalize(tsn * mapN);
+      }
+
+      void main() {
+        vec3 dayColor = texture2D(dayTexture, vUv).rgb;
+        vec3 nightColor = texture2D(nightTexture, vUv).rgb;
+        float specMask = texture2D(specularTexture, vUv).r;
+
+        vec3 mapN = texture2D(normalTexture, vUv).xyz * 2.0 - 1.0;
+        mapN.xy *= normalScale;
+        vec3 normal = perturbNormal(vWorldPosition, vWorldNormal, vUv, mapN);
+
+        vec3 sunDir = normalize(sunDirection);
+        float sunFacing = dot(normal, sunDir);
+        // Soft terminator band rather than a hard day/night edge.
+        float dayMix = smoothstep(-0.15, 0.15, sunFacing);
+
+        vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+        vec3 reflectDir = reflect(-sunDir, normal);
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess) * specMask * dayMix * 0.4;
+
+        vec3 litDay = dayColor * (0.5 + 0.5 * max(sunFacing, 0.0)) + vec3(spec);
+        vec3 color = mix(nightColor, litDay, dayMix);
+
+        gl_FragColor = vec4(color, 1.0);
+        // Custom ShaderMaterial fragment shaders don't get the automatic
+        // linear->output colorspace encode that built-in materials do —
+        // without it, colors are displayed as if already sRGB, which
+        // oversaturates warm tones (desert looked lava-orange) and crushes
+        // shadows (ground looked too dark).
+        #include <colorspace_fragment>
+      }
+    `,
+  })
+
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 64, 64), globeMaterial)
   group.add(sphere)
 
   return group
@@ -146,6 +279,40 @@ function makeIssMarker() {
   group.add(glow)
 
   return group
+}
+
+/** The Sun itself is self-lit (MeshBasicMaterial), not shaded by sunLight. */
+function makeSunMarker() {
+  const group = new THREE.Group()
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(0.6, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xfff2cc }),
+  )
+  group.add(body)
+
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(1.0, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.25 }),
+  )
+  group.add(glow)
+
+  return group
+}
+
+/**
+ * Textured (mrdoob/three.js examples) and lit by the same sunLight as the
+ * globe — its visible phase (crescent/gibbous) falls out of that real
+ * directional lighting automatically, no separate phase calculation needed.
+ */
+function makeMoon() {
+  const textureLoader = new THREE.TextureLoader()
+  const moonMap = textureLoader.load('/textures/moon_1024.jpg')
+  moonMap.colorSpace = THREE.SRGBColorSpace
+
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(MOON_RADIUS, 32, 32),
+    new THREE.MeshPhongMaterial({ map: moonMap, shininess: 0 }),
+  )
 }
 
 const STAR_SHELL_RADIUS = 80
@@ -352,6 +519,10 @@ ui.innerHTML = `
     <h2>Astéroïdes proches (NEO)</h2>
     <p class="muted">chargement…</p>
   </section>
+  <section id="apod-panel">
+    <h2>Image du jour (APOD)</h2>
+    <p class="muted">chargement…</p>
+  </section>
 `
 app.appendChild(ui)
 
@@ -400,14 +571,22 @@ style.textContent = `
   .dot-neo-hazard { background: #ff4d4d; }
   .legend { font-size: 12px; opacity: 0.8; }
 
+  #apod-panel { position: fixed; top: 16px; right: 20px; pointer-events: auto; cursor: pointer;
+                max-width: 220px; text-align: right; }
+  #apod-panel img { display: block; width: 100%; border-radius: 4px; margin-top: 4px; }
+  #apod-panel .apod-title { font-weight: 600; }
+
   #modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
                      align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
   #modal-backdrop.hidden { display: none; }
   #modal { position: relative; background: #0e2233; color: #eaf4ff; border: 1px solid #4fa8ff;
-           border-radius: 8px; padding: 20px 24px; max-width: 380px; width: 90%; }
+           border-radius: 8px; padding: 20px 24px; max-width: 480px; width: 90%;
+           max-height: 80vh; overflow-y: auto; }
   #modal h2 { margin: 0 0 12px; font-size: 17px; }
   #modal p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
   #modal .muted { opacity: 0.6; }
+  #modal img, #modal iframe { display: block; width: 100%; border-radius: 4px; margin-bottom: 10px; border: none; }
+  #modal iframe { aspect-ratio: 16 / 9; }
   #modal-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
                  color: #eaf4ff; font-size: 20px; cursor: pointer; line-height: 1; }
 
@@ -461,10 +640,42 @@ function renderNeoPanel(feed, error, fetchedAt) {
   `
 }
 
+function openModal(title, bodyHtml) {
+  document.getElementById('modal-title').textContent = title
+  document.getElementById('modal-body').innerHTML = bodyHtml
+  modal.classList.remove('hidden')
+}
+
+function hideModal() {
+  modal.classList.add('hidden')
+}
+
+let currentApod = null
+
+function renderApodPanel(apod, error, fetchedAt) {
+  const el = document.querySelector('#apod-panel')
+  currentApod = error ? null : apod
+  if (error) {
+    el.innerHTML = `<h2>Image du jour (APOD)</h2><p class="error">${error}</p>`
+    return
+  }
+  const preview =
+    apod.media_type === 'video'
+      ? '<p>🎥 Vidéo du jour</p>'
+      : `<img src="${apod.url}" alt="${apod.title}">`
+  el.innerHTML = `
+    <h2>Image du jour (APOD)</h2>
+    <p class="apod-title">${apod.title}</p>
+    ${preview}
+    ${formatUpdatedAt(fetchedAt)}
+  `
+}
+
 function showNeoModal(neo) {
-  document.getElementById('modal-title').textContent = neo.name
   const approach = neo.close_approach
-  document.getElementById('modal-body').innerHTML = `
+  openModal(
+    neo.name,
+    `
     <p><strong>ID</strong> ${neo.id}</p>
     <p><strong>Diamètre estimé</strong> ${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km</p>
     <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
@@ -477,20 +688,32 @@ function showNeoModal(neo) {
     `
         : '<p class="muted">Pas de données d\'approche disponibles</p>'
     }
-  `
-  modal.classList.remove('hidden')
+  `,
+  )
 }
 
-function hideNeoModal() {
-  modal.classList.add('hidden')
+function showApodModal(apod) {
+  const media =
+    apod.media_type === 'video'
+      ? `<iframe src="${apod.url}" allowfullscreen></iframe>`
+      : `<img src="${apod.url}" alt="${apod.title}">`
+  openModal(
+    apod.title,
+    `
+    ${media}
+    <p class="muted">${apod.date}</p>
+    <p>${apod.explanation}</p>
+    ${apod.hd_url ? `<p><a href="${apod.hd_url}" target="_blank" rel="noopener" style="color:#7fe0ff">Voir en haute résolution</a></p>` : ''}
+  `,
+  )
 }
 
-document.getElementById('modal-close').addEventListener('click', hideNeoModal)
+document.getElementById('modal-close').addEventListener('click', hideModal)
 modal.addEventListener('click', (event) => {
-  if (event.target === modal) hideNeoModal()
+  if (event.target === modal) hideModal()
 })
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') hideNeoModal()
+  if (event.key === 'Escape') hideModal()
 })
 
 // --- picking (click to inspect a NEO) -----------------------------------------
@@ -658,6 +881,10 @@ renderer.domElement.addEventListener('click', (event) => {
   if (neo) showNeoModal(neo)
 })
 
+document.querySelector('#apod-panel').addEventListener('click', () => {
+  if (currentApod) showApodModal(currentApod)
+})
+
 renderer.domElement.addEventListener('pointermove', (event) => {
   if (pickNeoAt(event.clientX, event.clientY)) {
     renderer.domElement.style.cursor = 'pointer'
@@ -723,11 +950,21 @@ async function refreshNeo() {
   }
 }
 
+async function refreshApod() {
+  try {
+    const apod = await fetchApod()
+    saveCached('apod', apod)
+    renderApodPanel(apod, null, Date.now())
+  } catch (err) {
+    renderApodPanel(null, err.message)
+  }
+}
+
 const updateBtn = document.getElementById('update-btn')
 updateBtn.addEventListener('click', async () => {
   updateBtn.disabled = true
   updateBtn.textContent = 'Mise à jour…'
-  await Promise.all([refreshIss(), refreshNeo()])
+  await Promise.all([refreshIss(), refreshNeo(), refreshApod()])
   await refreshUsage()
   updateBtn.disabled = false
   updateBtn.textContent = 'Mettre à jour'
@@ -737,6 +974,7 @@ refreshUsage()
 
 const cachedIss = loadCached('iss')
 const cachedNeo = loadCached('neo')
+const cachedApod = loadCached('apod')
 
 if (cachedIss) {
   applyIssPosition(cachedIss.data)
@@ -746,9 +984,12 @@ if (cachedNeo) {
   addNeoPoints(cachedNeo.data.objects)
   renderNeoPanel(cachedNeo.data, null, cachedNeo.fetchedAt)
 }
+if (cachedApod) {
+  renderApodPanel(cachedApod.data, null, cachedApod.fetchedAt)
+}
 // First-ever load has nothing to show yet — fetch once. Otherwise stay on the
 // cached snapshot until "Mettre à jour" is clicked, to spare the NASA quota.
-if (!cachedIss || !cachedNeo) {
+if (!cachedIss || !cachedNeo || !cachedApod) {
   updateBtn.click()
 }
 
