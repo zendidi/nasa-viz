@@ -37,10 +37,55 @@ export function getSunEquatorial(date = new Date()) {
   return { ra: normalizeDeg(ra), dec }
 }
 
-/** Mean lunar ecliptic longitude in degrees (ecliptic latitude ignored, ~0-5.1° in reality). */
-export function getMoonEclipticLongitude(date = new Date()) {
+/**
+ * Geocentric Moon position: the Astronomical Almanac's low-precision series
+ * (main periodic terms in ecliptic longitude, latitude and horizontal
+ * parallax — ~0.3° in position, ~0.1% in distance), then ecliptic → equatorial
+ * with the mean obliquity. Ecliptic of date rather than J2000 (precession
+ * since 2000 is ~0.4°, below this series' own accuracy). Checked against JPL
+ * Horizons for 2026-09-16 12:00 UT: see docs/agent/gotchas.md.
+ *
+ * @returns {{ra: number, dec: number, distanceKm: number}} ra in [0, 360), degrees
+ */
+export function getMoonEquatorial(date = new Date()) {
   const n = daysSinceJ2000(date)
-  return normalizeDeg(218.316 + 13.176396 * n)
+  const T = n / 36525
+  const sinD = (deg) => Math.sin(deg * RAD)
+  const cosD = (deg) => Math.cos(deg * RAD)
+
+  const lambda =
+    218.32 +
+    481267.881 * T +
+    6.29 * sinD(135.0 + 477198.87 * T) -
+    1.27 * sinD(259.3 - 413335.36 * T) +
+    0.66 * sinD(235.7 + 890534.22 * T) +
+    0.21 * sinD(269.9 + 954397.74 * T) -
+    0.19 * sinD(357.5 + 35999.05 * T) -
+    0.11 * sinD(186.5 + 966404.03 * T)
+  const beta =
+    5.13 * sinD(93.3 + 483202.02 * T) +
+    0.28 * sinD(228.2 + 960400.89 * T) -
+    0.28 * sinD(318.3 + 6003.15 * T) -
+    0.17 * sinD(217.6 - 407332.21 * T)
+  const parallax =
+    0.9508 +
+    0.0518 * cosD(135.0 + 477198.87 * T) +
+    0.0095 * cosD(259.3 - 413335.36 * T) +
+    0.0078 * cosD(235.7 + 890534.22 * T) +
+    0.0028 * cosD(269.9 + 954397.74 * T)
+
+  const obliquity = (23.439 - 0.0000004 * n) * RAD
+  const l = lambda * RAD
+  const b = beta * RAD
+  const x = Math.cos(b) * Math.cos(l)
+  const y = Math.cos(obliquity) * Math.cos(b) * Math.sin(l) - Math.sin(obliquity) * Math.sin(b)
+  const z = Math.sin(obliquity) * Math.cos(b) * Math.sin(l) + Math.cos(obliquity) * Math.sin(b)
+
+  return {
+    ra: normalizeDeg(Math.atan2(y, x) * DEG),
+    dec: Math.asin(z) * DEG,
+    distanceKm: 6378.14 / Math.sin(parallax * RAD),
+  }
 }
 
 /**

@@ -23,6 +23,24 @@ export function fetchNeoFeed(startDate, endDate) {
   return getJson(`/neo${qs ? `?${qs}` : ''}`)
 }
 
+/**
+ * Real geocentric positions (JPL Horizons, ICRF, km) as hourly tables, keyed
+ * by designation. The backend accepts at most 10 designations per call.
+ *
+ * @param {string} startDate YYYY-MM-DD
+ * @param {string} endDate YYYY-MM-DD
+ * @param {string[]} designations
+ * @returns {Promise<{step_seconds:number, objects:Record<string, {start:number, positions:number[][]}|null>}>}
+ */
+export function fetchNeoPositions(startDate, endDate, designations) {
+  const params = new URLSearchParams({
+    start_date: startDate,
+    end_date: endDate,
+    designations: designations.join(','),
+  })
+  return getJson(`/neo/positions?${params}`)
+}
+
 /** @returns {Promise<{title:string, date:string, explanation:string, media_type:string, url:string, hd_url:?string}>} */
 export function fetchApod() {
   return getJson('/apod')

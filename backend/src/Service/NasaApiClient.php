@@ -51,6 +51,7 @@ final class NasaApiClient
                 $objects[] = [
                     'id' => $neo['id'],
                     'name' => $neo['name'],
+                    'designation' => self::designationFromName($neo['name']),
                     'estimated_diameter_km' => [
                         'min' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_min'],
                         'max' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_max'],
@@ -71,6 +72,21 @@ final class NasaApiClient
             'count' => count($objects),
             'objects' => $objects,
         ];
+    }
+
+    /**
+     * NeoWs names read "(2014 SU1)", "495615 (2015 PQ291)" or
+     * "99942 Apophis (2004 MN4)" — the provisional designation in the last
+     * parentheses is what other catalogues (JPL Horizons, IMCCE) accept, while
+     * the NeoWs `id` is NeoWs-specific.
+     */
+    public static function designationFromName(string $name): string
+    {
+        if (preg_match('/\(([^()]+)\)\s*$/', $name, $matches)) {
+            return trim($matches[1]);
+        }
+
+        return trim($name);
     }
 
     /**

@@ -53,3 +53,7 @@ backend/    → Proxy Symfony vers les API NASA (cache + clé API cachée)
 web/        → Vitrine web Three.js (ISS + astéroïdes)
 unity-vr/   → Projet Unity VR (Quest, OpenXR)
 ```
+
+## Mise en prod
+Voir `DEPLOYMENT.md` (checklist et guide, pas encore exécuté — le projet est encore en
+développement).

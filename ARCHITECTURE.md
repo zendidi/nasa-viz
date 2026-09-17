@@ -73,6 +73,8 @@ scène web à l'identique. Elle consommera le même contrat backend (`backend/AP
 - `DEMO_KEY` (clé par défaut) : 30 req/h, 50 req/jour.
 - Vraie clé `api.nasa.gov` (à générer, gratuite) : 1000 req/h, pas de plafond journalier connu.
 - `wheretheiss.at` (ISS) : pas de quota documenté, non suivi par le compteur.
+- Piste pour sortir du quota NEO (non intégrée) : JPL `cad.api` + IMCCE SsODNet (sans clé) — voir
+  `docs/imcce-ssodnet.md`.
 - TTLs actuels : ISS 5s · NEO 1h par plage de dates · APOD 24h.
 - Le badge web (`GET /api/usage`) montre les appels réels du jour — c'est la donnée de vérité, pas
   le nombre de clics sur "Mettre à jour" (le cache backend absorbe une partie des clics).

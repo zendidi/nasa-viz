@@ -2,9 +2,11 @@
 
 namespace App\Controller;
 
+use App\Service\HorizonsClient;
 use App\Service\IssPositionClient;
 use App\Service\NasaApiClient;
 use App\Service\NasaUsageTracker;
+use Psr\Cache\CacheItemPoolInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -22,6 +24,9 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
  */
 final class SpaceDataController
 {
+    /** Designations per call — the web client batches, so each request stays short on the single-threaded dev server. */
+    private const MAX_DESIGNATIONS_PER_CALL = 10;
+
     public function __construct(
         #[Autowire(service: 'cache.app')]
         private readonly CacheInterface $cache,
@@ -77,6 +82,71 @@ final class SpaceDataController
         }
 
         return new JsonResponse($feed);
+    }
+
+    #[Route('/api/neo/positions', name: 'api_neo_positions', methods: ['GET'])]
+    public function neoPositions(
+        Request $request,
+        HorizonsClient $client,
+        #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
+    ): JsonResponse {
+        $start = \DateTimeImmutable::createFromFormat('!Y-m-d', (string) $request->query->get('start_date'), new \DateTimeZone('UTC'));
+        $end = \DateTimeImmutable::createFromFormat('!Y-m-d', (string) $request->query->get('end_date'), new \DateTimeZone('UTC'));
+        if (!$start || !$end) {
+            return new JsonResponse(['error' => 'start_date and end_date are required, in YYYY-MM-DD format'], 400);
+        }
+        if ($end < $start || $end->diff($start)->days > 7) {
+            return new JsonResponse(['error' => 'end_date must be within 7 days after start_date'], 400);
+        }
+
+        $designations = array_values(array_unique(array_filter(array_map('trim', explode(',', (string) $request->query->get('designations', ''))))));
+        if ($designations === [] || count($designations) > self::MAX_DESIGNATIONS_PER_CALL) {
+            return new JsonResponse(['error' => sprintf('designations must list 1 to %d comma-separated designations', self::MAX_DESIGNATIONS_PER_CALL)], 400);
+        }
+        foreach ($designations as $designation) {
+            if (!preg_match('/^[A-Za-z0-9 \/-]{1,40}$/', $designation)) {
+                return new JsonResponse(['error' => sprintf('invalid designation "%s"', $designation)], 400);
+            }
+        }
+
+        // Table covers the whole feed range, end day included.
+        $stop = $end->modify('+1 day');
+
+        $objects = [];
+        $items = [];
+        $missing = [];
+        foreach ($designations as $designation) {
+            $item = $pool->getItem('horizons_'.md5($designation.'|'.$start->format('Y-m-d').'|'.$stop->format('Y-m-d')));
+            if ($item->isHit()) {
+                $objects[$designation] = $item->get();
+            } else {
+                $items[$designation] = $item;
+                $missing[] = $designation;
+            }
+        }
+
+        if ($missing !== []) {
+            try {
+                $fetched = $client->getVectors($missing, $start, $stop);
+            } catch (ExceptionInterface $e) {
+                return $this->upstreamError('neo/positions', $e);
+            }
+            foreach ($fetched as $designation => $vectors) {
+                // An orbit solution barely moves within a day; an unresolved
+                // designation is retried sooner in case JPL catches up.
+                $items[$designation]->set($vectors)->expiresAfter($vectors === null ? 3600 : 86400);
+                $pool->saveDeferred($items[$designation]);
+                $objects[$designation] = $vectors;
+            }
+            $pool->commit();
+        }
+
+        return new JsonResponse([
+            'frame' => 'ICRF geocentric',
+            'units' => 'km',
+            'step_seconds' => HorizonsClient::STEP_SECONDS,
+            'objects' => $objects,
+        ]);
     }
 
     #[Route('/api/apod', name: 'api_apod', methods: ['GET'])]
