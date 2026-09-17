@@ -24,69 +24,66 @@ final class NasaApiClient
     }
 
     /**
-     * @return array{start_date: string, end_date: string, count: int, objects: list<array>}
+     * NeoWs feed as raw-ish rows, one per object (its close approach inside
+     * the range). The request is sent (and counted against the quota) now;
+     * the returned closure parses the answer — see JplCadClient for why.
      *
-     * @throws ExceptionInterface
+     * @return \Closure(): list<array<string, mixed>>
      */
-    public function getNeoFeed(string $startDate, string $endDate): array
+    public function requestNeoApproaches(string $startDate, string $endDate): \Closure
     {
-        try {
-            $this->usageTracker->recordCall();
-            $response = $this->httpClient->request('GET', $this->baseUrl.'/neo/rest/v1/feed', [
-                'query' => [
-                    'start_date' => $startDate,
-                    'end_date' => $endDate,
-                    'api_key' => $this->apiKey,
-                ],
-            ]);
-            $data = $response->toArray();
-        } catch (ExceptionInterface $e) {
-            throw new TransportException('Unable to fetch NEO feed: '.$e->getMessage(), previous: $e);
-        }
+        $this->usageTracker->recordCall();
+        $response = $this->httpClient->request('GET', $this->baseUrl.'/neo/rest/v1/feed', [
+            'query' => [
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+                'api_key' => $this->apiKey,
+            ],
+        ]);
 
-        $objects = [];
-        foreach ($data['near_earth_objects'] ?? [] as $dateObjects) {
-            foreach ($dateObjects as $neo) {
-                $approach = $neo['close_approach_data'][0] ?? null;
-                $objects[] = [
-                    'id' => $neo['id'],
-                    'name' => $neo['name'],
-                    'designation' => self::designationFromName($neo['name']),
-                    'estimated_diameter_km' => [
-                        'min' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_min'],
-                        'max' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_max'],
-                    ],
-                    'is_potentially_hazardous' => (bool) $neo['is_potentially_hazardous_asteroid'],
-                    'close_approach' => $approach === null ? null : [
-                        'date' => $approach['close_approach_date'],
-                        'miss_distance_km' => (float) $approach['miss_distance']['kilometers'],
-                        'relative_velocity_kmh' => (float) $approach['relative_velocity']['kilometers_per_hour'],
-                    ],
-                ];
+        return static function () use ($response): array {
+            try {
+                $data = $response->toArray();
+            } catch (ExceptionInterface $e) {
+                throw new TransportException('Unable to fetch NEO feed: '.$e->getMessage(), previous: $e);
             }
-        }
 
-        return [
-            'start_date' => $startDate,
-            'end_date' => $endDate,
-            'count' => count($objects),
-            'objects' => $objects,
-        ];
+            $rows = [];
+            foreach ($data['near_earth_objects'] ?? [] as $dateObjects) {
+                foreach ($dateObjects as $neo) {
+                    $rows[] = self::normalizeNeo($neo);
+                }
+            }
+
+            return $rows;
+        };
     }
 
-    /**
-     * NeoWs names read "(2014 SU1)", "495615 (2015 PQ291)" or
-     * "99942 Apophis (2004 MN4)" — the provisional designation in the last
-     * parentheses is what other catalogues (JPL Horizons, IMCCE) accept, while
-     * the NeoWs `id` is NeoWs-specific.
-     */
-    public static function designationFromName(string $name): string
+    private static function normalizeNeo(array $neo): array
     {
-        if (preg_match('/\(([^()]+)\)\s*$/', $name, $matches)) {
-            return trim($matches[1]);
-        }
+        $approach = $neo['close_approach_data'][0] ?? null;
+        // "2026-Sep-17 02:29", same TDB clock as JPL CAD.
+        $at = isset($approach['close_approach_date_full'])
+            ? \DateTimeImmutable::createFromFormat('!Y-M-d H:i', $approach['close_approach_date_full'], new \DateTimeZone('UTC'))
+            : false;
 
-        return trim($name);
+        return [
+            'neows_id' => $neo['id'],
+            'designation' => NeoDesignation::fromName($neo['name']),
+            'number' => NeoDesignation::numberFromName($neo['name']),
+            'name' => $neo['name'],
+            'date' => $approach['close_approach_date'] ?? null,
+            'approach_at' => $at ? $at->format('Y-m-d\TH:i\Z') : null,
+            'dist_au' => isset($approach['miss_distance']['astronomical']) ? (float) $approach['miss_distance']['astronomical'] : null,
+            'dist_km' => isset($approach['miss_distance']['kilometers']) ? (float) $approach['miss_distance']['kilometers'] : null,
+            'v_rel_kms' => isset($approach['relative_velocity']['kilometers_per_second']) ? (float) $approach['relative_velocity']['kilometers_per_second'] : null,
+            'orbiting_body' => $approach['orbiting_body'] ?? null,
+            'h' => isset($neo['absolute_magnitude_h']) ? (float) $neo['absolute_magnitude_h'] : null,
+            'diameter_min_km' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_min'],
+            'diameter_max_km' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_max'],
+            'is_pha' => (bool) $neo['is_potentially_hazardous_asteroid'],
+            'is_sentry' => (bool) ($neo['is_sentry_object'] ?? false),
+        ];
     }
 
     /**

@@ -1,0 +1,70 @@
+{
+  "links": {"self": "https://api.nasa.gov/neo/rest/v1/feed?start_date=2026-09-17&end_date=2026-09-18"},
+  "element_count": 3,
+  "near_earth_objects": {
+    "2026-09-17": [
+      {
+        "id": "54642785",
+        "neo_reference_id": "54642785",
+        "name": "(2026 NT2)",
+        "nasa_jpl_url": "https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=54642785",
+        "absolute_magnitude_h": 20.27,
+        "estimated_diameter": {"kilometers": {"estimated_diameter_min": 0.2071, "estimated_diameter_max": 0.4631}},
+        "is_potentially_hazardous_asteroid": true,
+        "close_approach_data": [
+          {
+            "close_approach_date": "2026-09-17",
+            "close_approach_date_full": "2026-Sep-17 05:07",
+            "epoch_date_close_approach": 1789621620000,
+            "relative_velocity": {"kilometers_per_second": "12.5360483833", "kilometers_per_hour": "45129.774", "miles_per_hour": "28041.5"},
+            "miss_distance": {"astronomical": "0.0413304639733313", "lunar": "16.08", "kilometers": "6182948.9", "miles": "3841862.1"},
+            "orbiting_body": "Earth"
+          }
+        ],
+        "is_sentry_object": false
+      },
+      {
+        "id": "3000001",
+        "neo_reference_id": "3000001",
+        "name": "(2021 LC)",
+        "nasa_jpl_url": "https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=3000001",
+        "absolute_magnitude_h": 26.03,
+        "estimated_diameter": {"kilometers": {"estimated_diameter_min": 0.0147, "estimated_diameter_max": 0.0328}},
+        "is_potentially_hazardous_asteroid": false,
+        "close_approach_data": [
+          {
+            "close_approach_date": "2026-09-17",
+            "close_approach_date_full": "2026-Sep-17 03:25",
+            "epoch_date_close_approach": 1789615500000,
+            "relative_velocity": {"kilometers_per_second": "4.8479557874", "kilometers_per_hour": "17452.64", "miles_per_hour": "10844.4"},
+            "miss_distance": {"astronomical": "0.284743887059297", "lunar": "110.77", "kilometers": "42597000.1", "miles": "26468600.2"},
+            "orbiting_body": "Earth"
+          }
+        ],
+        "is_sentry_object": false
+      }
+    ],
+    "2026-09-18": [
+      {
+        "id": "3999999",
+        "neo_reference_id": "3999999",
+        "name": "(2019 ZZ9)",
+        "nasa_jpl_url": "https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=3999999",
+        "absolute_magnitude_h": 24.1,
+        "estimated_diameter": {"kilometers": {"estimated_diameter_min": 0.0366, "estimated_diameter_max": 0.0819}},
+        "is_potentially_hazardous_asteroid": false,
+        "close_approach_data": [
+          {
+            "close_approach_date": "2026-09-18",
+            "close_approach_date_full": "2026-Sep-18 11:00",
+            "epoch_date_close_approach": 1789729200000,
+            "relative_velocity": {"kilometers_per_second": "7.1", "kilometers_per_hour": "25560.0", "miles_per_hour": "15882.2"},
+            "miss_distance": {"astronomical": "0.12", "lunar": "46.7", "kilometers": "17951744.5", "miles": "11154700.3"},
+            "orbiting_body": "Earth"
+          }
+        ],
+        "is_sentry_object": false
+      }
+    ]
+  }
+}

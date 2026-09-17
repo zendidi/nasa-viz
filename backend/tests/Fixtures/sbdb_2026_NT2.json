@@ -1,0 +1,149 @@
+{
+    "signature": {
+        "version": "1.3",
+        "source": "NASA/JPL Small-Body Database (SBDB) API"
+    },
+    "phys_par": [
+        {
+            "units": null,
+            "title": "absolute magnitude",
+            "name": "H",
+            "ref": "19",
+            "value": "20.271",
+            "notes": "autocmod 3.0g",
+            "desc": "absolute magnitude (magnitude at 1 au from Sun and observer)",
+            "sigma": ".38506"
+        }
+    ],
+    "object": {
+        "orbit_id": "19",
+        "kind": "au",
+        "pha": true,
+        "spkid": "54642785",
+        "prefix": null,
+        "des": "2026 NT2",
+        "neo": true,
+        "orbit_class": {
+            "name": "Apollo",
+            "code": "APO"
+        },
+        "fullname": "(2026 NT2)"
+    },
+    "orbit": {
+        "cov_epoch": "2461250.5",
+        "source": "JPL",
+        "last_obs": "2026-09-15",
+        "rms": "0.31",
+        "producer": "Otto Matic",
+        "pe_used": "DE441",
+        "first_obs": "2026-07-15",
+        "t_jup": "3.758",
+        "comment": null,
+        "two_body": null,
+        "n_obs_used": 85,
+        "not_valid_after": null,
+        "soln_date": "2026-09-15 06:22:07",
+        "elements": [
+            {
+                "units": null,
+                "title": "eccentricity",
+                "label": "e",
+                "name": "e",
+                "value": "0.555",
+                "sigma": "1.4e-05"
+            },
+            {
+                "sigma": "5.2e-05",
+                "value": "1.88",
+                "name": "a",
+                "units": "au",
+                "title": "semi-major axis",
+                "label": "a"
+            },
+            {
+                "name": "q",
+                "title": "perihelion distance",
+                "units": "au",
+                "label": "q",
+                "sigma": "2.9e-06",
+                "value": "0.837"
+            },
+            {
+                "sigma": "0.00014",
+                "value": "8.61",
+                "name": "i",
+                "units": "deg",
+                "title": "inclination; angle with respect to x-y ecliptic plane",
+                "label": "i"
+            },
+            {
+                "sigma": "6.5e-05",
+                "value": "0.424",
+                "name": "om",
+                "title": "longitude of the ascending node",
+                "units": "deg",
+                "label": "node"
+            },
+            {
+                "value": "46.1",
+                "sigma": "8e-05",
+                "label": "peri",
+                "title": "argument of perihelion",
+                "units": "deg",
+                "name": "w"
+            },
+            {
+                "value": "307",
+                "sigma": "0.0023",
+                "label": "M",
+                "title": "mean anomaly",
+                "units": "deg",
+                "name": "ma"
+            },
+            {
+                "label": "tp",
+                "units": "TDB",
+                "title": "time of perihelion passage",
+                "name": "tp",
+                "value": "2461338.419",
+                "sigma": "0.00027"
+            },
+            {
+                "value": "941",
+                "sigma": "0.039",
+                "label": "period",
+                "title": "sidereal orbital period",
+                "units": "d",
+                "name": "per"
+            },
+            {
+                "label": "n",
+                "units": "deg/d",
+                "title": "mean motion",
+                "name": "n",
+                "value": "0.383",
+                "sigma": "1.6e-05"
+            },
+            {
+                "sigma": "8e-05",
+                "value": "2.92",
+                "name": "ad",
+                "label": "Q",
+                "title": "aphelion distance",
+                "units": "au"
+            }
+        ],
+        "moid": "0.0292",
+        "equinox": "J2000",
+        "n_del_obs_used": null,
+        "epoch": "2461200.5",
+        "sb_used": "SB441-N16",
+        "not_valid_before": null,
+        "data_arc": "62",
+        "condition_code": "5",
+        "n_dop_obs_used": null,
+        "model_pars": [],
+        "moid_jup": "2.55",
+        "orbit_id": "19"
+    }
+}
