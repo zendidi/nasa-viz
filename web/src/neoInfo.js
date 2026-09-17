@@ -68,7 +68,10 @@ export function neoTooltipSuffix(neo) {
  */
 export function sourcesPanelHtml(feed) {
   const c = feed.comparison
-  if (!c || !feed.sources) return ''
+  if (!c || !feed.sources) {
+    // Snapshot saved before the feed carried a comparison (NeoWs only).
+    return '<p class="muted">flux en cache d\'avant la comparaison des sources — « Mettre à jour » pour l\'obtenir</p>'
+  }
   const lines = []
 
   const down = Object.keys(SOURCE_NAMES).filter((s) => feed.sources[s] === 'unavailable')

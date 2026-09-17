@@ -764,7 +764,8 @@ function describeNeoPosition(entry) {
 // ringed.
 
 const TRAJECTORY_PAST_DIM = 0.3
-const APPROACH_MARKER_MIN_PX = 6
+const APPROACH_MARKER_MIN_PX = 7
+const APPROACH_MARKER_NEO_FACTOR = 1.8
 
 const trajectoryLine = new THREE.Line(
   new THREE.BufferGeometry(),
@@ -774,7 +775,12 @@ trajectoryLine.frustumCulled = false // its vertices move every frame; the bound
 trajectoryLine.visible = false
 scene.add(trajectoryLine)
 
-const approachMarker = new THREE.Mesh(neoGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }))
+// A flat ring kept facing the camera, not a wireframe sphere: a sphere's
+// triangles read as a lumpy cage once you zoom in on the NEO.
+const approachMarker = new THREE.Mesh(
+  new THREE.RingGeometry(0.88, 1, 48),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }),
+)
 approachMarker.visible = false
 scene.add(approachMarker)
 
@@ -845,8 +851,12 @@ function updateTrajectory(nowSeconds, t) {
   trajectoryLine.visible = true
 
   approachMarker.visible = true
+  approachMarker.quaternion.copy(camera.quaternion) // billboard
   approachMarker.scale.setScalar(
-    Math.max(selectedEntry.mesh.scale.x * 2, minRadiusAt(approachMarker.position, APPROACH_MARKER_MIN_PX)),
+    Math.max(
+      selectedEntry.mesh.scale.x * APPROACH_MARKER_NEO_FACTOR,
+      minRadiusAt(approachMarker.position, APPROACH_MARKER_MIN_PX),
+    ),
   )
 }
 
