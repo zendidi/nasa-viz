@@ -104,3 +104,28 @@ données des sources changent** (au plus une par heure et par plage de dates, ~2
   de Mo par an si le site est visité en continu ; en pratique bien moins, les lignes identiques
   n'étant pas réécrites.
 - Purger le fichier est sans effet sur l'application : il ne sert qu'à l'analyse.
+
+## Faire tourner le site sur une machine sans outils de développement
+
+Vérifié le 2026-09-17 : **PHP seul suffit**, ni Node, ni Composer, ni serveur web à installer.
+
+1. Sur la machine de dev : `cd web && npm run build`, puis copier le contenu de `web/dist/` dans
+   `backend/public/` (sans écraser `index.php`).
+2. Copier le dossier `backend/` entier — **`vendor/` inclus** (~29 Mo), c'est lui qui rend Composer
+   inutile sur la machine cible. `web/node_modules/` n'a pas à être copié.
+3. Sur la machine cible : installer PHP 8.3+ (sous Windows, le zip officiel « thread safe »
+   décompressé suffit, pas d'installateur), puis lancer depuis `backend/` :
+   `php -S 127.0.0.1:8000 -t public` et ouvrir http://127.0.0.1:8000.
+
+Le même processus sert la page, les assets et `/api/*` : même origine, donc pas de CORS.
+
+**Piège `DirectoryIndex`** : une requête sur `/` est une requête de répertoire, et Apache comme le
+serveur intégré de PHP préfèrent `public/index.php` (Symfony) à `public/index.html` — sans rien,
+la racine répond 404 alors que tous les autres fichiers sont servis. D'où la route `/` de
+`App\Controller\FrontendController`, qui renvoie `public/index.html` quand le build est là, et un
+petit texte listant les routes d'API sinon. Ne pas la supprimer en croyant à du code mort.
+
+Limites de ce mode « poste isolé » : serveur PHP mono-processus (une requête à la fois, suffisant
+pour un poste), `APP_ENV=dev` par défaut (plus lent et plus bavard — passer `APP_ENV=prod` +
+`APP_SECRET` dans `backend/.env.local` pour un usage prolongé), et `DEMO_KEY` toujours limitée à
+50 requêtes NASA par jour et par adresse IP.
