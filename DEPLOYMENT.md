@@ -91,3 +91,16 @@ recommandée ci-dessus.
 - [ ] Pas d'erreur CORS/console sur un chargement à froid (cache navigateur vide)
 - [ ] `docs/agent/decisions.md` et ce fichier mis à jour si l'archi de déploiement a changé
   entre-temps
+
+## Journal de comparaison des sources NEO
+
+`/api/neo` écrit une ligne JSON dans `backend/var/log/neo-comparison.jsonl` **à chaque fois que les
+données des sources changent** (au plus une par heure et par plage de dates, ~25 ko par ligne).
+
+- `backend/var/log/` doit être **persistant et inscriptible** par l'utilisateur du serveur web ;
+  un échec d'écriture est journalisé mais ne casse jamais la route.
+- Rapport : `php bin/console app:neo:comparison-report --days=30`.
+- Prévoir une rotation (logrotate ou équivalent) : le pire cas est de l'ordre de quelques centaines
+  de Mo par an si le site est visité en continu ; en pratique bien moins, les lignes identiques
+  n'étant pas réécrites.
+- Purger le fichier est sans effet sur l'application : il ne sert qu'à l'analyse.

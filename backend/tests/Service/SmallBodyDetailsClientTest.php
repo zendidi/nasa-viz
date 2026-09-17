@@ -46,10 +46,10 @@ final class SmallBodyDetailsClientTest extends TestCase
         self::assertTrue($details['is_pha']);
         self::assertSame(['class' => 'S', 'complex' => 'S', 'source' => 'ssocard'], $details['taxonomy']);
         self::assertSame(['value' => 0.34, 'source' => 'ssocard'], $details['diameter_km']);
-        self::assertSame(0.000108, $details['moid_earth_au']);
-        self::assertSame(0.922, $details['orbit']['a_au']);
+        self::assertSame(0.000107917, $details['moid_earth_au']);
+        self::assertSame(0.9223592206975018, $details['orbit']['a_au']);
         self::assertSame(2461200.5, $details['orbit']['epoch_jd']);
-        self::assertSame(324.0, $details['orbit']['period_days']);
+        self::assertSame(323.5553366891694, $details['orbit']['period_days']);
         self::assertNull($details['impact_risk']);
         self::assertSame(['sbdb' => 'ok', 'ssocard' => 'ok', 'sentry' => 'not_found'], $details['sources']);
         self::assertSame('https://ssp.imcce.fr/forms/ssocard/Apophis', $details['links']['ssocard']);
@@ -66,7 +66,7 @@ final class SmallBodyDetailsClientTest extends TestCase
         self::assertTrue($details['is_pha']);
         self::assertNull($details['taxonomy']);
         self::assertNull($details['diameter_km']);
-        self::assertSame(0.0292, $details['moid_earth_au']);
+        self::assertSame(0.0291634, $details['moid_earth_au']);
         self::assertSame(['sbdb' => 'ok', 'ssocard' => 'not_found', 'sentry' => 'not_found'], $details['sources']);
         self::assertNull($details['links']['ssocard']);
     }

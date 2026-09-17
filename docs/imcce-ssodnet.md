@@ -1,7 +1,13 @@
 # IMCCE SsODNet / Miriade — source de données alternative (non intégrée)
 
-Référence pour une future optimisation de `/api/neo` (sortir du quota `DEMO_KEY`) et pour enrichir
-les données (modal NEO web, scène VR). **Rien n'est branché dans le code à ce jour.**
+Référence de l'étude initiale (2026-09-15). **Intégré depuis le 2026-09-17** : ssoCard alimente
+`/api/neo/details` (en complément de JPL SBDB, qui couvre les objets récents que ssoCard ignore) et
+JPL CAD est devenu la source de référence de `/api/neo`. Plan, constats à jour et décisions :
+`docs/neo-jpl-ssodnet.md`.
+
+Deux constats de l'intégration corrigent ce qui suit : pour les petits NEO d'un flux typique,
+ssoCard n'a **ni taxonomie, ni diamètre, ni albédo** (seulement H, classe, MOID, orbite), et les
+objets découverts dans l'année en sont absents — d'où SBDB en source principale de la fiche.
 
 - Formulaire web : https://ssp.imcce.fr/forms/ssocard
 - Doc API ssoCard : https://ssp.imcce.fr/webservices/ssodnet/api/ssocard/

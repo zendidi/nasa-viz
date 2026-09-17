@@ -1,8 +1,22 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { fetchIssPosition, fetchNeoFeed, fetchNeoPositions, fetchApod, fetchUsage } from './api.js'
+import { fetchIssPosition, fetchNeoFeed, fetchNeoPositions, fetchNeoDetails, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
 import { getSunEquatorial, getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
+import { orbitSchematicSvg } from './orbit.js'
+import {
+  NEO_DEFAULT_COLOR,
+  NEO_HAZARD_COLOR,
+  NEO_CREDITS,
+  TAXONOMY,
+  taxonomyKey,
+  cssColor,
+  escapeHtml,
+  neoTooltipSuffix,
+  sourcesPanelHtml,
+  sourcesBlockHtml,
+  detailsBlockHtml,
+} from './neoInfo.js'
 import {
   EARTH_RADIUS,
   KM_TO_UNITS,
@@ -602,8 +616,11 @@ function makeFallbackStarfield() {
 // Unit spheres shared by every NEO, scaled per frame in applyScale().
 const neoGeometry = new THREE.SphereGeometry(1, 10, 10)
 const neoHitGeometry = new THREE.SphereGeometry(1, 8, 8)
-const neoMaterial = new THREE.MeshBasicMaterial({ color: 0x7fe0ff })
-const neoHazardMaterial = new THREE.MeshBasicMaterial({ color: 0xff4d4d })
+const neoMaterials = {
+  default: new THREE.MeshBasicMaterial({ color: NEO_DEFAULT_COLOR }),
+  hazard: new THREE.MeshBasicMaterial({ color: NEO_HAZARD_COLOR }),
+  ...Object.fromEntries(Object.entries(TAXONOMY).map(([key, { color }]) => [key, new THREE.MeshBasicMaterial({ color })])),
+}
 const neoHitMaterial = new THREE.MeshBasicMaterial({ visible: false })
 
 /**
@@ -629,11 +646,41 @@ function designationOf(neo) {
   return (match ? match[1] : neo.name).trim()
 }
 
+// Per-object sheets from /api/neo/details, keyed by designation: object, or
+// null when neither JPL SBDB nor IMCCE knows it. Kept in localStorage across
+// feeds (catalogues change weekly at most) — see loadNeoDetails().
+const NEO_DETAILS_MAX_AGE_MS = 7 * 86_400_000
+/** @type {Record<string, {data: object|null, fetchedAt: number}>} */
+let neoDetails = {}
+{
+  const cached = loadCached('neo-details')
+  const now = Date.now()
+  for (const [designation, record] of Object.entries(cached?.data ?? {})) {
+    if (now - record.fetchedAt < NEO_DETAILS_MAX_AGE_MS) neoDetails[designation] = record
+  }
+}
+const neoDetailsLoading = new Set()
+const neoDetailsErrors = new Map()
+
+/** Hazard wins (safety first); otherwise the spectral complex when a catalogue knows it. */
+function neoMaterialFor(neo, designation) {
+  if (neo.is_potentially_hazardous) return neoMaterials.hazard
+  const key = taxonomyKey(neoDetails[designation]?.data?.taxonomy?.complex)
+  return key ? neoMaterials[key] : neoMaterials.default
+}
+
+/** A measured diameter (IMCCE / JPL SBDB) beats the H-based estimate range. */
+function neoDiameterKm(neo, designation) {
+  const measured = neoDetails[designation]?.data?.diameter_km?.value
+  return measured ?? (neo.estimated_diameter_km.min + neo.estimated_diameter_km.max) / 2
+}
+
 function addNeoPoints(objects) {
   neoGroup.clear()
   neoEntries = objects.map((neo) => {
     const group = new THREE.Group()
-    const mesh = new THREE.Mesh(neoGeometry, neo.is_potentially_hazardous ? neoHazardMaterial : neoMaterial)
+    const designation = designationOf(neo)
+    const mesh = new THREE.Mesh(neoGeometry, neoMaterialFor(neo, designation))
     // Oversized invisible hit-sphere under the visible mesh makes small NEOs
     // easier to click without inflating what's rendered.
     const hit = new THREE.Mesh(neoHitGeometry, neoHitMaterial)
@@ -644,8 +691,8 @@ function addNeoPoints(objects) {
 
     return {
       neo,
-      designation: designationOf(neo),
-      diameterKm: (neo.estimated_diameter_km.min + neo.estimated_diameter_km.max) / 2,
+      designation,
+      diameterKm: neoDiameterKm(neo, designation),
       fallbackDir: hashToDirection(neo.id),
       group,
       mesh,
@@ -707,6 +754,110 @@ function describeNeoPosition(entry) {
     default:
       return '<p class="muted">Position inconnue.</p>'
   }
+}
+
+// --- selected NEO: its real path around the Earth over the feed's range --------
+//
+// Same Horizons table the point itself is placed from, so the line and the NEO
+// always agree; each sample goes through the very same scale mapping, so the
+// path follows the slider. Past samples are dimmed, the closest approach is
+// ringed.
+
+const TRAJECTORY_PAST_DIM = 0.3
+const APPROACH_MARKER_MIN_PX = 6
+
+const trajectoryLine = new THREE.Line(
+  new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 }),
+)
+trajectoryLine.frustumCulled = false // its vertices move every frame; the bounding sphere would be stale
+trajectoryLine.visible = false
+scene.add(trajectoryLine)
+
+const approachMarker = new THREE.Mesh(neoGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }))
+approachMarker.visible = false
+scene.add(approachMarker)
+
+/** @type {NeoEntry|null} */
+let selectedEntry = null
+let trajectoryTable = null // the Horizons table the geometry was built from
+let trajectoryKm = null // samples in km, scene axes
+let trajectoryClosestIndex = 0
+
+function selectNeo(entry) {
+  if (selectedEntry === entry) return
+  selectedEntry = entry
+  trajectoryTable = null
+}
+
+function entryOf(neo) {
+  return neoEntries.find((e) => e.neo === neo) ?? null
+}
+
+function buildTrajectory(table) {
+  const rows = table.positions
+  trajectoryKm = new Float32Array(rows.length * 3)
+  let closest = Infinity
+  const sample = new THREE.Vector3()
+  rows.forEach((row, i) => {
+    icrfToScene(row[0], row[1], row[2], sample)
+    trajectoryKm.set([sample.x, sample.y, sample.z], i * 3)
+    const distance = sample.length()
+    if (distance < closest) {
+      closest = distance
+      trajectoryClosestIndex = i
+    }
+  })
+  trajectoryLine.geometry.dispose()
+  trajectoryLine.geometry = new THREE.BufferGeometry()
+  trajectoryLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rows.length * 3), 3))
+  trajectoryLine.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(rows.length * 3), 3))
+  trajectoryTable = table
+}
+
+const trajectorySample = new THREE.Vector3()
+
+function updateTrajectory(nowSeconds, t) {
+  const table = selectedEntry ? neoPositions.objects[selectedEntry.designation] : null
+  if (!table || table.positions.length < 2) {
+    trajectoryLine.visible = false
+    approachMarker.visible = false
+    return
+  }
+  if (table !== trajectoryTable) buildTrajectory(table)
+
+  const positions = trajectoryLine.geometry.getAttribute('position')
+  const colors = trajectoryLine.geometry.getAttribute('color')
+  const { r, g, b } = selectedEntry.mesh.material.color
+  const nowIndex = (nowSeconds - table.start) / neoPositions.stepSeconds
+
+  for (let i = 0; i < positions.count; i++) {
+    trajectorySample.fromArray(trajectoryKm, i * 3)
+    const distanceKm = trajectorySample.length()
+    trajectorySample.multiplyScalar(sceneDistance(distanceKm, t) / distanceKm)
+    positions.setXYZ(i, trajectorySample.x, trajectorySample.y, trajectorySample.z)
+    const dim = i < nowIndex ? TRAJECTORY_PAST_DIM : 1
+    colors.setXYZ(i, r * dim, g * dim, b * dim)
+    if (i === trajectoryClosestIndex) approachMarker.position.copy(trajectorySample)
+  }
+  positions.needsUpdate = true
+  colors.needsUpdate = true
+  trajectoryLine.visible = true
+
+  approachMarker.visible = true
+  approachMarker.scale.setScalar(
+    Math.max(selectedEntry.mesh.scale.x * 2, minRadiusAt(approachMarker.position, APPROACH_MARKER_MIN_PX)),
+  )
+}
+
+/** Human summary of the drawn path, for the modal. */
+function describeTrajectory(entry) {
+  const table = neoPositions.objects[entry.designation]
+  if (!table || table.positions.length < 2) return ''
+  const closestAt = new Date((table.start + trajectoryClosestIndex * neoPositions.stepSeconds) * 1000)
+  return `<p class="muted">Trajectoire réelle tracée dans la scène (JPL Horizons) — passé atténué, cercle = passage au plus près${
+    entry === selectedEntry ? ` le ${closestAt.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ''
+  }.</p>`
 }
 
 // --- ISS -------------------------------------------------------------------------
@@ -848,6 +999,8 @@ function applyScale(nowSeconds) {
   for (const ring of distanceRings.rings) {
     ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t))
   }
+
+  updateTrajectory(nowSeconds, t)
 }
 
 // --- UI overlay --------------------------------------------------------------
@@ -858,7 +1011,7 @@ ui.innerHTML = `
   <div id="ui-header">
     <h1>NASA Viz</h1>
     <button id="update-btn">Mettre à jour</button>
-    <span id="usage-badge" class="muted" title="Requêtes envoyées à api.nasa.gov (NEO + APOD) depuis minuit UTC — hors ISS, non limitée">…</span>
+    <span id="usage-badge" class="muted" title="Requêtes envoyées à api.nasa.gov (NeoWs + APOD) depuis minuit UTC — les autres sources (JPL, ESA, IMCCE, ISS) sont sans quota">…</span>
   </div>
   <section id="iss-panel">
     <h2><span class="dot dot-iss"></span>ISS</h2>
@@ -940,8 +1093,6 @@ style.textContent = `
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
   #iss-panel h2 .dot { margin-bottom: 2px; }
   .dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
-  .dot-neo { background: #7fe0ff; }
-  .dot-neo-hazard { background: #ff4d4d; }
   .legend { font-size: 12px; opacity: 0.8; }
 
   #apod-panel { position: fixed; top: 16px; right: 20px; pointer-events: auto; cursor: pointer;
@@ -974,8 +1125,18 @@ style.textContent = `
            border-radius: 8px; padding: 20px 24px; max-width: 480px; width: 90%;
            max-height: 80vh; overflow-y: auto; }
   #modal h2 { margin: 0 0 12px; font-size: 17px; }
+  #modal h3 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
   #modal p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
   #modal .muted { opacity: 0.6; }
+  #modal .warn { color: #ffbf66; opacity: 1; }
+  #modal a { color: #7fe0ff; }
+  #modal .credits { margin-top: 14px; font-size: 11px; }
+  .neo-sources { margin: 4px 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+  .neo-sources li { margin: 2px 0; }
+  .orbit-schematic { margin: 10px 0 0; }
+  .orbit-schematic svg { display: block; width: 100%; max-width: 300px; margin: 0 auto; }
+  .orbit-schematic text { font: 10px system-ui, sans-serif; }
+  .orbit-schematic figcaption { margin-top: 4px; font-size: 11px; line-height: 1.5; opacity: 0.75; text-align: center; }
   #modal img, #modal iframe { display: block; width: 100%; border-radius: 4px; margin-bottom: 10px; border: none; }
   #modal iframe { aspect-ratio: 16 / 9; }
   #modal-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
@@ -1028,11 +1189,28 @@ function renderNeoPanel(feed, error, fetchedAt) {
     <h2>Astéroïdes proches (NEO)</h2>
     <p>${feed.count} objets (${feed.start_date} → ${feed.end_date}) · clic sur un point pour le détail</p>
     <p>${hazardous} potentiellement dangereux</p>
+    ${sourcesPanelHtml(feed)}
     <p id="neo-positions-status" class="muted"></p>
-    <p class="legend"><span class="dot dot-neo"></span>standard &nbsp;<span class="dot dot-neo-hazard"></span>dangereux</p>
+    ${neoLegendHtml()}
     ${formatUpdatedAt(fetchedAt)}
   `
   renderNeoPositionsStatus()
+}
+
+/** Legend: the two constant colours, plus every spectral complex actually loaded. */
+function neoLegendHtml() {
+  const present = new Set()
+  for (const entry of neoEntries) {
+    if (entry.neo.is_potentially_hazardous) continue
+    const key = taxonomyKey(neoDetails[entry.designation]?.data?.taxonomy?.complex)
+    if (key) present.add(key)
+  }
+  const swatches = [
+    `<span class="dot" style="background:${cssColor(NEO_DEFAULT_COLOR)}"></span>standard`,
+    `<span class="dot" style="background:${cssColor(NEO_HAZARD_COLOR)}"></span>dangereux`,
+    ...[...present].map((key) => `<span class="dot" style="background:${cssColor(TAXONOMY[key].color)}"></span>${TAXONOMY[key].label}`),
+  ]
+  return `<p class="legend">${swatches.join(' &nbsp;')}</p>`
 }
 
 let neoPositionsLoading = false
@@ -1075,6 +1253,7 @@ function openModal(title, bodyHtml) {
 
 function hideModal() {
   modal.classList.add('hidden')
+  modalNeo = null
 }
 
 let currentApod = null
@@ -1098,25 +1277,61 @@ function renderApodPanel(apod, error, fetchedAt) {
   `
 }
 
+/** The NEO the modal is showing, so it can be re-rendered when its sheet arrives. */
+let modalNeo = null
+
 function showNeoModal(neo) {
+  modalNeo = neo
+  const entry = entryOf(neo)
+  if (entry) selectNeo(entry)
+  renderNeoModal()
+  loadNeoDetails([entry ? entry.designation : designationOf(neo)])
+}
+
+function renderNeoModal() {
+  const neo = modalNeo
+  if (!neo) return
   const approach = neo.close_approach
-  const entry = neoEntries.find((e) => e.neo === neo)
+  const entry = entryOf(neo)
+  const designation = entry ? entry.designation : designationOf(neo)
+  const record = neoDetails[designation]
+  const details = record ? record.data : undefined
+  const diameter = details?.diameter_km
+    ? `${(details.diameter_km.value * 1000).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} m <span class="muted">(mesuré)</span>`
+    : `${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km <span class="muted">(estimé d'après sa luminosité)</span>`
+
   openModal(
     neo.name,
     `
-    <p><strong>ID</strong> ${neo.id}</p>
-    <p><strong>Diamètre estimé</strong> ${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km</p>
+    <p><strong>Désignation</strong> ${escapeHtml(designation)}</p>
+    <p><strong>Diamètre</strong> ${diameter}</p>
     <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
     ${entry ? describeNeoPosition(entry) : ''}
     ${
       approach
         ? `
-      <p><strong>Approche la plus proche</strong> ${approach.date}</p>
+      <p><strong>Approche la plus proche</strong> ${approach.datetime ? new Date(approach.datetime).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : approach.date}</p>
       <p><strong>Distance</strong> ${Math.round(approach.miss_distance_km).toLocaleString('fr-FR')} km</p>
       <p><strong>Vitesse relative</strong> ${Math.round(approach.relative_velocity_kmh).toLocaleString('fr-FR')} km/h</p>
     `
         : '<p class="muted">Pas de données d\'approche disponibles</p>'
     }
+    ${entry ? describeTrajectory(entry) : ''}
+    ${sourcesBlockHtml(neo)}
+    ${detailsBlockHtml(details, {
+      loading: neoDetailsLoading.has(designation),
+      error: neoDetailsErrors.get(designation) ?? null,
+    })}
+    ${
+      details?.orbit
+        ? orbitSchematicSvg(details.orbit, {
+            now: new Date(),
+            approachAt: approach ? new Date(approach.datetime ?? `${approach.date}T12:00Z`) : null,
+            hazardous: neo.is_potentially_hazardous,
+          })
+        : ''
+    }
+    <p class="muted credits">${NEO_CREDITS}</p>
   `,
   )
 }
@@ -1142,7 +1357,10 @@ modal.addEventListener('click', (event) => {
   if (event.target === modal) hideModal()
 })
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') hideModal()
+  if (event.key !== 'Escape') return
+  // First Escape closes the modal, a second one drops the selected NEO's trajectory.
+  if (!modal.classList.contains('hidden')) hideModal()
+  else selectNeo(null)
 })
 
 // --- scale controls -------------------------------------------------------------
@@ -1442,9 +1660,25 @@ function showConstellation(code, clientX, clientY) {
   else hideConstellationTooltip()
 }
 
+// Clicking a NEO opens its modal and selects it (its trajectory stays drawn
+// after the modal closes); clicking empty space deselects — but only on a real
+// click, not at the end of an orbit drag.
+const DRAG_TOLERANCE_PX = 5
+let pointerDownAt = null
+
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  pointerDownAt = { x: event.clientX, y: event.clientY }
+})
+
 renderer.domElement.addEventListener('click', (event) => {
+  const dragged =
+    pointerDownAt && Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y) > DRAG_TOLERANCE_PX
+  pointerDownAt = null
+  if (dragged) return
+
   const neo = pickNeoAt(event.clientX, event.clientY)
   if (neo) showNeoModal(neo)
+  else selectNeo(null)
 })
 
 document.querySelector('#apod-panel').addEventListener('click', () => {
@@ -1456,7 +1690,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
   if (neo) {
     renderer.domElement.style.cursor = 'pointer'
     // Named on hover: at true scale every NEO is an anonymous dot otherwise.
-    showStarTooltip(neo.name, event.clientX, event.clientY)
+    showStarTooltip(neo.name + neoTooltipSuffix(neo), event.clientX, event.clientY)
     if (starPoints) setStarHighlight(null)
     showConstellation(null)
     return
@@ -1508,13 +1742,63 @@ async function refreshUsage() {
 }
 
 let currentNeoFeed = null
+let currentNeoFetchedAt = null
 
 function showNeoFeed(feed, fetchedAt) {
   currentNeoFeed = feed
+  currentNeoFetchedAt = fetchedAt
+  selectNeo(null)
   addNeoPoints(feed.objects)
   renderNeoPanel(feed, null, fetchedAt)
   renderScalePanel()
   loadNeoPositions(feed)
+  loadNeoDetails(neoEntries.map((entry) => entry.designation))
+}
+
+const NEO_DETAILS_BATCH = 10 // backend maximum per call
+
+/**
+ * Sheets from JPL SBDB / IMCCE ssoCard / Sentry for the given designations,
+ * in background batches: they colour the points by spectral type, give the
+ * measured diameter when one exists, and fill the modal. Cached in
+ * localStorage per designation (not per feed) — these catalogues barely move.
+ */
+async function loadNeoDetails(designations) {
+  const missing = [...new Set(designations)].filter(
+    (d) => !(d in neoDetails) && !neoDetailsLoading.has(d) && DESIGNATION_PATTERN.test(d),
+  )
+  if (missing.length === 0) return
+  for (const designation of missing) neoDetailsLoading.add(designation)
+  if (modalNeo) renderNeoModal()
+
+  for (let i = 0; i < missing.length; i += NEO_DETAILS_BATCH) {
+    const batch = missing.slice(i, i + NEO_DETAILS_BATCH)
+    try {
+      const { objects } = await fetchNeoDetails(batch)
+      const now = Date.now()
+      for (const [designation, data] of Object.entries(objects)) {
+        neoDetails[designation] = { data, fetchedAt: now }
+        neoDetailsErrors.delete(designation)
+      }
+      saveCached('neo-details', neoDetails)
+      applyNeoDetails()
+    } catch (err) {
+      for (const designation of batch) neoDetailsErrors.set(designation, err.message)
+    } finally {
+      for (const designation of batch) neoDetailsLoading.delete(designation)
+    }
+    if (modalNeo) renderNeoModal()
+  }
+}
+
+/** Re-colours and re-sizes the points once their sheets are known. */
+function applyNeoDetails() {
+  for (const entry of neoEntries) {
+    entry.mesh.material = neoMaterialFor(entry.neo, entry.designation)
+    entry.diameterKm = neoDiameterKm(entry.neo, entry.designation)
+  }
+  if (currentNeoFeed) renderNeoPanel(currentNeoFeed, null, currentNeoFetchedAt)
+  renderScalePanel()
 }
 
 const NEO_POSITIONS_BATCH = 10 // backend maximum per call

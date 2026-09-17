@@ -41,6 +41,17 @@ export function fetchNeoPositions(startDate, endDate, designations) {
   return getJson(`/neo/positions?${params}`)
 }
 
+/**
+ * Per-object sheets (JPL SBDB + IMCCE ssoCard + JPL Sentry), keyed by
+ * designation; null = unknown to both catalogues. At most 10 per call.
+ *
+ * @param {string[]} designations
+ * @returns {Promise<{objects: Record<string, object|null>}>}
+ */
+export function fetchNeoDetails(designations) {
+  return getJson(`/neo/details?${new URLSearchParams({ designations: designations.join(',') })}`)
+}
+
 /** @returns {Promise<{title:string, date:string, explanation:string, media_type:string, url:string, hd_url:?string}>} */
 export function fetchApod() {
   return getJson('/apod')

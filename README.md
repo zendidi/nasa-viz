@@ -19,7 +19,8 @@
 - **Unity pas commencé** : l'API backend est stable et documentée (`backend/API.md`) pour une intégration Unity future sans dépendre de son planning.
 
 ## Statut
-- **Backend** : fonctionnel — `GET /api/iss/position`, `GET /api/neo`, `GET /api/apod`, cache + CORS en place. Voir `backend/API.md` pour le contrat complet (utile pour Unity plus tard).
+- **Backend** : fonctionnel — `GET /api/iss/position`, `GET /api/neo`, `GET /api/neo/positions`, `GET /api/neo/details`, `GET /api/apod`, cache + CORS en place. Voir `backend/API.md` pour le contrat complet (utile pour Unity plus tard).
+- **Sources NEO** : `/api/neo` interroge **JPL CAD** (référence), **NASA NeoWs** et **ESA NEOCC** en parallèle, les fusionne et signale les écarts ; le détail est journalisé dans `var/log/neo-comparison.jsonl` (`php bin/console app:neo:comparison-report`). Seul NeoWs consomme le quota NASA.
 - **Web** : fonctionnel — globe Three.js, marqueur ISS animé (poll 5s), points NEO (fetch au chargement), panneau d'info.
 - **VR** : non commencé (voir `unity-vr/README.md`).
 
@@ -46,6 +47,11 @@ Le dev server Vite proxifie `/api` vers `http://localhost:8000` (voir `web/vite.
 Ouvrir `unity-vr/` dans Unity Hub (Unity 6), installer les packages listés dans `Packages/manifest.json`
 via le Package Manager (XR Interaction Toolkit, OpenXR Plugin), puis configurer le XR Plug-in Management
 pour Quest dans Project Settings.
+
+## Crédits données
+NASA/JPL (Close Approach Data, Small-Body Database, Sentry, Horizons) · ESA NEO Coordination Centre ·
+LTE's SsODNet VO service, IMCCE / Observatoire de Paris (Berthier et al. 2023) · NASA NeoWs et APOD ·
+wheretheiss.at (ISS) · catalogue d'étoiles Hipparcos via d3-celestial (BSD-3).
 
 ## Structure
 ```

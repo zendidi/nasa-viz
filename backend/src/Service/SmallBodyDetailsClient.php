@@ -47,7 +47,7 @@ final class SmallBodyDetailsClient
         $responses = [];
         foreach ($designations as $designation) {
             $responses[$designation] = [
-                'sbdb' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sbdb.api', ['query' => ['sstr' => $designation, 'phys-par' => '1']]),
+                'sbdb' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sbdb.api', ['query' => ['sstr' => $designation, 'phys-par' => '1', 'full-prec' => '1']]),
                 'ssocard' => $this->httpClient->request('GET', $this->ssodnetBaseUrl.'/ssocard.php', ['query' => ['q' => str_replace(' ', '_', $designation)]]),
                 'sentry' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sentry.api', ['query' => ['des' => $designation]]),
             ];

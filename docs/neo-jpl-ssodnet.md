@@ -1,5 +1,10 @@
 # NEO — sources multiples (JPL, NASA NeoWs, ESA), fiche SBDB/ssoCard, trajectoire — plan (non implémenté)
 
+**Implémenté le 2026-09-17** (branche `neo-jpl-ssodnet`). Ce document garde le plan et les constats
+de tests qui l'ont façonné ; les décisions et le premier résultat réel sont dans
+`docs/agent/decisions.md`, les pièges rencontrés dans `docs/agent/gotchas.md`, le contrat des routes
+dans `backend/API.md`.
+
 Planifié le 2026-09-17 sur la branche `neo-jpl-ssodnet`. Fait suite à `docs/imcce-ssodnet.md` (étude
 du 2026-09-15), en l'ajustant avec les tests ci-dessous.
 

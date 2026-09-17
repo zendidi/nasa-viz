@@ -3,9 +3,12 @@
 ## Vue d'ensemble
 
 ```
-Web (Three.js)  ─┐
-                  ├─► Backend Symfony (proxy, cache, compteur d'usage) ─► NASA API (NeoWs, APOD)
-Unity VR (futur) ─┘                                                   └─► wheretheiss.at (ISS)
+                                                        ┌─► NASA api.nasa.gov (NeoWs, APOD)  ← seul quota
+Web (Three.js)  ─┐                                      ├─► JPL (CAD, SBDB, Sentry, Horizons) ┐
+                  ├─► Backend Symfony (proxy, cache) ───┤                                     ├ sans clé
+Unity VR (futur) ─┘      + comparaison des sources      ├─► ESA NEOCC (approches, risque)     │
+                                                        ├─► IMCCE SsODNet (ssoCard)           ┘
+                                                        └─► wheretheiss.at (ISS)
 ```
 
 Aucun client n'appelle NASA directement : le backend cache les réponses, cache la clé API, et
@@ -15,9 +18,24 @@ formes de réponse, pas ce fichier.
 
 ## Backend (`backend/`, Symfony 7, proxy sans état)
 
-- `src/Service/NasaApiClient.php` — NeoWs (`/api/neo`) + APOD (`/api/apod`), normalise les réponses
-  NASA en JSON stable, appelle `NasaUsageTracker::recordCall()` avant chaque requête réelle vers
-  `api.nasa.gov` (pas avant un hit de cache).
+- `src/Service/NasaApiClient.php` — NeoWs (une des trois sources de `/api/neo`) + APOD
+  (`/api/apod`), normalise les réponses NASA en JSON stable, appelle
+  `NasaUsageTracker::recordCall()` avant chaque requête réelle vers `api.nasa.gov` (pas avant un
+  hit de cache).
+- `src/Service/JplCadClient.php` — approches JPL CAD (source de référence de `/api/neo`) + liste
+  Sentry. `src/Service/EsaNeoccClient.php` — approches et liste de risque ESA NEOCC. Sans clé,
+  hors quota.
+- `src/Service/NeoFeedMerger.php` — fusionne les trois listes par objet, explique les absences
+  (portée/dates de chaque source) et chiffre les écarts JPL↔ESA face à l'incertitude JPL. Pur.
+- `src/Service/NeoFeedBuilder.php` — lance toutes les sources en parallèle (voir
+  `HttpResponses::settle`), tolère qu'une tombe, fusionne, journalise.
+- `src/Service/NeoComparisonLog.php` + `src/Command/NeoComparisonReportCommand.php` — journal
+  `var/log/neo-comparison.jsonl` (une ligne par changement réel) et son rapport
+  (`php bin/console app:neo:comparison-report`).
+- `src/Service/SmallBodyDetailsClient.php` — fiche par objet pour `/api/neo/details` : JPL SBDB
+  (toujours) + IMCCE ssoCard (bonus) + Sentry (risque d'impact).
+- `src/Service/NeoDesignation.php` — appariement des objets entre catalogues (numéro ou
+  désignation, chaque source ayant sa propre orthographe).
 - `src/Service/IssPositionClient.php` — position ISS via wheretheiss.at (pas de quota, pas suivi
   par le usage tracker).
 - `src/Service/NasaUsageTracker.php` — compteur d'appels réels à `api.nasa.gov` du jour (clé de
@@ -25,7 +43,9 @@ formes de réponse, pas ce fichier.
 - `src/Controller/SpaceDataController.php` — routes HTTP, toutes `GET`, toutes cachées
   (`cache.app`) :
   - `/api/iss/position` — TTL 5s
-  - `/api/neo?start_date=&end_date=` — TTL 1h, par plage de dates, plage max 7 jours (borne NeoWs)
+  - `/api/neo?start_date=&end_date=` — TTL 1h (10 min si une source est tombée), par plage de
+    dates, plage max 7 jours
+  - `/api/neo/details?designations=` — TTL 7 jours par objet (1 jour si inconnu)
   - `/api/apod` — TTL 24h
   - `/api/usage` — pas de cache, lecture directe du compteur
 - CORS via `nelmio/cors-bundle` (`config/packages/nelmio_cors.yaml`), restreint à
@@ -45,7 +65,10 @@ formes de réponse, pas ce fichier.
     couleur dérivée de l'indice B-V, taille dérivée de la magnitude — voir
     `docs/agent/gotchas.md` pour regénérer ce fichier)
   - Marqueur ISS animé (poll seulement sur "Mettre à jour", pas de polling automatique)
-  - Points NEO cliquables (raycasting → modal détail ; couleur = dangerosité, taille = diamètre)
+  - Points NEO cliquables (raycasting → modal détail ; couleur = dangerosité, sinon type spectral
+    quand il est connu ; taille = diamètre mesuré si disponible). Le NEO sélectionné affiche sa
+    trajectoire réelle (Horizons) et un schéma d'orbite SVG (`src/orbit.js`) dans la modal.
+  - `src/neoInfo.js` — textes de comparaison des sources et de la fiche, couleurs par taxonomie
   - Badge de quota (`GET /api/usage`)
 
 ## Unity VR (`unity-vr/`, pas commencé)
@@ -73,8 +96,9 @@ scène web à l'identique. Elle consommera le même contrat backend (`backend/AP
 - `DEMO_KEY` (clé par défaut) : 30 req/h, 50 req/jour.
 - Vraie clé `api.nasa.gov` (à générer, gratuite) : 1000 req/h, pas de plafond journalier connu.
 - `wheretheiss.at` (ISS) : pas de quota documenté, non suivi par le compteur.
-- Piste pour sortir du quota NEO (non intégrée) : JPL `cad.api` + IMCCE SsODNet (sans clé) — voir
-  `docs/imcce-ssodnet.md`.
+- JPL (CAD, SBDB, Sentry, Horizons), ESA NEOCC et IMCCE SsODNet : sans clé, hors quota, non
+  comptés par `NasaUsageTracker`. NeoWs reste interrogé pour la comparaison — c'est lui (avec
+  APOD) qui consomme le quota. Voir `docs/neo-jpl-ssodnet.md`.
 - TTLs actuels : ISS 5s · NEO 1h par plage de dates · APOD 24h.
 - Le badge web (`GET /api/usage`) montre les appels réels du jour — c'est la donnée de vérité, pas
   le nombre de clics sur "Mettre à jour" (le cache backend absorbe une partie des clics).
