@@ -114,8 +114,10 @@ Vérifié le 2026-09-17 : **PHP seul suffit**, ni Node, ni Composer, ni serveur 
 2. Copier le dossier `backend/` entier — **`vendor/` inclus** (~29 Mo), c'est lui qui rend Composer
    inutile sur la machine cible. `web/node_modules/` n'a pas à être copié.
 3. Sur la machine cible : installer PHP 8.3+ (sous Windows, le zip officiel « thread safe »
-   décompressé suffit, pas d'installateur), puis lancer depuis `backend/` :
-   `php -S 127.0.0.1:8000 -t public` et ouvrir http://127.0.0.1:8000.
+   décompressé suffit, pas d'installateur), puis **double-cliquer `backend/start-windows.bat`** —
+   il vérifie PHP et `vendor/`, crée `.env` depuis `.env.example` si besoin, ouvre le navigateur et
+   lance le serveur. Équivalent manuel depuis `backend/` : `php -S 127.0.0.1:8000 -t public`.
+   Le script accepte un port et `--no-open` : `start-windows.bat 8010 --no-open`.
 
 Le même processus sert la page, les assets et `/api/*` : même origine, donc pas de CORS.
 

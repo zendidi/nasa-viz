@@ -115,18 +115,24 @@ export function sourcesBlockHtml(neo) {
   const c = neo.comparison
   if (!c) return ''
   const rows = []
+  // JPL is the reference every other source is compared against — without it
+  // there is nothing to compare, so the other rows must not claim agreement.
+  const hasJpl = c.jpl_cad.status === 'found'
 
   rows.push(
-    c.jpl_cad.status === 'found'
+    hasJpl
       ? '<li><strong>JPL CAD</strong> ✓ <span class="muted">référence</span></li>'
       : `<li><strong>JPL CAD</strong> ${escapeHtml(absenceText('jpl_cad', c.jpl_cad))}</li>`,
   )
 
   if (c.nasa_neows.status === 'found') {
     const mismatches = c.nasa_neows.mismatches ?? []
-    rows.push(
-      `<li><strong>NASA NeoWs</strong> ✓${mismatches.length ? ` — écart sur ${mismatches.map((m) => escapeHtml(m.field)).join(', ')}` : ' <span class="muted">identique à JPL</span>'}</li>`,
-    )
+    const comment = !hasJpl
+      ? ' <span class="muted">seule source à lister cet objet ici</span>'
+      : mismatches.length
+        ? ` — écart sur ${mismatches.map((m) => escapeHtml(m.field)).join(', ')}`
+        : ' <span class="muted">identique à JPL</span>'
+    rows.push(`<li><strong>NASA NeoWs</strong> ✓${comment}</li>`)
   } else {
     rows.push(`<li><strong>NASA NeoWs</strong> ${escapeHtml(absenceText('nasa_neows', c.nasa_neows))}</li>`)
   }
@@ -139,7 +145,9 @@ export function sourcesBlockHtml(neo) {
       <span class="${esa.within_jpl_uncertainty ? 'muted' : 'warn'}">(${esa.within_jpl_uncertainty ? 'dans' : 'hors de'} la marge JPL ± ${km(esa.jpl_uncertainty_km)} km)</span>
       ${esa.date_diff_days ? `<span class="warn">· date décalée de ${esa.date_diff_days} j</span>` : ''}</li>`)
   } else if (esa.status === 'found') {
-    rows.push('<li><strong>ESA NEOCC</strong> ✓</li>')
+    rows.push(
+      `<li><strong>ESA NEOCC</strong> ✓${hasJpl ? '' : ' <span class="muted">(pas de valeur JPL à comparer)</span>'}</li>`,
+    )
   } else {
     rows.push(`<li><strong>ESA NEOCC</strong> ${escapeHtml(absenceText('esa_neocc', esa))}</li>`)
   }
@@ -153,7 +161,11 @@ export function sourcesBlockHtml(neo) {
     }
   }
 
-  return `<h3>Sources</h3><ul class="neo-sources">${rows.join('')}</ul>`
+  const note = hasJpl
+    ? ''
+    : '<p class="muted">JPL est la source de référence : sans elle, les écarts ne sont pas calculés pour cet objet.</p>'
+
+  return `<h3>Sources</h3><ul class="neo-sources">${rows.join('')}</ul>${note}`
 }
 
 const fmt = (value, digits = 2) => value.toLocaleString('fr-FR', { maximumFractionDigits: digits })
