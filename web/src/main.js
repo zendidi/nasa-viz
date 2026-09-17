@@ -1166,9 +1166,17 @@ style.textContent = `
 `
 document.head.appendChild(style)
 
-function formatUpdatedAt(fetchedAt) {
+/**
+ * `withDate` for data that can sit in the cache for days (NEO feed, APOD) —
+ * the ISS is refreshed every minute, its date would just be noise.
+ */
+function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
   if (!fetchedAt) return ''
-  return `<p class="muted">maj ${new Date(fetchedAt).toLocaleTimeString('fr-FR')}</p>`
+  const at = new Date(fetchedAt)
+  const stamp = withDate
+    ? at.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+    : at.toLocaleTimeString('fr-FR')
+  return `<p class="muted">maj ${stamp}</p>`
 }
 
 function renderIssPanel(position, error, fetchedAt) {
@@ -1202,7 +1210,7 @@ function renderNeoPanel(feed, error, fetchedAt) {
     ${sourcesPanelHtml(feed)}
     <p id="neo-positions-status" class="muted"></p>
     ${neoLegendHtml()}
-    ${formatUpdatedAt(fetchedAt)}
+    ${formatUpdatedAt(fetchedAt, { withDate: true })}
   `
   renderNeoPositionsStatus()
 }
@@ -1283,7 +1291,7 @@ function renderApodPanel(apod, error, fetchedAt) {
     <h2>Image du jour (APOD)</h2>
     <p class="apod-title">${apod.title}</p>
     ${preview}
-    ${formatUpdatedAt(fetchedAt)}
+    ${formatUpdatedAt(fetchedAt, { withDate: true })}
   `
 }
 
