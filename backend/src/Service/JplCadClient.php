@@ -95,12 +95,23 @@ final class JplCadClient
      * CAD answers {fields: [...], data: [[...], ...]} — rows are read by field
      * name, not position, so an added column can't shift values.
      *
+     * A query matching nothing answers {signature, count: 0} instead, with no
+     * "fields" and no "data" at all. That's an empty list, not a broken answer:
+     * the PHA-filtered call hits it on any day without a single potentially
+     * hazardous approach (2026-09-18, for one), and treating it as a failure
+     * used to drop the whole JPL CAD source — the feed's reference — leaving
+     * the merge to fall back on NeoWs.
+     *
      * @return list<array<string, ?string>>
      */
     private static function rows(ResponseInterface $response): array
     {
         $data = $response->toArray();
         if (!isset($data['fields'])) {
+            if (0 === (int) ($data['count'] ?? 0)) {
+                return [];
+            }
+
             throw new \UnexpectedValueException('CAD answer without "fields": '.substr(json_encode($data), 0, 200));
         }
 

@@ -59,6 +59,39 @@ final class JplCadClientTest extends TestCase
         self::assertEqualsWithDelta(8.515158e-07, $rows['(1979 XB)']['impact_probability'], 1e-12);
     }
 
+    /**
+     * A day without a single PHA approach: cad.api answers 200 with only
+     * {signature, count: 0}. Nothing is wrong — every approach is simply
+     * non-PHA — so the source must stay usable (regression, 2026-09-18).
+     */
+    public function testEmptyPhaResultKeepsTheSourceUsable(): void
+    {
+        $http = new MockHttpClient(static fn (string $method, string $url) => new MockResponse(
+            str_contains($url, 'pha=true')
+                ? '{"signature":{"source":"NASA/JPL SBDB Close Approach Data API","version":"1.5"},"count":0}'
+                : file_get_contents(self::FIXTURES.'cad_all.json'),
+        ));
+        $client = new JplCadClient($http, 'https://jpl.test');
+
+        $approaches = ($client->requestApproaches(new \DateTimeImmutable('2026-09-17'), new \DateTimeImmutable('2026-09-18')))();
+
+        self::assertCount(25, $approaches);
+        self::assertSame([], array_filter(array_column($approaches, 'is_pha')));
+    }
+
+    /** A non-empty answer that really is missing "fields" is still a failure. */
+    public function testMalformedAnswerStillFails(): void
+    {
+        $client = new JplCadClient(
+            new MockHttpClient(static fn () => new MockResponse('{"count":3}')),
+            'https://jpl.test',
+        );
+        $resolve = $client->requestApproaches(new \DateTimeImmutable('2026-09-17'), new \DateTimeImmutable('2026-09-17'));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $resolve();
+    }
+
     public function testHttpErrorSurfacesWhenCollected(): void
     {
         $client = new JplCadClient(new MockHttpClient(static fn () => new MockResponse('{"message":"bad"}', ['http_code' => 400])), 'https://jpl.test');
