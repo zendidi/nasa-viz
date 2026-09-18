@@ -68,6 +68,11 @@ formes de réponse, pas ce fichier.
   - Points NEO cliquables (raycasting → modal détail ; couleur = dangerosité, sinon type spectral
     quand il est connu ; taille = diamètre mesuré si disponible). Le NEO sélectionné affiche sa
     trajectoire réelle (Horizons) et un schéma d'orbite SVG (`src/orbit.js`) dans la modal.
+  - `src/scale.js` — modèle d'échelle « lisible → réel » (slider 9 crans), une courbe de
+    compression par corps pivot (`docs/echelle-reelle.md`)
+  - `src/focus.js` — point de vue : quel corps est au centre de la scène (Terre, Soleil ; le pivot
+    est l'origine, tout le reste est placé relativement). En vue héliocentrée, le NEO sélectionné
+    voit son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
   - `src/neoInfo.js` — textes de comparaison des sources et de la fiche, couleurs par taxonomie
   - Badge de quota (`GET /api/usage`)
 

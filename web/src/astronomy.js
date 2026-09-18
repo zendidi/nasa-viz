@@ -7,6 +7,8 @@
  * the same helper already used for star placement (RA/dec).
  */
 
+import { AU_KM } from './scale.js'
+
 const J2000 = Date.UTC(2000, 0, 1, 12, 0, 0) // 2000-01-01T12:00:00Z
 const DAY_MS = 86400000
 const DEG = 180 / Math.PI
@@ -20,7 +22,13 @@ function normalizeDeg(deg) {
   return ((deg % 360) + 360) % 360
 }
 
-/** @returns {{ra: number, dec: number}} in degrees */
+/**
+ * Geocentric Sun. The distance (Astronomical Almanac's low-precision series,
+ * ~0.0001 au) matters as soon as the scene can be centred on the Sun: the whole
+ * heliocentric layout is built from `NEO_geocentric − Sun_geocentric`.
+ *
+ * @returns {{ra: number, dec: number, distanceKm: number}} angles in degrees
+ */
 export function getSunEquatorial(date = new Date()) {
   const n = daysSinceJ2000(date)
 
@@ -33,8 +41,9 @@ export function getSunEquatorial(date = new Date()) {
   const dec = Math.asin(Math.sin(obliquity) * Math.sin(eclipticLongitude)) * DEG
   const ra =
     Math.atan2(Math.cos(obliquity) * Math.sin(eclipticLongitude), Math.cos(eclipticLongitude)) * DEG
+  const distanceAu = 1.00014 - 0.01671 * Math.cos(meanAnomaly) - 0.00014 * Math.cos(2 * meanAnomaly)
 
-  return { ra: normalizeDeg(ra), dec }
+  return { ra: normalizeDeg(ra), dec, distanceKm: distanceAu * AU_KM }
 }
 
 /**

@@ -66,8 +66,41 @@ export function orbitPosition(orbit, jd) {
   return positionAtEccentricAnomaly(orbit, solveKepler(wrapped, orbit.e))
 }
 
-function sampleOrbit(orbit, count = 180) {
+/**
+ * One full revolution, sampled evenly in eccentric anomaly (so an eccentric
+ * orbit gets more samples where it curves fastest, near perihelion).
+ * Heliocentric ecliptic au. Used by the SVG schematic below and by the 3D
+ * heliocentric trace in main.js.
+ */
+export function sampleOrbit(orbit, count = 180) {
   return Array.from({ length: count + 1 }, (_, i) => positionAtEccentricAnomaly(orbit, (i / count) * 2 * Math.PI))
+}
+
+/** The same orbit over a window of dates, evenly in time. Heliocentric ecliptic au. */
+export function sampleOrbitBetween(orbit, jdFrom, jdTo, count = 120) {
+  return Array.from({ length: count + 1 }, (_, i) => orbitPosition(orbit, jdFrom + ((jdTo - jdFrom) * i) / count))
+}
+
+/** Closest and furthest points from the Sun (E = 0 and E = π). */
+export function orbitApsides(orbit) {
+  return {
+    perihelion: positionAtEccentricAnomaly(orbit, 0),
+    aphelion: positionAtEccentricAnomaly(orbit, Math.PI),
+  }
+}
+
+/**
+ * Where the orbit crosses the ecliptic plane: the argument of latitude
+ * ω + ν is 0 going up, π going down — hence ν = −ω and ν = π − ω, converted
+ * to the eccentric anomaly the sampler works in.
+ */
+export function orbitNodes(orbit) {
+  const atNode = (trueAnomaly) => {
+    const halfE = Math.atan(Math.sqrt((1 - orbit.e) / (1 + orbit.e)) * Math.tan(trueAnomaly / 2))
+    return positionAtEccentricAnomaly(orbit, 2 * halfE)
+  }
+  const peri = orbit.peri_deg * RAD
+  return { ascending: atNode(-peri), descending: atNode(Math.PI - peri) }
 }
 
 const fmt = (value, digits) => value.toLocaleString('fr-FR', { maximumFractionDigits: digits })

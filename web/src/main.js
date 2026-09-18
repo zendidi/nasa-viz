@@ -3,7 +3,16 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchNeoPositions, fetchNeoDetails, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
 import { getSunEquatorial, getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
-import { orbitSchematicSvg } from './orbit.js'
+import {
+  orbitSchematicSvg,
+  sampleOrbit,
+  sampleOrbitBetween,
+  orbitApsides,
+  orbitNodes,
+  orbitPosition,
+  julianDate,
+} from './orbit.js'
+import { FOCUSES, FOCUS_IDS } from './focus.js'
 import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
@@ -18,6 +27,7 @@ import {
   detailsBlockHtml,
 } from './neoInfo.js'
 import {
+  AU_KM,
   EARTH_RADIUS,
   KM_TO_UNITS,
   LUNAR_DISTANCE_KM,
@@ -28,10 +38,11 @@ import {
   SCALE_PRESETS,
   lerpLog,
   sceneDistance,
+  sceneDistanceToKm,
+  earthSystemScale,
   issOrbitRadius,
   issRadius,
   neoRadius,
-  sunDistance,
   sunRadius,
   worldPerPixel,
   describeScale,
@@ -50,8 +61,6 @@ const MOON_RADIUS = MOON_RADIUS_KM * KM_TO_UNITS
 const MIN_RADIUS_PX = { earth: 2, moon: 1.5, iss: 2.5, neo: 2.5, sun: 3 }
 const NEO_HIT_MIN_RADIUS_PX = 8
 
-// Reference circles, in lunar distances — see makeDistanceRings().
-const RING_LUNAR_DISTANCES = [1, 10, 100]
 const OBLIQUITY_RAD = (23.439 * Math.PI) / 180
 
 const app = document.getElementById('app')
@@ -149,8 +158,13 @@ scene.add(moon)
 const neoGroup = new THREE.Group()
 scene.add(neoGroup)
 
-const distanceRings = makeDistanceRings()
-scene.add(distanceRings.group)
+// Unit circles are drawn in XZ (normal +Y); rotating the group by the obliquity
+// about X turns that normal into the ecliptic pole in scene axes, (0, cos ε, sin ε).
+const distanceRingsGroup = new THREE.Group()
+distanceRingsGroup.rotation.x = OBLIQUITY_RAD
+scene.add(distanceRingsGroup)
+/** @type {{line: THREE.LineLoop, distanceKm: number, label: string}[]} */
+let distanceRings = []
 
 // --- astronomy (real Sun/Moon positions) --------------------------------------
 
@@ -167,12 +181,21 @@ scene.add(distanceRings.group)
 const sunDirWorld = new THREE.Vector3()
 const moonDirWorld = new THREE.Vector3()
 let moonDistanceKm = LUNAR_DISTANCE_KM
+let sunDistanceKm = AU_KM
+
+// Geocentric positions in km, scene axes — the common frame every placement
+// goes through, whichever body the scene is centred on (see placeKm()).
+const sunPositionKm = new THREE.Vector3()
+const moonPositionKm = new THREE.Vector3()
+const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)
 
 function updateAstronomy() {
   const now = new Date()
 
-  const { ra, dec } = getSunEquatorial(now)
+  const { ra, dec, distanceKm } = getSunEquatorial(now)
   sunDirWorld.copy(latLngToVector3(dec, ra, 1))
+  sunDistanceKm = distanceKm
+  sunPositionKm.copy(sunDirWorld).multiplyScalar(sunDistanceKm)
   sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
   // The globe shader reads sunDirection in world space and does its own
   // modelMatrix transform per-fragment, so the globe's real rotation (set
@@ -185,11 +208,47 @@ function updateAstronomy() {
   const moonPos = getMoonEquatorial(now)
   moonDirWorld.copy(latLngToVector3(moonPos.dec, moonPos.ra, 1))
   moonDistanceKm = moonPos.distanceKm
+  moonPositionKm.copy(moonDirWorld).multiplyScalar(moonDistanceKm)
+}
+
+// --- point de vue (le corps au centre de la scène) ----------------------------
+//
+// The pivot IS the scene's origin: nothing is drawn at an absolute position,
+// everything goes through placeKm() below. Switching pivot therefore only
+// changes two things — which position is subtracted, and which readable curve
+// compresses what's left (docs/points-de-vue.md).
+
+let focusId = 'earth'
+const focusOf = () => FOCUSES[focusId]
+const focusPositionKm = () => (focusId === 'sun' ? sunPositionKm : EARTH_POSITION_KM)
+/** The pivot's own radius in scene units — what the camera must not enter. */
+const focusRadius = (t) => (focusId === 'sun' ? sunRadius(t, true) : EARTH_RADIUS)
+
+const placeRelative = new THREE.Vector3()
+
+/** Scene position of a body known by its geocentric km vector, at scale t. */
+function placeKm(out, geocentricKm, t) {
+  placeRelative.subVectors(geocentricKm, focusPositionKm())
+  const distanceKm = placeRelative.length()
+  if (distanceKm < 1e-6) return out.set(0, 0, 0)
+  return out.copy(placeRelative).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
+}
+
+/** Same, for a sample already expressed relative to the pivot (orbit traces). */
+function placeRelativeKm(out, relativeKm, t) {
+  const distanceKm = relativeKm.length()
+  if (distanceKm < 1e-6) return out.set(0, 0, 0)
+  return out.copy(relativeKm).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
 }
 
 updateAstronomy()
-// Real drift is slow (~1°/day for the Sun, ~0.5°/h for the Moon) — no need to recompute every frame.
-setInterval(updateAstronomy, 60_000)
+// Real drift is slow (~1°/day for the Sun, ~0.5°/h for the Moon) — no need to
+// recompute every frame. The drawn orbits are re-sampled with it so their first
+// sample stays the body's current position (rebuildBodyOrbits()).
+setInterval(() => {
+  updateAstronomy()
+  rebuildBodyOrbits()
+}, 60_000)
 
 // --- geo helpers -----------------------------------------------------------
 
@@ -411,32 +470,30 @@ function makeMoon() {
 }
 
 /**
- * Reference circles at 1, 10 and 100 lunar distances, in the ecliptic plane
- * (the Moon's orbit is within ~5° of it). Hidden in the readable layout, where
- * distances aren't proportional anyway; each is a unit circle scaled to its
- * scene distance per frame, so the 1 px line stays crisp at any scale.
+ * Reference circles around the pivot, in the ecliptic plane (the Moon's orbit
+ * is within ~5° of it): lunar distances around the Earth, astronomical units
+ * around the Sun — whichever the current point of view defines (focus.js).
+ * Hidden in the readable layout, where distances aren't proportional anyway;
+ * each is a unit circle scaled to its scene distance per frame, so the 1 px
+ * line stays crisp at any scale.
  */
-function makeDistanceRings() {
-  const group = new THREE.Group()
-  // Unit circle is drawn in XZ (normal +Y); rotating it by the obliquity about
-  // X turns that normal into the ecliptic pole in scene axes, (0, cos ε, sin ε).
-  group.rotation.x = OBLIQUITY_RAD
-
+const ringGeometry = (() => {
   const points = []
   for (let i = 0; i < 256; i++) {
     const a = (i / 256) * Math.PI * 2
     points.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)))
   }
-  const geometry = new THREE.BufferGeometry().setFromPoints(points)
-  const material = new THREE.LineBasicMaterial({ color: 0x4fa8ff, transparent: true, opacity: 0.3, depthWrite: false })
+  return new THREE.BufferGeometry().setFromPoints(points)
+})()
+const ringMaterial = new THREE.LineBasicMaterial({ color: 0x4fa8ff, transparent: true, opacity: 0.3, depthWrite: false })
 
-  const rings = RING_LUNAR_DISTANCES.map((lunarDistances) => {
-    const line = new THREE.LineLoop(geometry, material)
-    group.add(line)
-    return { line, distanceKm: lunarDistances * LUNAR_DISTANCE_KM, lunarDistances }
+function makeDistanceRings(specs) {
+  distanceRingsGroup.clear()
+  return specs.map(({ km, label }) => {
+    const line = new THREE.LineLoop(ringGeometry, ringMaterial)
+    distanceRingsGroup.add(line)
+    return { line, distanceKm: km, label }
   })
-
-  return { group, rings }
 }
 
 const STAR_SHELL_RADIUS = 80
@@ -824,7 +881,9 @@ function buildTrajectory(table) {
 const trajectorySample = new THREE.Vector3()
 
 function updateTrajectory(nowSeconds, t) {
-  const table = selectedEntry ? neoPositions.objects[selectedEntry.designation] : null
+  // Geocentric path only makes sense centred on the Earth; the heliocentric
+  // view draws the whole orbit instead (docs/points-de-vue.md).
+  const table = selectedEntry && focusId === 'earth' ? neoPositions.objects[selectedEntry.designation] : null
   if (!table || table.positions.length < 2) {
     trajectoryLine.visible = false
     approachMarker.visible = false
@@ -839,8 +898,7 @@ function updateTrajectory(nowSeconds, t) {
 
   for (let i = 0; i < positions.count; i++) {
     trajectorySample.fromArray(trajectoryKm, i * 3)
-    const distanceKm = trajectorySample.length()
-    trajectorySample.multiplyScalar(sceneDistance(distanceKm, t) / distanceKm)
+    placeKm(trajectorySample, trajectorySample, t)
     positions.setXYZ(i, trajectorySample.x, trajectorySample.y, trajectorySample.z)
     const dim = i < nowIndex ? TRAJECTORY_PAST_DIM : 1
     colors.setXYZ(i, r * dim, g * dim, b * dim)
@@ -863,11 +921,270 @@ function updateTrajectory(nowSeconds, t) {
 /** Human summary of the drawn path, for the modal. */
 function describeTrajectory(entry) {
   const table = neoPositions.objects[entry.designation]
-  if (!table || table.positions.length < 2) return ''
+  if (focusId !== 'earth' || !table || table.positions.length < 2) return ''
   const closestAt = new Date((table.start + trajectoryClosestIndex * neoPositions.stepSeconds) * 1000)
   return `<p class="muted">Trajectoire réelle tracée dans la scène (JPL Horizons) — passé atténué, cercle = passage au plus près${
     entry === selectedEntry ? ` le ${closestAt.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ''
   }.</p>`
+}
+
+// --- selected NEO: its whole heliocentric orbit (vue héliocentrée only) ---------
+//
+// Kepler ellipse from the SBDB elements /api/neo/details already caches (no
+// extra request, no quota): the full revolution in a neutral cyan — solid above
+// the ecliptic, stitch-dashed below, the same convention as the SVG schematic
+// in the modal — the Earth's orbit as the yardstick, a ±30-day arc around the
+// close approach in the NEO's own colour, and perihelion/aphelion/node markers.
+// Samples are kept heliocentric in km, scene axes, then pushed through the very
+// same compression as every body each frame, so the trace follows the slider
+// and always passes through the NEO's own point.
+
+const ORBIT_SAMPLES = 360
+const ORBIT_ARC_DAYS = 30
+const ORBIT_ARC_SAMPLES = 120
+const ORBIT_COLOR = 0x7fe0ff
+const ORBIT_DASH_STRIDE = 2 // below the ecliptic: one segment drawn out of this many
+const ORBIT_MARKER_PX = 4
+
+const heliocentricGroup = new THREE.Group()
+heliocentricGroup.visible = false
+scene.add(heliocentricGroup)
+
+/**
+ * @typedef {{
+ *   line: THREE.LineSegments, km: Float32Array|null, pairs: Int32Array|null,
+ *   relativeToPivot: boolean,
+ * }} OrbitTrace
+ *
+ * `relativeToPivot` says how the stored samples are expressed: heliocentric
+ * traces are already relative to the Sun (the pivot that draws them), the Moon's
+ * is geocentric like every body position, and goes through placeKm().
+ */
+
+/** @returns {OrbitTrace} */
+function makeOrbitTrace(color, opacity, { parent = heliocentricGroup, relativeToPivot = true } = {}) {
+  const line = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false }),
+  )
+  line.frustumCulled = false // vertices move every frame; the bounding sphere would be stale
+  parent.add(line)
+  return { line, km: null, pairs: null, relativeToPivot }
+}
+
+const orbitAbove = makeOrbitTrace(ORBIT_COLOR, 0.8)
+const orbitBelow = makeOrbitTrace(ORBIT_COLOR, 0.55)
+const orbitArc = makeOrbitTrace(0xffffff, 1) // recoloured with the NEO
+// Straight in the scene, not in the group: it is the heliocentric view's own
+// yardstick (and its 1 au circle), worth drawing even with nothing selected.
+const earthOrbitTrace = makeOrbitTrace(0x4fa8ff, 0.5, { parent: scene })
+const moonOrbitTrace = makeOrbitTrace(0x8ea3b8, 0.5, { parent: scene, relativeToPivot: false })
+
+function makeOrbitMarker(color, filled) {
+  const mesh = new THREE.Mesh(
+    filled ? new THREE.SphereGeometry(1, 12, 12) : new THREE.RingGeometry(0.7, 1, 24),
+    new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }),
+  )
+  mesh.visible = false
+  heliocentricGroup.add(mesh)
+  return mesh
+}
+
+const orbitMarkers = {
+  perihelion: makeOrbitMarker(0xffcc33, true),
+  aphelion: makeOrbitMarker(0x9fd2ff, true),
+  ascending: makeOrbitMarker(ORBIT_COLOR, false),
+  descending: makeOrbitMarker(ORBIT_COLOR, false),
+}
+
+/**
+ * Heliocentric ecliptic au → km in scene axes: rotate about X by the obliquity
+ * (ecliptic → equatorial), then the usual ICRF → scene mapping.
+ */
+function eclipticAuToSceneKm(p, out) {
+  const yEq = p.y * Math.cos(OBLIQUITY_RAD) - p.z * Math.sin(OBLIQUITY_RAD)
+  const zEq = p.y * Math.sin(OBLIQUITY_RAD) + p.z * Math.cos(OBLIQUITY_RAD)
+  return icrfToScene(p.x * AU_KM, yEq * AU_KM, zEq * AU_KM, out)
+}
+
+/**
+ * Fills a trace from ecliptic-au samples. `keepSegment(i)` decides whether the
+ * segment starting at sample i is drawn — that's how the below-ecliptic dashes
+ * and the two halves of the ellipse are cut, without ever leaving a gap: every
+ * consecutive pair belongs to exactly one of the two traces.
+ */
+const orbitScratch = new THREE.Vector3()
+
+/** Samples already in km, scene axes (a body's own path). */
+function setOrbitTraceKm(trace, pointsKm, keepSegment) {
+  const pairs = []
+  for (let i = 0; i + 1 < pointsKm.length; i++) {
+    if (keepSegment(i)) pairs.push(i, i + 1)
+  }
+  const km = new Float32Array(pointsKm.length * 3)
+  pointsKm.forEach((p, i) => km.set([p.x, p.y, p.z], i * 3))
+
+  trace.km = km
+  trace.pairs = Int32Array.from(pairs)
+  trace.line.geometry.dispose()
+  trace.line.geometry = new THREE.BufferGeometry()
+  trace.line.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pairs.length * 3), 3))
+}
+
+/** Samples in heliocentric ecliptic au (orbital elements). */
+function setOrbitTrace(trace, pointsAu, keepSegment) {
+  setOrbitTraceKm(
+    trace,
+    pointsAu.map((p) => eclipticAuToSceneKm(p, new THREE.Vector3())),
+    keepSegment,
+  )
+}
+
+function updateOrbitTrace(trace, t) {
+  if (!trace.km || trace.pairs.length === 0) {
+    trace.line.visible = false
+    return
+  }
+  const place = trace.relativeToPivot ? placeRelativeKm : placeKm
+  const positions = trace.line.geometry.getAttribute('position')
+  for (let i = 0; i < trace.pairs.length; i++) {
+    orbitScratch.fromArray(trace.km, trace.pairs[i] * 3)
+    place(orbitScratch, orbitScratch, t)
+    positions.setXYZ(i, orbitScratch.x, orbitScratch.y, orbitScratch.z)
+  }
+  positions.needsUpdate = true
+  trace.line.visible = true
+}
+
+// --- orbits of the bodies the scene places itself (Moon, Earth) -----------------
+//
+// Drawn from the very series that places the body, never from a neighbouring
+// model: a line that doesn't pass through its own body is worse than no line.
+// The fixed 384 400 km reference circle used to miss the Moon by 1 scene unit
+// (it ignores both the 5 % apogee/perigee swing and the orbit's 5° tilt to the
+// ecliptic), and the Earth's Kepler ellipse misses the globe by ~945 000 km.
+// Sampling starts at "now", so sample 0 *is* the body — the trace goes through
+// it by construction, at every scale and in both views.
+
+const MOON_ORBIT_DAYS = 27.321582 // sidereal month
+const MOON_ORBIT_SAMPLES = 96
+const EARTH_ORBIT_DAYS = 365.256
+const EARTH_ORBIT_SAMPLES = 180
+const DAY_MS = 86_400_000
+
+function sampleBodyOrbit(count, days, positionAt) {
+  return Array.from({ length: count + 1 }, (_, i) =>
+    positionAt(new Date(Date.now() + (i / count) * days * DAY_MS)),
+  )
+}
+
+function rebuildBodyOrbits() {
+  setOrbitTraceKm(
+    moonOrbitTrace,
+    sampleBodyOrbit(MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) => {
+      const { ra, dec, distanceKm } = getMoonEquatorial(date)
+      return latLngToVector3(dec, ra, distanceKm)
+    }),
+    () => true,
+  )
+  setOrbitTraceKm(
+    earthOrbitTrace,
+    sampleBodyOrbit(EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) => {
+      // The Earth seen from the Sun is the Sun seen from the Earth, negated —
+      // the same vector the globe is placed from.
+      const { ra, dec, distanceKm } = getSunEquatorial(date)
+      return latLngToVector3(dec, ra, distanceKm).negate()
+    }),
+    () => true,
+  )
+}
+
+rebuildBodyOrbits()
+
+/** Each is meaningless from the other pivot: the Moon's collapses onto the Earth, and vice versa. */
+function updateBodyOrbits(t) {
+  if (focusId === 'earth') updateOrbitTrace(moonOrbitTrace, t)
+  else moonOrbitTrace.line.visible = false
+
+  if (focusId === 'sun') updateOrbitTrace(earthOrbitTrace, t)
+  else earthOrbitTrace.line.visible = false
+}
+
+// The elements the drawn orbit was built from, so a NEO selected before its
+// sheet arrived gets its trace as soon as /api/neo/details answers.
+let orbitBuiltFrom = null
+let orbitApproachKm = null // the approach point, km, scene axes — null if unknown
+
+/** Elements of the selected NEO, or null while its sheet is missing. */
+function selectedOrbitElements() {
+  const orbit = selectedEntry ? neoDetails[selectedEntry.designation]?.data?.orbit : null
+  return orbit && orbit.e >= 0 && orbit.e < 1 && orbit.a_au > 0 ? orbit : null
+}
+
+function buildHeliocentricOrbit(orbit) {
+  const points = sampleOrbit(orbit, ORBIT_SAMPLES)
+  setOrbitTrace(orbitAbove, points, (i) => points[i].z >= 0)
+  setOrbitTrace(orbitBelow, points, (i) => points[i].z < 0 && i % ORBIT_DASH_STRIDE === 0)
+
+  // Arc around the close approach — clamped so a short-period object doesn't
+  // get an "arc" wrapping its whole orbit twice.
+  const approach = selectedEntry.neo.close_approach
+  const approachAt = approach ? new Date(approach.datetime ?? `${approach.date}T12:00Z`) : null
+  if (approachAt && !Number.isNaN(approachAt.getTime())) {
+    const jd = julianDate(approachAt)
+    const halfWindow = Math.min(ORBIT_ARC_DAYS, (orbit.period_days ?? 4 * ORBIT_ARC_DAYS) / 4)
+    setOrbitTrace(orbitArc, sampleOrbitBetween(orbit, jd - halfWindow, jd + halfWindow, ORBIT_ARC_SAMPLES), () => true)
+    orbitApproachKm = eclipticAuToSceneKm(orbitPosition(orbit, jd), new THREE.Vector3())
+  } else {
+    setOrbitTrace(orbitArc, [], () => false)
+    orbitApproachKm = null
+  }
+
+  const { perihelion, aphelion } = orbitApsides(orbit)
+  const { ascending, descending } = orbitNodes(orbit)
+  for (const [key, point] of Object.entries({ perihelion, aphelion, ascending, descending })) {
+    orbitMarkers[key].userData.km = eclipticAuToSceneKm(point, new THREE.Vector3())
+  }
+
+  orbitArc.line.material.color.copy(selectedEntry.mesh.material.color)
+  orbitBuiltFrom = orbit
+}
+
+function updateHeliocentricOrbit(nowSeconds, t) {
+  const orbit = focusId === 'sun' ? selectedOrbitElements() : null
+  heliocentricGroup.visible = orbit !== null
+  if (!orbit) {
+    orbitBuiltFrom = null
+    return
+  }
+  if (orbit !== orbitBuiltFrom) buildHeliocentricOrbit(orbit)
+
+  for (const trace of [orbitAbove, orbitBelow, orbitArc]) updateOrbitTrace(trace, t)
+
+  for (const mesh of Object.values(orbitMarkers)) {
+    placeRelativeKm(mesh.position, mesh.userData.km, t)
+    mesh.quaternion.copy(camera.quaternion) // billboard, like the approach ring
+    mesh.scale.setScalar(minRadiusAt(mesh.position, ORBIT_MARKER_PX))
+    mesh.visible = true
+  }
+
+  if (orbitApproachKm) {
+    placeRelativeKm(approachMarker.position, orbitApproachKm, t)
+    approachMarker.quaternion.copy(camera.quaternion)
+    approachMarker.scale.setScalar(
+      Math.max(selectedEntry.mesh.scale.x * APPROACH_MARKER_NEO_FACTOR, minRadiusAt(approachMarker.position, APPROACH_MARKER_MIN_PX)),
+    )
+    approachMarker.visible = true
+  }
+}
+
+/** Human summary of the heliocentric trace, for the modal. */
+function describeHeliocentricOrbit(entry) {
+  if (focusId !== 'sun') return ''
+  const orbit = entry === selectedEntry ? selectedOrbitElements() : null
+  if (!orbit) return ''
+  return `<p class="muted">Orbite complète tracée dans la scène (képlérienne, éléments JPL SBDB) —
+    trait plein au-dessus de l'écliptique, pointillé en dessous, arc vif = ±${ORBIT_ARC_DAYS} jours autour de l'approche.</p>`
 }
 
 // --- ISS -------------------------------------------------------------------------
@@ -894,14 +1211,20 @@ function setScaleStep(step) {
   renderScalePanel()
 }
 
+/** NEO distances from the current pivot — what the scale label and the camera anchors quote. */
 function neoDistancesKm() {
   const nowSeconds = Date.now() / 1000
   const distances = []
   for (const entry of neoEntries) {
     updateNeoPositionKm(entry, nowSeconds)
-    if (entry.source) distances.push(entry.positionKm.length())
+    if (entry.source) distances.push(entry.positionKm.distanceTo(focusPositionKm()))
   }
   return distances
+}
+
+/** The pivot's yardsticks, at their real current distance. */
+function focusReferences() {
+  return focusId === 'sun' ? [{ label: 'Terre', km: sunDistanceKm }] : [{ label: 'Lune', km: moonDistanceKm }]
 }
 
 function medianOf(values) {
@@ -918,11 +1241,12 @@ function medianOf(values) {
 function cameraAnchors(tFrom, tTo, neoMedianKm) {
   const from = [controls.minDistance]
   const to = [controls.minDistance]
-  const candidates = [moonDistanceKm]
+  const curve = focusOf().curve
+  const candidates = focusReferences().map((reference) => reference.km)
   if (neoMedianKm !== null) candidates.push(neoMedianKm)
   for (const km of candidates) {
-    const a = sceneDistance(km, tFrom)
-    const b = sceneDistance(km, tTo)
+    const a = sceneDistance(km, tFrom, curve)
+    const b = sceneDistance(km, tTo, curve)
     if (a > from[from.length - 1] && b > to[to.length - 1]) {
       from.push(a)
       to.push(b)
@@ -950,15 +1274,86 @@ function stepScaleTransition(nowMs) {
 
 /** Zoom range follows how far the scene extends at the current scale. */
 function updateCameraLimits() {
-  let farthest = sceneDistance(moonDistanceKm, scaleT)
-  for (const entry of neoEntries) {
-    if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.length(), scaleT))
+  const curve = focusOf().curve
+  let farthest = 0
+  for (const reference of focusReferences()) {
+    farthest = Math.max(farthest, sceneDistance(reference.km, scaleT, curve))
   }
-  controls.minDistance = lerpLog(3.5, 2.6, scaleT)
+  for (const entry of neoEntries) {
+    if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+  }
+  // The drawn orbit is part of the scene's extent: you must be able to pull
+  // back far enough to see the whole ellipse, aphelion included.
+  if (heliocentricGroup.visible) {
+    farthest = Math.max(farthest, orbitMarkers.aphelion.position.length())
+  }
+  // The pivot is the anchor: never let the camera dive inside it (the Sun at
+  // true scale is 218 units across, where the Earth is 2).
+  controls.minDistance = focusRadius(scaleT) * lerpLog(1.75, 1.3, scaleT)
   controls.maxDistance = Math.max(20, farthest * 2.5)
   // OrbitControls' dolly is multiplicative (×0.95 per wheel notch at speed 1):
   // spanning 2.6 → ~60 000 would take ~190 notches without this.
   controls.zoomSpeed = Math.max(1, Math.log(controls.maxDistance / controls.minDistance) / 3)
+}
+
+// --- changer de point de vue ------------------------------------------------------
+
+const focusOffset = new THREE.Vector3()
+
+/**
+ * Switching pivot re-places the whole scene at once — interpolating between two
+ * different compressions would mean nothing visually — but the camera keeps its
+ * direction and the same *physical* framing: its distance is read back as a real
+ * distance through the old curve, then re-compressed with the new one.
+ */
+function setFocus(nextId) {
+  if (nextId === focusId || !FOCUSES[nextId]) return
+
+  focusOffset.subVectors(camera.position, controls.target)
+  const framedKm = sceneDistanceToKm(focusOffset.length(), scaleT, focusOf().curve)
+
+  focusId = nextId
+  recenterTween = null
+  distanceRings = makeDistanceRings(focusOf().rings)
+  rebuildRingLabels()
+  orbitBuiltFrom = null
+
+  controls.target.set(0, 0, 0)
+  updateCameraLimits()
+  // Same physical distance — but bounded so the switch always lands on
+  // something worth looking at: hugging the Earth at 130 000 km is *inside*
+  // the Sun (radius 696 000 km), and framing the NEO cloud from the Earth is
+  // a pinhole around the Sun.
+  const reference = focusReferences()[0]
+  const framed = sceneDistance(framedKm, scaleT, focusOf().curve)
+  const closest = Math.max(controls.minDistance, focusRadius(scaleT) * 3)
+  const furthest = Math.min(controls.maxDistance, sceneDistance(reference.km, scaleT, focusOf().curve) * 1.8)
+  camera.position.copy(focusOffset.setLength(THREE.MathUtils.clamp(framed, closest, Math.max(closest, furthest))))
+
+  renderScalePanel()
+  renderViewPanel()
+  if (modalNeo) renderNeoModal()
+}
+
+// Dragging with the right button wanders off the pivot; this brings it back to
+// the centre of the view without touching the zoom or the viewing angle.
+const RECENTER_MS = 600
+let recenterTween = null
+
+function recenterCamera() {
+  if (controls.target.lengthSq() > 1e-12) recenterTween = { from: controls.target.clone(), startMs: performance.now() }
+}
+
+const recenterTarget = new THREE.Vector3()
+
+function stepRecenter(nowMs) {
+  if (!recenterTween) return
+  const u = Math.min(1, (nowMs - recenterTween.startMs) / RECENTER_MS)
+  const eased = 1 - Math.pow(1 - u, 3)
+  recenterTarget.copy(recenterTween.from).multiplyScalar(1 - eased)
+  camera.position.add(recenterTarget).sub(controls.target)
+  controls.target.copy(recenterTarget)
+  if (u === 1) recenterTween = null
 }
 
 const tmpWorldPos = new THREE.Vector3()
@@ -969,22 +1364,38 @@ function minRadiusAt(worldPos, px) {
   return px * worldPerPixel(distance, camera.fov, renderer.domElement.clientHeight)
 }
 
+/** The Earth's drawn radius in world units — system scale and pixel floor included. */
+function earthWorldRadius() {
+  return EARTH_RADIUS * globe.scale.x * globeSphere.scale.x
+}
+
 /** Places and sizes every scale-dependent object for scaleT and the current camera. */
 function applyScale(nowSeconds) {
   const t = scaleT
+  const isEarthFocus = focusId === 'earth'
+  // Shrinking the globe *group* (not just the sphere) takes the ISS with it,
+  // so low orbit stays low orbit when the Earth is only a marker.
+  const earthScale = earthSystemScale(t, isEarthFocus)
 
-  const earthRadius = Math.max(EARTH_RADIUS, minRadiusAt(globe.position, MIN_RADIUS_PX.earth))
-  globeSphere.scale.setScalar(earthRadius / EARTH_RADIUS)
+  placeKm(globe.position, EARTH_POSITION_KM, t)
+  globe.scale.setScalar(earthScale)
+  const earthRadius = Math.max(EARTH_RADIUS * earthScale, minRadiusAt(globe.position, MIN_RADIUS_PX.earth))
+  globeSphere.scale.setScalar(earthRadius / (EARTH_RADIUS * earthScale))
 
-  moon.position.copy(moonDirWorld).multiplyScalar(sceneDistance(moonDistanceKm, t))
-  moon.scale.setScalar(Math.max(MOON_RADIUS, minRadiusAt(moon.position, MIN_RADIUS_PX.moon)) / MOON_RADIUS)
+  placeKm(moon.position, moonPositionKm, t)
+  const moonRadius = MOON_RADIUS * earthScale
+  moon.scale.setScalar(Math.max(moonRadius, minRadiusAt(moon.position, MIN_RADIUS_PX.moon)) / MOON_RADIUS)
 
-  sunMarker.position.copy(sunDirWorld).multiplyScalar(sunDistance(t))
+  placeKm(sunMarker.position, sunPositionKm, t)
   sunMarker.scale.setScalar(
-    Math.max(sunRadius(t), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
+    Math.max(sunRadius(t, focusId === 'sun'), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
   )
 
-  if (issPosition) {
+  // Low orbit is invisible from any other pivot (the Moon is already back on
+  // top of the Earth there), and an ISS dot pinned at the Earth's pixel would
+  // only add noise.
+  issMarker.visible = issPosition !== null && isEarthFocus
+  if (issPosition && isEarthFocus) {
     issMarker.position.copy(
       latLngToVector3(issPosition.latitude, issPosition.longitude, issOrbitRadius(issPosition.altitude_km, t)),
     )
@@ -998,19 +1409,20 @@ function applyScale(nowSeconds) {
     updateNeoPositionKm(entry, nowSeconds)
     entry.group.visible = entry.source !== null
     if (!entry.source) continue
-    const distanceKm = entry.positionKm.length()
-    entry.group.position.copy(entry.positionKm).multiplyScalar(sceneDistance(distanceKm, t) / distanceKm)
+    placeKm(entry.group.position, entry.positionKm, t)
     const radius = Math.max(neoRadius(entry.diameterKm, t), minRadiusAt(entry.group.position, MIN_RADIUS_PX.neo))
     entry.mesh.scale.setScalar(radius)
     entry.hit.scale.setScalar(Math.max(radius, minRadiusAt(entry.group.position, NEO_HIT_MIN_RADIUS_PX)))
   }
 
-  distanceRings.group.visible = t > 0.001
-  for (const ring of distanceRings.rings) {
-    ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t))
+  distanceRingsGroup.visible = t > 0.001
+  for (const ring of distanceRings) {
+    ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t, focusOf().curve))
   }
 
+  updateBodyOrbits(t)
   updateTrajectory(nowSeconds, t)
+  updateHeliocentricOrbit(nowSeconds, t)
 }
 
 // --- UI overlay --------------------------------------------------------------
@@ -1038,6 +1450,12 @@ ui.innerHTML = `
 `
 app.appendChild(ui)
 
+// Both bottom panels sit in one centred row: scale on the left, point of view
+// on the right (docs/points-de-vue.md).
+const bottomBar = document.createElement('div')
+bottomBar.id = 'bottom-bar'
+app.appendChild(bottomBar)
+
 const scalePanel = document.createElement('div')
 scalePanel.id = 'scale-panel'
 scalePanel.innerHTML = `
@@ -1056,7 +1474,22 @@ scalePanel.innerHTML = `
   <p id="scale-label"></p>
   <p class="muted scale-hint">Shift + molette : un cran d'échelle</p>
 `
-app.appendChild(scalePanel)
+bottomBar.appendChild(scalePanel)
+
+const viewPanel = document.createElement('div')
+viewPanel.id = 'view-panel'
+viewPanel.innerHTML = `
+  <div class="scale-row">
+    <label>Point de vue</label>
+    ${FOCUS_IDS.map((id) => `<button class="focus-btn" data-focus="${id}">${FOCUSES[id].label}</button>`).join('')}
+  </div>
+  <div class="scale-row">
+    <button id="recenter-btn">Recentrer</button>
+  </div>
+  <p id="view-label"></p>
+  <p class="muted scale-hint">Touche R : recentrer</p>
+`
+bottomBar.appendChild(viewPanel)
 
 const sceneLabels = document.createElement('div')
 sceneLabels.id = 'scene-labels'
@@ -1094,9 +1527,10 @@ style.textContent = `
   #ui p { margin: 2px 0; font-size: 13px; }
   #ui .muted { opacity: 0.6; }
   #ui .error { color: #ff8080; }
-  #update-btn, .scale-preset { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
-                border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; text-shadow: none; }
-  #update-btn:hover, .scale-preset:hover { background: #24608f; }
+  #update-btn, .scale-preset, .focus-btn, #recenter-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff;
+                border: 1px solid #4fa8ff; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+                text-shadow: none; }
+  #update-btn:hover, .scale-preset:hover, .focus-btn:hover, #recenter-btn:hover { background: #24608f; }
   #update-btn:disabled { opacity: 0.5; cursor: default; }
   #usage-badge { font-size: 12px; cursor: help; }
 
@@ -1110,17 +1544,21 @@ style.textContent = `
   #apod-panel img { display: block; width: 100%; border-radius: 4px; margin-top: 4px; }
   #apod-panel .apod-title { font-weight: 600; }
 
-  #scale-panel { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2;
-                 background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px; padding: 10px 16px;
-                 color: #eaf4ff; font-family: system-ui, sans-serif; text-align: center; max-width: calc(100vw - 40px); }
-  #scale-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
-  #scale-panel .scale-row + .scale-row { margin-top: 8px; }
-  #scale-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
+  #bottom-bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2;
+                display: flex; align-items: stretch; justify-content: center; flex-wrap: wrap; gap: 12px;
+                max-width: calc(100vw - 40px); }
+  #scale-panel, #view-panel { background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px;
+                 padding: 10px 16px; color: #eaf4ff; font-family: system-ui, sans-serif; text-align: center; }
+  #view-panel { display: flex; flex-direction: column; justify-content: center; }
+  #scale-panel .scale-row, #view-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+  #scale-panel .scale-row + .scale-row, #view-panel .scale-row + .scale-row { margin-top: 8px; }
+  #scale-panel label, #view-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
   #scale-panel .scale-end { font-size: 11px; opacity: 0.6; }
   #scale-slider { width: 260px; accent-color: #4fa8ff; }
-  .scale-preset.active { background: #4fa8ff; color: #0e2233; }
+  .scale-preset.active, .focus-btn.active { background: #4fa8ff; color: #0e2233; }
   #scale-label { margin: 8px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
-  #scale-panel .scale-hint { margin: 2px 0 0; font-size: 11px; opacity: 0.55; }
+  #view-label { margin: 8px 0 0; font-size: 12px; opacity: 0.75; max-width: 220px; }
+  #scale-panel .scale-hint, #view-panel .scale-hint { margin: 2px 0 0; font-size: 11px; opacity: 0.55; }
 
   #scene-labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1;
                   font-family: system-ui, sans-serif; }
@@ -1256,11 +1694,26 @@ function renderScalePanel() {
     button.classList.toggle('active', Number(button.dataset.step) === scaleStep)
   }
   const t = scaleStep / SCALE_STEPS
-  const distances = neoDistancesKm()
-  const diameters = neoEntries.filter((e) => e.source).map((e) => e.diameterKm)
-  let label = describeScale(t, moonDistanceKm, distances, diameters)
+  const focus = focusOf()
+  let label = describeScale(t, {
+    curve: focus.curve,
+    references: focusReferences(),
+    neoDistancesKm: neoDistancesKm(),
+    neoDiametersKm: neoEntries.filter((e) => e.source).map((e) => e.diameterKm),
+  })
   if (scaleStep === SCALE_STEPS) label = `100 % réel · ${label} · taille min. à l'écran`
-  document.getElementById('scale-label').textContent = label
+  // The scale only means something next to the body it is measured from.
+  document.getElementById('scale-label').textContent = `${focus.frame} · ${label}`
+}
+
+function renderViewPanel() {
+  for (const button of viewPanel.querySelectorAll('.focus-btn')) {
+    button.classList.toggle('active', button.dataset.focus === focusId)
+  }
+  document.getElementById('view-label').textContent =
+    focusId === 'sun'
+      ? 'Scène centrée sur le Soleil · orbite complète du NEO sélectionné'
+      : 'Scène centrée sur la Terre · trajectoire de la semaine du NEO sélectionné'
 }
 
 function openModal(title, bodyHtml) {
@@ -1335,6 +1788,7 @@ function renderNeoModal() {
         : '<p class="muted">Pas de données d\'approche disponibles</p>'
     }
     ${entry ? describeTrajectory(entry) : ''}
+    ${entry ? describeHeliocentricOrbit(entry) : ''}
     ${sourcesBlockHtml(neo)}
     ${detailsBlockHtml(details, {
       loading: neoDetailsLoading.has(designation),
@@ -1390,6 +1844,15 @@ for (const button of scalePanel.querySelectorAll('.scale-preset')) {
   button.addEventListener('click', () => setScaleStep(Number(button.dataset.step)))
 }
 
+for (const button of viewPanel.querySelectorAll('.focus-btn')) {
+  button.addEventListener('click', () => setFocus(button.dataset.focus))
+}
+document.getElementById('recenter-btn').addEventListener('click', recenterCamera)
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'r' || event.key === 'R') recenterCamera()
+})
+
 /**
  * Shift+wheel = one scale step; plain wheel stays camera zoom. Listening on
  * window in the capture phase runs before OrbitControls' own wheel listener on
@@ -1442,10 +1905,28 @@ const bodyLabels = {
   earth: makeSceneLabel('Terre'),
   moon: makeSceneLabel('Lune'),
   iss: makeSceneLabel('ISS'),
+  sun: makeSceneLabel('Soleil'),
 }
-const ringLabels = distanceRings.rings.map((ring) =>
-  makeSceneLabel(ring.lunarDistances === 1 ? 'orbite lunaire' : `${ring.lunarDistances} distances lunaires`, 'ring'),
-)
+const moonOrbitLabel = makeSceneLabel('orbite lunaire', 'ring')
+const orbitMarkerLabels = {
+  perihelion: makeSceneLabel('périhélie', 'ring'),
+  aphelion: makeSceneLabel('aphélie', 'ring'),
+  ascending: makeSceneLabel('nœud ascendant', 'ring'),
+  descending: makeSceneLabel('nœud descendant', 'ring'),
+}
+
+// Rings (and their labels) belong to the current point of view, so both are
+// rebuilt on every switch — see setFocus().
+/** @type {HTMLElement[]} */
+let ringLabels = []
+
+function rebuildRingLabels() {
+  for (const label of ringLabels) label.remove()
+  ringLabels = distanceRings.map((ring) => makeSceneLabel(ring.label, 'ring'))
+}
+
+distanceRings = makeDistanceRings(focusOf().rings)
+rebuildRingLabels()
 
 const LABEL_WHEN_SMALLER_THAN_PX = 6
 const LABEL_MIN_SEPARATION_PX = 18
@@ -1460,8 +1941,7 @@ function screenPositionOf(worldPos, checkEarthOcclusion) {
     labelRayDir.subVectors(worldPos, camera.position)
     const distance = labelRayDir.length()
     labelRayDir.normalize()
-    const earthRadius = EARTH_RADIUS * globeSphere.scale.x
-    if (raySphereDistance(camera.position, labelRayDir, globe.position, earthRadius) < distance - 1e-6) return null
+    if (raySphereDistance(camera.position, labelRayDir, globe.position, earthWorldRadius()) < distance - 1e-6) return null
   }
   const rect = renderer.domElement.getBoundingClientRect()
   return {
@@ -1488,14 +1968,21 @@ function updateSceneLabels() {
   const farFromPlaced = (pos) => placed.every((p) => Math.hypot(p.x - pos.x, p.y - pos.y) > LABEL_MIN_SEPARATION_PX)
 
   const bodies = [
-    { el: bodyLabels.earth, worldPos: globe.position, radius: EARTH_RADIUS, occludable: false, show: true },
-    { el: bodyLabels.moon, worldPos: moon.position, radius: MOON_RADIUS, occludable: true, show: true },
+    { el: bodyLabels.earth, worldPos: globe.position, radius: earthWorldRadius(), occludable: false, show: true },
+    { el: bodyLabels.moon, worldPos: moon.position, radius: MOON_RADIUS * moon.scale.x, occludable: true, show: true },
+    {
+      el: bodyLabels.sun,
+      worldPos: sunMarker.position,
+      radius: SUN_READABLE_RADIUS * sunMarker.scale.x,
+      occludable: true,
+      show: focusId !== 'sun',
+    },
     {
       el: bodyLabels.iss,
       worldPos: issPosition ? issMarker.getWorldPosition(tmpWorldPos) : null,
       radius: issRadius(scaleT),
       occludable: true,
-      show: issPosition !== null && scaleT > 0.001,
+      show: issMarker.visible && scaleT > 0.001,
     },
   ]
   for (const body of bodies) {
@@ -1509,13 +1996,40 @@ function updateSceneLabels() {
     }
   }
 
-  distanceRings.rings.forEach((ring, i) => {
-    if (!distanceRings.group.visible) return placeLabel(ringLabels[i], null)
+  distanceRings.forEach((ring, i) => {
+    if (!distanceRingsGroup.visible) return placeLabel(ringLabels[i], null)
     // Local +X on the unit circle stays on world +X (the ring is only rotated about X).
     tmpWorldPos.set(ring.line.scale.x, 0, 0)
-    const radiusPx = projectedRadiusPx(globe.position, ring.line.scale.x)
+    const radiusPx = projectedRadiusPx(tmpWorldPos, ring.line.scale.x)
     placeLabel(ringLabels[i], radiusPx > 40 ? screenPositionOf(tmpWorldPos, true) : null)
   })
+
+  // The lunar orbit names itself a quarter of a revolution ahead of the Moon,
+  // so the two labels don't stack.
+  if (moonOrbitTrace.line.visible && moonOrbitTrace.km) {
+    tmpWorldPos.fromArray(moonOrbitTrace.km, Math.floor(MOON_ORBIT_SAMPLES / 4) * 3)
+    placeKm(tmpWorldPos, tmpWorldPos, scaleT)
+    const pos = screenPositionOf(tmpWorldPos, true)
+    if (pos && farFromPlaced(pos)) {
+      placed.push(pos)
+      placeLabel(moonOrbitLabel, pos)
+    } else {
+      placeLabel(moonOrbitLabel, null)
+    }
+  } else {
+    placeLabel(moonOrbitLabel, null)
+  }
+
+  // Perihelion / aphelion / nodes of the drawn heliocentric orbit.
+  for (const [key, mesh] of Object.entries(orbitMarkers)) {
+    const pos = heliocentricGroup.visible ? screenPositionOf(mesh.position, true) : null
+    if (pos && farFromPlaced(pos)) {
+      placed.push(pos)
+      placeLabel(orbitMarkerLabels[key], pos)
+    } else {
+      placeLabel(orbitMarkerLabels[key], null)
+    }
+  }
 }
 
 // --- picking (click to inspect a NEO) -----------------------------------------
@@ -1558,7 +2072,7 @@ const starPickRayDir = new THREE.Vector3()
 function isStarOccluded(localPos) {
   starPickRayDir.copy(localPos).normalize()
   const camPos = camera.position
-  if (raySphereDistance(camPos, starPickRayDir, globe.position, EARTH_RADIUS * globeSphere.scale.x) < Infinity) {
+  if (raySphereDistance(camPos, starPickRayDir, globe.position, earthWorldRadius()) < Infinity) {
     return true
   }
   return raySphereDistance(camPos, starPickRayDir, moon.position, MOON_RADIUS * moon.scale.x) < Infinity
@@ -1895,6 +2409,7 @@ updateBtn.addEventListener('click', async () => {
 
 refreshUsage()
 renderScalePanel()
+renderViewPanel()
 
 const cachedIss = loadCached('iss')
 const cachedNeo = loadCached('neo')
@@ -1937,6 +2452,7 @@ function animate() {
   globe.rotation.y = (getGreenwichSiderealTime(new Date(nowMs)) * Math.PI) / 180
 
   stepScaleTransition(performance.now())
+  stepRecenter(performance.now())
   updateCameraLimits()
   controls.update()
   skyGroup.position.copy(camera.position)
