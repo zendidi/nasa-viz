@@ -257,8 +257,65 @@ final class NeoFeedMergerTest extends TestCase
         self::assertSame(['A', 'B'], array_column($result['objects'], 'designation'));
     }
 
-    public function testDiameterFromHMatchesNeowsMethod(): void
+    /**
+     * Real case, feed 2026-09-21 → 2026-09-22: NeoWs returned `719194 (2018
+     * PL23)` twice for one approach — same time, distances 12 cm apart. The
+     * second row used to land in a group of its own: 32 objects for 31
+     * designations, the asteroid drawn twice, and a ghost carrying
+     * `jpl_cad: missing, reason: unknown` in the comparison journal.
+     */
+    public function testSourceListingOneApproachTwiceYieldsOneObject(): void
     {
-        self::assertEquals(['min' => 0.1058, 'max' => 0.2366], NeoFeedMerger::diameterRangeFromH(22.0));
+        $named = ['number' => '719194', 'name' => '719194 (2018 PL23)'];
+        $result = $this->merge(
+            [self::jpl('2018 PL23', '2026-09-17T02:11Z', 0.17566, $named)],
+            [
+                self::neows('2018 PL23', '2026-09-17T02:11Z', 0.175660000008, $named),
+                self::neows('2018 PL23', '2026-09-17T02:11Z', 0.175659999998, $named),
+            ],
+            self::esa([]),
+        );
+
+        self::assertCount(1, $result['objects']);
+        self::assertCount(1, $result['log_objects']);
+        $object = $result['objects'][0];
+        self::assertSame(['jpl_cad', 'nasa_neows'], $object['sources']);
+        self::assertSame([], $object['comparison']['nasa_neows']['mismatches']);
+        self::assertSame(1, $result['comparison']['total']);
+        self::assertSame(0, $result['comparison']['jpl_cad']['missing']);
+    }
+
+    /** The duplicate is dropped even when the source stands alone — no JPL row to anchor it. */
+    public function testDuplicateIsDroppedWithoutAReferenceSource(): void
+    {
+        $result = $this->merge(
+            [],
+            [self::neows('2018 PL23', '2026-09-17T02:11Z', 0.17566), self::neows('2018 PL23', '2026-09-17T02:11Z', 0.17566)],
+            self::esa([self::esaRow('2026 RN4', '2026-09-17', 6200297), self::esaRow('2026 RN4', '2026-09-17', 6200298)]),
+        );
+
+        self::assertSame(['2018 PL23', '2026 RN4'], array_column($result['objects'], 'designation'));
+    }
+
+    /**
+     * The other side of the same coin: an object really approaching twice inside
+     * the range stays two objects, and each source's row joins the approach it
+     * belongs to rather than the first free slot.
+     */
+    public function testTwoGenuineApproachesOfOneObjectStayApart(): void
+    {
+        $result = $this->merge(
+            [self::jpl('2026 XX1', '2026-09-17T04:00Z', 0.02), self::jpl('2026 XX1', '2026-09-18T20:00Z', 0.03)],
+            // Second approach first: pairing must go by time, not by arrival order.
+            [self::neows('2026 XX1', '2026-09-18T20:00Z', 0.03), self::neows('2026 XX1', '2026-09-17T04:00Z', 0.02)],
+            self::esa([]),
+        );
+
+        self::assertCount(2, $result['objects']);
+        foreach ($result['objects'] as $object) {
+            self::assertSame(['jpl_cad', 'nasa_neows'], $object['sources']);
+            self::assertSame([], $object['comparison']['nasa_neows']['mismatches'], 'each NeoWs row joined its own approach');
+        }
+        self::assertSame(['2026-09-17T04:00Z', '2026-09-18T20:00Z'], array_column(array_column($result['objects'], 'close_approach'), 'datetime'));
     }
 }

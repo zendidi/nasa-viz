@@ -26,6 +26,9 @@ final class NeoFeedMerger
     /** An approach this close to a range edge may land on the other side of another source's day split. */
     private const DATE_BOUNDARY_SECONDS = 7200;
 
+    /** Two rows of one source less than this apart are one approach listed twice, not two approaches. */
+    private const SAME_APPROACH_SECONDS = 3600;
+
     /** Distance this close to a source's cap may fall either side of it. */
     private const DISTANCE_BOUNDARY_AU = 0.001;
 
@@ -128,9 +131,10 @@ final class NeoFeedMerger
     }
 
     /**
-     * One group per physical object, keyed by source. ESA dates carry no time,
-     * so its rows up to a day outside the range may still match an object
-     * already found (they never create one).
+     * One group per approach, keyed by source — normally one group per object,
+     * two only when a source genuinely lists two approaches inside the range.
+     * ESA dates carry no time, so its rows up to a day outside the range may
+     * still match an object already found (they never create one).
      *
      * @return list<array<string, array<string, mixed>>>
      */
@@ -140,11 +144,37 @@ final class NeoFeedMerger
         $index = [];
         $attach = static function (string $source, array $row, bool $mayCreate) use (&$groups, &$index): void {
             $keys = NeoDesignation::matchKeys($row['number'], $row['designation']);
-            $target = null;
+            $candidates = [];
             foreach ($keys as $key) {
-                if (isset($index[$key]) && !isset($groups[$index[$key]][$source])) {
-                    $target = $index[$key];
-                    break;
+                foreach ($index[$key] ?? [] as $i) {
+                    $candidates[$i] = true;
+                }
+            }
+            $candidates = array_keys($candidates);
+
+            // One source listing this approach twice describes one approach, not
+            // two: NeoWs has been seen returning the same close approach as two
+            // rows differing by centimetres (2018 PL23, 2026-09-21).
+            foreach ($candidates as $i) {
+                if (isset($groups[$i][$source]) && self::sameApproach($groups[$i][$source], $row)) {
+                    return;
+                }
+            }
+
+            // Among the object's groups — one per approach — the free slot whose
+            // approach is nearest in time. Nearest, not "within a tolerance":
+            // sources legitimately disagree on the date by a day or two, and with
+            // a single group (the normal case) it is picked whatever the gap.
+            $target = null;
+            $nearest = null;
+            foreach ($candidates as $i) {
+                if (isset($groups[$i][$source])) {
+                    continue;
+                }
+                $gap = self::approachGap($groups[$i], $row);
+                if ($nearest === null || $gap < $nearest) {
+                    $nearest = $gap;
+                    $target = $i;
                 }
             }
             if ($target === null) {
@@ -156,7 +186,9 @@ final class NeoFeedMerger
             }
             $groups[$target][$source] = $row;
             foreach ($keys as $key) {
-                $index[$key] ??= $target;
+                if (!in_array($target, $index[$key] ?? [], true)) {
+                    $index[$key][] = $target;
+                }
             }
         };
 
@@ -179,6 +211,44 @@ final class NeoFeedMerger
         }
 
         return $groups;
+    }
+
+    /**
+     * Whether two rows of the SAME source describe the same close approach.
+     * Never used across sources — their date disagreements are what the feed
+     * reports, so they must stay in one group however far apart they fall.
+     */
+    private static function sameApproach(array $a, array $b): bool
+    {
+        if (($a['approach_at'] ?? null) !== null && ($b['approach_at'] ?? null) !== null) {
+            $at = static fn (string $value) => (new \DateTimeImmutable($value))->getTimestamp();
+
+            return abs($at($a['approach_at']) - $at($b['approach_at'])) <= self::SAME_APPROACH_SECONDS;
+        }
+
+        return ($a['date'] ?? null) === ($b['date'] ?? null);
+    }
+
+    /** Seconds between a group's approach and a row's, PHP_INT_MAX when undatable. */
+    private static function approachGap(array $group, array $row): int
+    {
+        $ref = $group['jpl_cad'] ?? $group['nasa_neows'] ?? $group['esa_neocc'];
+        $a = self::approachTimestamp($ref);
+        $b = self::approachTimestamp($row);
+
+        return $a === null || $b === null ? \PHP_INT_MAX : abs($a - $b);
+    }
+
+    /** Dateless rows can't be placed; a row with a date but no time counts as noon. */
+    private static function approachTimestamp(array $row): ?int
+    {
+        $at = $row['approach_at'] ?? null;
+        $date = $row['date'] ?? null;
+        if ($at === null && $date === null) {
+            return null;
+        }
+
+        return (new \DateTimeImmutable($at ?? $date.'T12:00Z'))->getTimestamp();
     }
 
     private function presence(string $source, array $group, array $status, array $ref, \DateTimeImmutable $rangeStart, \DateTimeImmutable $rangeEnd, ?array $esa): array
