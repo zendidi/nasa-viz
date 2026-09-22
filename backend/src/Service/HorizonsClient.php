@@ -11,12 +11,16 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 /**
  * Wraps JPL Horizons (ssd.jpl.nasa.gov — keyless, not part of the
  * api.nasa.gov quota, so not recorded by NasaUsageTracker) to get real
- * geocentric positions of small bodies as an hourly table of vectors.
+ * geocentric positions as tables of vectors.
  *
  * Output frame is ICRF, Earth-centred, km — the same equatorial frame the web
- * viewer's star sphere uses. Objects are addressed by designation
- * ("2014 SU1"), not by NeoWs id, which Horizons doesn't know. Times are
- * TDB (the API rejects TIME_TYPE) — ~69 s off UTC, negligible here.
+ * viewer's star sphere uses. Times are TDB (the API rejects TIME_TYPE) —
+ * ~69 s off UTC, negligible here.
+ *
+ * Two kinds of body, one request shape: only COMMAND and STEP_SIZE differ. A
+ * small body is addressed by the designation the catalogues agree on
+ * ("DES=2014 SU1;" — Horizons doesn't know NeoWs ids); a major body (planet
+ * or natural satellite) by its Horizons id ("499" is Mars, "501" is Io).
  */
 final class HorizonsClient
 {
@@ -30,9 +34,9 @@ final class HorizonsClient
     }
 
     /**
-     * Fires one Horizons request per designation concurrently (callers keep
-     * the batch small — JPL asks users not to hammer the service). A null
-     * entry means Horizons couldn't resolve that designation.
+     * Small bodies, by catalogue designation, at the hourly step their nearly
+     * straight geocentric path over an hour is interpolated from. A null entry
+     * means Horizons couldn't resolve that designation.
      *
      * @param list<string> $designations
      *
@@ -42,31 +46,68 @@ final class HorizonsClient
      */
     public function getVectors(array $designations, \DateTimeImmutable $start, \DateTimeImmutable $stop): array
     {
+        $commands = [];
+        foreach ($designations as $designation) {
+            $commands[$designation] = sprintf("'DES=%s;'", $designation);
+        }
+
+        return $this->fetch($commands, $start, $stop, sprintf('%dm', intdiv(self::STEP_SECONDS, 60)));
+    }
+
+    /**
+     * Major bodies (planets, natural satellites) by Horizons id, at whichever
+     * step that class of body needs — a planet's geocentric path is smooth
+     * enough for a daily step, a close-in moon's is not (see
+     * `docs/planetes-et-lunes.md` §3c). `$stepSize` is a Horizons step ('1d',
+     * '1h'); a *unitless* value there would mean a number of intervals
+     * between the two dates, not a duration.
+     *
+     * @param array<string, string> $ids the caller's own key => Horizons id, e.g. '499'
+     *
+     * @return array<string, array{start: int, positions: list<array{int, int, int}>}|null>
+     *
+     * @throws ExceptionInterface on transport failure
+     */
+    public function getMajorBodyVectors(array $ids, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize): array
+    {
+        return $this->fetch(array_map(static fn (string $id) => sprintf("'%s'", $id), $ids), $start, $stop, $stepSize);
+    }
+
+    /**
+     * Fires one Horizons request per body concurrently (callers keep the batch
+     * small — JPL asks users not to hammer the service), then reads them all.
+     *
+     * @param array<string, string> $commands key => ready-made COMMAND value
+     *
+     * @return array<string, array{start: int, positions: list<array{int, int, int}>}|null>
+     */
+    private function fetch(array $commands, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize): array
+    {
         /** @var array<string, ResponseInterface> $responses */
         $responses = [];
-        foreach ($designations as $designation) {
+        foreach ($commands as $key => $command) {
             // Query string built by hand: HttpClient's `query` option leaves ';'
             // raw, and Horizons then splits COMMAND='DES=…;' at it (HTTP 400).
             $query = http_build_query([
                 'format' => 'json',
-                'COMMAND' => sprintf("'DES=%s;'", $designation),
+                'COMMAND' => $command,
                 'OBJ_DATA' => 'NO',
                 'MAKE_EPHEM' => 'YES',
                 'EPHEM_TYPE' => 'VECTORS',
                 'CENTER' => "'500@399'",
                 'START_TIME' => sprintf("'%s'", $start->format('Y-m-d H:i')),
                 'STOP_TIME' => sprintf("'%s'", $stop->format('Y-m-d H:i')),
-                'STEP_SIZE' => sprintf("'%dm'", self::STEP_SECONDS / 60),
+                'STEP_SIZE' => sprintf("'%s'", $stepSize),
                 'VEC_TABLE' => '1',
                 'REF_PLANE' => 'FRAME',
                 'OUT_UNITS' => "'KM-S'",
                 'CSV_FORMAT' => 'YES',
             ], '', '&', PHP_QUERY_RFC3986);
-            $responses[$designation] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => 30]);
+            $responses[$key] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => 30]);
         }
 
         $result = [];
-        foreach ($responses as $designation => $response) {
+        foreach ($responses as $key => $response) {
             // Unknown objects still come back 200 (see parseVectorTable) — any
             // other status means the request itself is wrong or JPL is down, so
             // it must not be mistaken for (and cached as) "object not found".
@@ -74,7 +115,7 @@ final class HorizonsClient
                 throw new TransportException(sprintf('Horizons answered HTTP %d: %s', $response->getStatusCode(), $response->getContent(false)));
             }
             $data = $response->toArray(false);
-            $result[$designation] = $this->parseVectorTable($data['result'] ?? '', $start);
+            $result[$key] = $this->parseVectorTable($data['result'] ?? '', $start);
         }
 
         return $result;

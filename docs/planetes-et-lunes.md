@@ -4,9 +4,33 @@ Exploration du 2026-09-21, à la demande de l'utilisateur : « afficher les plan
 Suite de `docs/points-de-vue.md`, qui laissait explicitement la place (`web/src/focus.js` : « the Moon
 and the planets are the obvious next ones — they only need a position source »).
 
-**Statut : rien n'est décidé.** Ce document dit ce que les sources donnent réellement (testé, avec
-les chiffres), ce que l'architecture actuelle absorbe sans rien changer, les trois seuls vrais
-chantiers, et ce qui reste à trancher avec l'utilisateur.
+Ce document dit ce que les sources donnent réellement (testé, avec les chiffres), ce que
+l'architecture actuelle absorbe sans rien changer, les trois seuls vrais chantiers, et ce qui
+restait à trancher avec l'utilisateur.
+
+> **Mise à jour du 2026-09-22 — les lots 1 et 2 sont livrés, les 4 questions du §5 sont tranchées.**
+> Les réponses et ce qui en a découlé sont dans `docs/agent/decisions.md` ; la suite des lots est
+> dans `docs/agent/backlog.md`. Deux corrections à lire avant de se servir des chiffres ci-dessous :
+>
+> - **§1, « ~1,1 s et ~50 ko par requête » est faux.** Remesuré le 2026-09-22 : une requête
+>   d'éphémérides Horizons coûte **5 à 16 s, indépendamment du nombre d'échantillons** (366 points
+>   ou 60, même prix ; une requête NEO existante prend 8,6 s le même jour). Le coût est le nombre
+>   de requêtes, pas le nombre de points. Détail, symptômes et conséquences dans
+>   `docs/agent/gotchas.md` → « Horizons met 5 à 16 s par requête ».
+> - **§4, « le cache froid ≈ 18 s » est donc sous-estimé**, et c'est ce qui a imposé un corps par
+>   appel HTTP plutôt qu'un jeu servi d'un bloc.
+> - **§4 lot 2, « héliocentrique » est un piège.** L'annexe propose `CENTER='500@10'` pour tracer
+>   une orbite. Ne pas le faire : la scène construit sa vue héliocentrée comme
+>   `géocentrique − Soleil` et son Soleil vient de `astronomy.js`, qui est dans l'équinoxe de la
+>   date quand les axes sont J2000 — 951 057 km d'écart avec DE441, soit la précession depuis J2000.
+>   Une ellipse DE441 raterait Mercure de 0,127 unité de scène. L'orbite se demande donc en
+>   **géocentrique**, et le client retranche le même Soleil que celui qui place la planète. Détail
+>   dans `docs/agent/gotchas.md` → « astronomy.js calcule le Soleil dans l'équinoxe de la date ».
+>
+> Ce qui reste juste et a été vérifié à l'usage : le §2 en entier (les sept planètes tombent bien
+> entre 19,65 et 26,16 unités au cran lisible, mesuré sur les vraies tables), le §3a (les tailles
+> sont le seul endroit où le modèle cassait), le §3c sur le **choix du pas par l'angle balayé**, et
+> le tableau « placer un corps ≠ tracer son orbite ».
 
 ## 1. Les sources, testées le 2026-09-21
 

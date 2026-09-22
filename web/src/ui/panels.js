@@ -20,6 +20,7 @@ const VIEW_DESCRIPTIONS = {
 }
 
 const NEO_HEADING = '<h2>Astéroïdes proches (NEO)</h2>'
+const PLANETS_HEADING = '<h2>Planètes</h2>'
 const ISS_HEADING = '<h2><span class="dot dot-iss"></span>ISS</h2>'
 const APOD_HEADING = '<h2>Image du jour (APOD)</h2>'
 
@@ -63,6 +64,10 @@ export function createPanels({ app, wheelTarget, on }) {
     </section>
     <section id="neo-panel">
       ${NEO_HEADING}
+      <p class="muted">chargement…</p>
+    </section>
+    <section id="planets-panel">
+      ${PLANETS_HEADING}
       <p class="muted">chargement…</p>
     </section>
     <section id="apod-panel">
@@ -163,6 +168,10 @@ export function createPanels({ app, wheelTarget, on }) {
     #iss-panel h2 .dot { margin-bottom: 2px; }
     .dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
     .legend { font-size: 12px; opacity: 0.8; }
+    /* Seven swatches on one line would push the whole left column out to ~420 px
+       and under the APOD thumbnail; only this legend is capped, so the NEO one
+       keeps the width it has always had. */
+    #planets-panel .legend { max-width: 240px; }
 
     #apod-panel { position: fixed; top: 16px; right: 20px; pointer-events: auto; cursor: pointer;
                   max-width: 220px; text-align: right; }
@@ -232,6 +241,7 @@ export function createPanels({ app, wheelTarget, on }) {
 
   const issPanel = ui.querySelector('#iss-panel')
   const neoPanel = ui.querySelector('#neo-panel')
+  const planetsPanel = ui.querySelector('#planets-panel')
   const apodPanel = ui.querySelector('#apod-panel')
   const usageBadge = ui.querySelector('#usage-badge')
   const updateBtn = ui.querySelector('#update-btn')
@@ -296,6 +306,34 @@ export function createPanels({ app, wheelTarget, on }) {
           ? 'positions réelles (JPL Horizons)'
           : `positions réelles (JPL Horizons) : ${known}/${total} — les autres sont approximatives`
     }
+  }
+
+  /**
+   * The planets are neither a feed nor a snapshot: their tables cover a year
+   * and are refetched when they near their end, so there is no "maj" stamp to
+   * show — only how many of the seven are actually placed.
+   *
+   * @param {{known: number, orbits: number, total: number, loading: boolean, loadingOrbits: boolean}} state
+   * @param {{label: string, color: string}[]} legend one swatch per planet
+   */
+  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend) {
+    const swatches = legend.map((p) => `<span class="dot" style="background:${p.color}"></span>${p.label}`)
+    planetsPanel.innerHTML = `
+      ${PLANETS_HEADING}
+      <p>${
+        loading
+          ? `positions réelles (JPL Horizons) : ${known}/${total}…`
+          : known === total
+            ? `${total} planètes · positions réelles (JPL Horizons)`
+            : `${known}/${total} placées — les autres n'ont pas répondu`
+      }</p>
+      <p class="muted">${
+        orbits === total && !loadingOrbits
+          ? 'orbites tracées (vue Soleil)'
+          : `orbites : ${orbits}/${total}${loadingOrbits ? '…' : ''} (vue Soleil)`
+      }</p>
+      <p class="legend">${swatches.join(' &nbsp;')}</p>
+    `
   }
 
   let currentApod = null
@@ -490,6 +528,7 @@ export function createPanels({ app, wheelTarget, on }) {
     renderIss,
     renderNeo,
     renderNeoPositions,
+    renderPlanets,
     renderApod,
     renderScale,
     renderView,

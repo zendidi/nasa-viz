@@ -42,6 +42,32 @@ export function fetchNeoPositions(startDate, endDate, designations) {
 }
 
 /**
+ * One planet's real geocentric positions (JPL Horizons, ICRF, km) as a daily
+ * table covering a year. One body per call on purpose — a Horizons request
+ * costs 5–16 s whatever its size, and asking for several at once overruns the
+ * backend's execution limit (see backend/API.md).
+ *
+ * @param {string} id mercury · venus · mars · jupiter · saturn · uranus · neptune
+ * @returns {Promise<{start:number, step_seconds:number, bodies:{id:string, name:string, radius_km:number, positions:number[][]|null}[]}>}
+ */
+export function fetchSolarSystemBody(id) {
+  return getJson(`/solar-system/positions?${new URLSearchParams({ body: id })}`)
+}
+
+/**
+ * One planet's whole orbit as a polyline: 181 samples over one sidereal
+ * period, **geocentric** like the positions above. The caller turns them
+ * heliocentric by subtracting the same Sun it places the planet with — see
+ * backend/API.md, and `scene/planets.js` for why it matters.
+ *
+ * @param {string} id
+ * @returns {Promise<{start:number, stop:number, body:{id:string, period_days:number}, positions:number[][]|null}>}
+ */
+export function fetchSolarSystemOrbit(id) {
+  return getJson(`/solar-system/orbit?${new URLSearchParams({ body: id })}`)
+}
+
+/**
  * Per-object sheets (JPL SBDB + IMCCE ssoCard + JPL Sentry), keyed by
  * designation; null = unknown to both catalogues. At most 10 per call.
  *

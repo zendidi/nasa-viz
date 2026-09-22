@@ -7,7 +7,7 @@ ScriptableObject or a build-time constant).
 
 All responses are normalized JSON — none of NASA's or wheretheiss.at's raw
 field names or nesting leak through, so this contract stays stable even if
-the upstream providers change their response shape. All three routes are
+the upstream providers change their response shape. Every route is
 `GET`, cached server-side, and CORS-enabled for `http://localhost:*` (see
 `CORS_ALLOW_ORIGIN` in `.env`; a deployed Unity/WebGL build or a packaged
 Quest APK doesn't need CORS at all — only browser clients enforce it).
@@ -155,6 +155,95 @@ per object (1 day when unknown; not cached while a source is down).
   `{probability, palermo_cum, palermo_max, torino_max, n_impacts, range}`.
 - HTTP 502 only when both SBDB and ssoCard are unreachable.
 
+## `GET /api/solar-system/positions?body=mars`
+
+One planet's real geocentric positions, from JPL Horizons — keyless, not on
+the NASA quota. `body` is required and must be one of `mercury`, `venus`,
+`mars`, `jupiter`, `saturn`, `uranus`, `neptune`; anything else is a 400
+listing them. Cached server-side 40 days per planet.
+
+```json
+{
+  "frame": "ICRF geocentric",
+  "units": "km",
+  "start": 1788220800,
+  "step_seconds": 86400,
+  "bodies": [
+    {
+      "id": "mars",
+      "name": "Mars",
+      "radius_km": 3389.5,
+      "positions": [[-62375421, 246373087, 109612684], [-63000000, 246100000, 109500000]]
+    }
+  ]
+}
+```
+
+- `positions` is a table of `[x, y, z]` in km, ICRF equatorial, Earth-centred
+  — the same frame as `/api/neo/positions`. Sample *n* is at
+  `start + n * step_seconds` (Unix seconds, TDB ≈ UTC + 69 s). 366 samples: a
+  daily step over a year. Interpolate linearly between the two samples around
+  "now" — measured worst case on Mars is 5 645 km, 0.002 % of its distance.
+- `start` is **the first of the current UTC month**, not the day of the call.
+  Planets are fetched one at a time, and this is what makes their tables line
+  up sample for sample anyway. A table therefore always covers "now"; it does
+  not need refetching until it nears its end, roughly eleven months later.
+- **One body per call**, on purpose: a Horizons ephemeris request costs 5 to
+  16 s whatever its size (measured 2026-09-22), so asking for several at once
+  overruns PHP's execution limit. Fetch them in sequence and draw each as it
+  lands rather than waiting for the set.
+- `positions` is `null` when Horizons didn't answer for that planet — served
+  as-is, and retried an hour later rather than cached for the month.
+- The **Earth is deliberately absent**: it is this frame's origin, so its table
+  would be 366 zeroes. A client centred on something else places it from the
+  Sun's position it already computes.
+- `radius_km` is the IAU 2015 mean radius, carried so every client sizes a
+  planet from one table instead of each keeping its own. It is a constant —
+  cache it with the positions rather than refetching for it.
+
+## `GET /api/solar-system/orbit?body=mars`
+
+One planet's whole orbit as a polyline — 181 samples over one sidereal period.
+Same `body` values and the same one-per-call rule as the route above. Cached
+server-side 40 days per planet.
+
+```json
+{
+  "frame": "ICRF geocentric",
+  "units": "km",
+  "body": { "id": "mars", "name": "Mars", "radius_km": 3389.5, "period_days": 686.98 },
+  "start": 1788220800,
+  "stop": 1847583060,
+  "positions": [[-62375421, 246373087, 109612684], "… 181 in all"]
+}
+```
+
+- Sample *k* is at `start + k/180 × (stop − start)`. `stop` is exactly the
+  value sent to Horizons (truncated to the minute, which is all it reads), so
+  a client can date every sample without re-deriving the period.
+- **The samples are geocentric, and the curve is meant to be drawn
+  heliocentric** — the client subtracts its own Sun from each sample. That is
+  not an oversight. A viewer that builds its heliocentric view as
+  `geocentric − Sun` must use *its* Sun here, or its planet will not sit on
+  its own orbit. The web viewer's low-precision Sun series is 951 057 km
+  (0.363°) from DE441 — the precession accumulated since J2000 — so a
+  ready-made heliocentric ellipse would miss Mercury by 966 557 km. Measured
+  2026-09-22; subtracting the same Sun brings the miss down to 8 572 km for
+  Mercury and 205 086 km for Neptune, which is the chord approximation, not
+  the Sun. A client with a proper ephemeris can of course subtract that one
+  instead and get DE441's true ellipse.
+- `start` is the first of the current UTC month, and the window is exactly one
+  sidereal period — so "now" is always inside it (at most 31 days past the
+  start, against Mercury's 88-day period). That is what makes the line pass
+  through the planet.
+- 180 intervals is 2° of arc per segment; replacing the arc by a chord costs
+  0.015 % of the orbital radius. Neptune's 165-year orbit fits in one request
+  because Horizons reads a *unitless* `STEP_SIZE` as a number of intervals,
+  not a duration.
+- The curve does **not** close exactly: the orbit precesses between the first
+  and the last sample. That is correct, not a gap to stitch.
+- `positions` is `null` when Horizons didn't answer; retried an hour later.
+
 ## `GET /api/apod`
 
 Cached 24h server-side (one NASA call per day regardless of client traffic).
@@ -189,7 +278,12 @@ videos.
   keyed by designation, which `JsonUtility` can't parse — either use another
   parser (Newtonsoft JSON, bundled with Unity as `com.unity.nuget.newtonsoft-json`)
   for those two routes, or ignore them: `/api/neo` alone is enough for a list
-  of objects with their approach data.
+  of objects with their approach data. `/api/solar-system/positions` has no
+  such problem — `bodies` is a plain array, so `JsonUtility` handles it.
+- `/api/solar-system/positions` is the one route worth calling on startup and
+  then leaving alone: its tables cover a year and cost nothing in quota, so a
+  VR client can fetch the seven planets once, keep them, and interpolate
+  locally rather than polling.
 - A VR client can ignore `comparison` entirely; it only says how the three
   sources agree. `sources` on an object is the cheap version: an object with a
   single entry was seen by a single catalogue.

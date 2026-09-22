@@ -13,6 +13,7 @@ import { createNeoScene, designationOf } from './neo/scene.js'
 import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
 import { latLngToVector3 } from './scene/geo.js'
 import { MOON_RADIUS, makeGlobe, makeIssMarker, makeSunMarker, makeMoon, createDistanceRings } from './scene/bodies.js'
+import { createPlanets } from './scene/planets.js'
 import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
@@ -373,6 +374,11 @@ function updateCameraLimits() {
   for (const entry of neoScene.entries) {
     if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
   }
+  // Neptune sits further out than any NEO in both views — without this the
+  // zoom would stop short of the planet it is drawing.
+  for (const body of planets.bodies) {
+    if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+  }
   // The drawn orbit is part of the scene's extent: you must be able to pull
   // back far enough to see the whole ellipse, aphelion included.
   if (neoScene.heliocentricGroup.visible) {
@@ -502,6 +508,7 @@ function applyScale(nowSeconds) {
   }
 
   updateBodyOrbits(t)
+  planets.update(nowSeconds, t)
   neoScene.update(nowSeconds, t)
 }
 
@@ -551,6 +558,10 @@ function renderNeoPanel(feed, error, fetchedAt) {
 
 function renderNeoPositionsStatus() {
   panels.renderNeoPositions(neoScene.positionsStatus())
+}
+
+function renderPlanetsPanel() {
+  panels.renderPlanets(planets.status(), planets.legend())
 }
 
 function renderScalePanel() {
@@ -657,6 +668,29 @@ const orbitMarkerLabels = {
   descending: labels.create('nœud descendant', 'ring'),
 }
 
+// --- planets -------------------------------------------------------------------
+//
+// Geocentric km like every other body, so the same placeKm() puts them in both
+// views — no second data source for the heliocentric one. In the Earth-centred
+// view they do bunch up (19 to 26 units for Venus through Neptune): the readable
+// curve being honest about a scene centred on the Earth, not a bug.
+//
+// Built here, after the label factory, because the module names its own planets:
+// a parallel array of labels indexed against `bodies` is a coupling worth not
+// having. Where those names *rank* against the other labels stays below.
+
+const planets = createPlanets({
+  scene,
+  labels,
+  traces,
+  placeKm,
+  minRadiusAt,
+  // All the module is told about the point of view — its orbits are relative
+  // to the pivot, so they only mean anything when the pivot is the Sun.
+  isHeliocentric: () => focusId === 'sun',
+  on: { changed: () => renderPlanetsPanel() },
+})
+
 // Rings (and their labels) belong to the current point of view, so both are
 // rebuilt on every switch — see setFocus(). Each carries its own vector: the
 // entry list is built whole before it is placed, so no two entries may share
@@ -728,6 +762,9 @@ function updateSceneLabels() {
 
   labels.update([
     ...bodies,
+    // After the four above, so a planet's name never pushes the Earth's or the
+    // Moon's aside — the list order is the spacing arbitration.
+    ...planets.labelEntries(),
     ...rings,
     { el: moonOrbitLabel, worldPos: moonOrbitLabelPos, occludable: true, show: Boolean(moonOrbitDrawn) },
     // Perihelion / aphelion / nodes of the drawn heliocentric orbit.
@@ -813,6 +850,11 @@ async function refreshApod() {
 refreshUsage()
 renderScalePanel()
 renderViewPanel()
+
+// Not wired to "Mettre à jour": the planet tables are keyless (JPL Horizons,
+// no NASA quota) and cover a year, so there is nothing for that button to
+// refresh. They load themselves once, then come back from localStorage.
+planets.load()
 
 const cachedIss = loadCached('iss')
 const cachedNeo = loadCached('neo')

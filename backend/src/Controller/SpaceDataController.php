@@ -8,6 +8,7 @@ use App\Service\NasaApiClient;
 use App\Service\NasaUsageTracker;
 use App\Service\NeoFeedBuilder;
 use App\Service\SmallBodyDetailsClient;
+use App\Service\SolarSystemClient;
 use Psr\Cache\CacheItemPoolInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -147,6 +148,105 @@ final class SpaceDataController
             'units' => 'km',
             'step_seconds' => HorizonsClient::STEP_SECONDS,
             'objects' => $objects,
+        ]);
+    }
+
+    /**
+     * One planet, as a geocentric table covering a year from the first of the
+     * current UTC month — the shared clock every planet's table is on, so a
+     * client fetching them one at a time still reads them against one clock.
+     *
+     * One body per call, and for a measured reason (2026-09-22, see
+     * docs/agent/gotchas.md): a Horizons ephemeris request costs 5 to 16 s
+     * whatever its size, and this machine's NativeHttpClient barely
+     * parallelises — two planets at once already overran PHP's 30 s limit
+     * (Saturn + Uranus: 31,6 s → HTTP 500). Asking one at a time also keeps
+     * the single-threaded dev server answering the ISS and the NEO feed in
+     * between, and lets the scene fill in planet by planet. The response
+     * still carries a `bodies` list so serving several stays possible without
+     * a contract change.
+     */
+    #[Route('/api/solar-system/positions', name: 'api_solar_system_positions', methods: ['GET'])]
+    public function solarSystemPositions(
+        Request $request,
+        SolarSystemClient $client,
+        #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
+    ): JsonResponse {
+        $id = trim((string) $request->query->get('body', ''));
+        if (!SolarSystemClient::isKnown($id)) {
+            return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', SolarSystemClient::ids()))], 400);
+        }
+
+        $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
+        $item = $pool->getItem('solar_system_'.$id.'_'.$start->format('Y-m-d'));
+
+        if ($item->isHit()) {
+            $positions = $item->get();
+        } else {
+            try {
+                $positions = $client->getPositions([$id], $start)[$id];
+            } catch (ExceptionInterface $e) {
+                return $this->upstreamError('solar-system/positions', $e);
+            }
+            // The key already carries the window, so the set renews on the 1st
+            // whatever this says; the TTL only has to outlive the month. A
+            // planet Horizons didn't answer for is retried within the hour.
+            $pool->save($item->set($positions)->expiresAfter(null === $positions ? 3600 : 40 * 86400));
+        }
+
+        return new JsonResponse([
+            'frame' => 'ICRF geocentric',
+            'units' => 'km',
+            'start' => $start->getTimestamp(),
+            'step_seconds' => SolarSystemClient::STEP_SECONDS,
+            'bodies' => [SolarSystemClient::describe($id) + ['positions' => $positions]],
+        ]);
+    }
+
+    /**
+     * One planet's whole orbit, as a polyline. Same window anchor and the same
+     * one-body-per-call rule as the positions route above; see
+     * SolarSystemClient::getOrbit() for why the samples are geocentric rather
+     * than heliocentric.
+     *
+     * The anchor matters more here than it looks: the curve covers exactly one
+     * sidereal period from `start`, and "now" has to fall inside it for the
+     * planet to sit on the line. A monthly anchor guarantees that — "now" is
+     * at most 31 days past the start, and the shortest period is Mercury's 88
+     * days.
+     */
+    #[Route('/api/solar-system/orbit', name: 'api_solar_system_orbit', methods: ['GET'])]
+    public function solarSystemOrbit(
+        Request $request,
+        SolarSystemClient $client,
+        #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
+    ): JsonResponse {
+        $id = trim((string) $request->query->get('body', ''));
+        if (!SolarSystemClient::isKnown($id)) {
+            return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', SolarSystemClient::ids()))], 400);
+        }
+
+        $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
+        $item = $pool->getItem('solar_system_orbit_'.$id.'_'.$start->format('Y-m-d'));
+
+        if ($item->isHit()) {
+            $orbit = $item->get();
+        } else {
+            try {
+                $orbit = $client->getOrbit($id, $start);
+            } catch (ExceptionInterface $e) {
+                return $this->upstreamError('solar-system/orbit', $e);
+            }
+            $pool->save($item->set($orbit)->expiresAfter(null === $orbit ? 3600 : 40 * 86400));
+        }
+
+        return new JsonResponse([
+            'frame' => 'ICRF geocentric',
+            'units' => 'km',
+            'body' => SolarSystemClient::describe($id) + ['period_days' => SolarSystemClient::periodDays($id)],
+            'start' => $orbit['start'] ?? $start->getTimestamp(),
+            'stop' => $orbit['stop'] ?? null,
+            'positions' => $orbit['positions'] ?? null,
         ]);
     }
 

@@ -128,6 +128,30 @@ export function sunRadius(t, isFocus = false) {
   return lerpLog(isFocus ? FOCUS_READABLE_RADIUS : SUN_READABLE_RADIUS, SUN_RADIUS_KM * KM_TO_UNITS, t)
 }
 
+/**
+ * Readable radius of a planet. Real proportions can't be kept at the readable
+ * end: with the Earth at EARTH_RADIUS, Jupiter's true radius is 21,95 units —
+ * wider than the Sun–Mars distance the heliocentric view draws it at (17,5).
+ * The Sun already has this answer as a flat SUN_READABLE_RADIUS; a planet
+ * needs a curve instead, because seven of them have to stay distinguishable.
+ *
+ * So: the Earth's own marker radius, times the ratio of the radii compressed
+ * by a power. The exponent is the whole choice — 1 would be true proportions,
+ * 0 would make every planet the same ball. At 0,35 the set spreads 0,25
+ * (Mercury) → 0,80 (Jupiter): ordering by size is still readable at a glance,
+ * and the largest stays a third of the pivot's 2 units. Tuned by eye; it is a
+ * legibility knob, not a measurement.
+ */
+export const PLANET_READABLE_EXPONENT = 0.35
+
+export function planetReadableRadius(radiusKm) {
+  return EARTH_MARKER_RADIUS * Math.pow(radiusKm / EARTH_RADIUS_KM, PLANET_READABLE_EXPONENT)
+}
+
+export function planetRadius(radiusKm, t) {
+  return lerpLog(planetReadableRadius(radiusKm), radiusKm * KM_TO_UNITS, t)
+}
+
 /** World units covered by one screen pixel at `distance` from a perspective camera. */
 export function worldPerPixel(distance, fovDeg, viewportHeightPx) {
   return (2 * distance * Math.tan((fovDeg * Math.PI) / 360)) / viewportHeightPx

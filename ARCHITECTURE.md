@@ -36,6 +36,19 @@ formes de réponse, pas ce fichier.
   (toujours) + IMCCE ssoCard (bonus) + Sentry (risque d'impact).
 - `src/Service/NeoDesignation.php` — appariement des objets entre catalogues (numéro ou
   désignation, chaque source ayant sa propre orthographe).
+- `src/Service/HorizonsClient.php` — tables de positions géocentriques JPL Horizons (ICRF, km),
+  sans clé, hors quota. Une seule forme de requête pour deux familles de corps : petits corps par
+  désignation (`DES=2014 SU1;`, pas horaire) et corps majeurs par identifiant Horizons (`'499'` =
+  Mars, pas journalier).
+- `src/Service/SolarSystemClient.php` — les sept planètes autres que la Terre : identifiants
+  Horizons, noms UAI, rayons moyens, périodes sidérales, et la fenêtre commune (à partir du 1er du
+  mois UTC) qui fait que des tables téléchargées à des jours différents restent sur la même
+  horloge. Sert deux choses sans rapport (voir le tableau de `docs/planetes-et-lunes.md` §3c) :
+  `getPositions()` = où est la planète (un an au pas d'un jour, `/api/solar-system/positions`), et
+  `getOrbit()` = à quoi ressemble son chemin (une période sidérale en 180 intervalles,
+  `/api/solar-system/orbit`). Les deux sont **géocentriques**, y compris l'orbite : c'est le client
+  qui la rend héliocentrique en retranchant son propre Soleil, faute de quoi le trait raterait sa
+  planète.
 - `src/Service/IssPositionClient.php` — position ISS via wheretheiss.at (pas de quota, pas suivi
   par le usage tracker).
 - `src/Service/NasaUsageTracker.php` — compteur d'appels réels à `api.nasa.gov` du jour (clé de
@@ -46,6 +59,11 @@ formes de réponse, pas ce fichier.
   - `/api/neo?start_date=&end_date=` — TTL 1h (10 min si une source est tombée), par plage de
     dates, plage max 7 jours
   - `/api/neo/details?designations=` — TTL 7 jours par objet (1 jour si inconnu)
+  - `/api/solar-system/positions?body=` — TTL 40 jours par planète (1 h si Horizons n'a pas
+    répondu). **Un corps par appel** : une requête d'éphémérides Horizons coûte 5 à 16 s quelle que
+    soit sa taille, plusieurs d'un coup dépassent la limite d'exécution de PHP (`gotchas.md`)
+  - `/api/solar-system/orbit?body=` — même règle, même TTL : l'orbite complète d'une planète en 181
+    points sur une période sidérale (Neptune va jusqu'en 2191)
   - `/api/apod` — TTL 24h
   - `/api/usage` — pas de cache, lecture directe du compteur
 - CORS via `nelmio/cors-bundle` (`config/packages/nelmio_cors.yaml`), restreint à
@@ -70,6 +88,13 @@ formes de réponse, pas ce fichier.
     trajectoire réelle (Horizons) et un schéma d'orbite SVG (`src/orbit.js`) dans la modal.
   - `src/scale.js` — modèle d'échelle « lisible → réel » (slider 9 crans), une courbe de
     compression par corps pivot (`docs/echelle-reelle.md`)
+  - `src/scene/planets.js` — les sept planètes : tables Horizons (`/api/solar-system/positions`,
+    chargées une par une en arrière-plan, cache `localStorage`), interpolation à la minute, sphères
+    de couleur unie et leurs libellés. Placées par le même `placeKm()` que la Lune, donc visibles
+    dans les deux vues sans seconde source (`docs/planetes-et-lunes.md`). Le module charge ensuite
+    **l'orbite** de chaque planète (`/api/solar-system/orbit`) et en retranche le Soleil de
+    `astronomy.js` échantillon par échantillon — même fonction que celle qui place la planète, donc
+    le trait passe dessus. Orbites tracées **en vue héliocentrée seulement**
   - `src/focus.js` — point de vue : quel corps est au centre de la scène (Terre, Soleil ; le pivot
     est l'origine, tout le reste est placé relativement). En vue héliocentrée, le NEO sélectionné
     voit son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
@@ -101,6 +126,9 @@ scène web à l'identique. Elle consommera le même contrat backend (`backend/AP
 - `DEMO_KEY` (clé par défaut) : 30 req/h, 50 req/jour.
 - Vraie clé `api.nasa.gov` (à générer, gratuite) : 1000 req/h, pas de plafond journalier connu.
 - `wheretheiss.at` (ISS) : pas de quota documenté, non suivi par le compteur.
+- JPL Horizons : sans clé, hors quota — mais **lent et irrégulier** (5 à 16 s par requête,
+  indépendamment du nombre d'échantillons, mesuré le 2026-09-22). C'est ce qui dicte la taille des
+  lots côté `/api/neo/positions` et `/api/solar-system/positions`, pas un souci de volume.
 - JPL (CAD, SBDB, Sentry, Horizons), ESA NEOCC et IMCCE SsODNet : sans clé, hors quota, non
   comptés par `NasaUsageTracker`. NeoWs reste interrogé pour la comparaison — c'est lui (avec
   APOD) qui consomme le quota. Voir `docs/neo-jpl-ssodnet.md`.
