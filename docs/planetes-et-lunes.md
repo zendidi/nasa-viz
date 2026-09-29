@@ -501,13 +501,74 @@ l'« obliquity to orbit », mais **pas** le pôle en ICRF. L'obliquité à l'orb
 orienter un corps (il manque la direction du nœud). C'est la quantité 32 qu'il faut, pas le texte
 libre — ce qui écarte au passage le coût de parseur signalé au § 1.
 
-### Questions restant à trancher avec l'utilisateur
+### Décisions prises avec l'utilisateur le 2026-09-29
 
-1. **Les lunes** : on s'en tient aux sphères grises (recommandé), ou on ouvre le chantier USGS ?
-2. **La résolution** : 2K partout, ou redescendre Mercure/Vénus/Mars (les trois plus lourds, 2,5 Mo
-   à eux seuls) en 1K par ré-encodage ?
-3. **Le Soleil** : Solar System Scope a une texture solaire (822 ko). Le marqueur actuel est une
-   sphère unie. On texture, ou on garde le marqueur ?
+1. **Les lunes restent des sphères grises éclairées.** Pas de chantier USGS. Les 38 lunes gardent
+   `MOON_COLOR` et `makeLitBodyMaterial`, ce qui est honnête : seules 4 ou 5 sont assez grosses pour
+   montrer du relief, et aucune source web-ready ne les couvre.
+2. **Résolution : 2K partout**, parce que le détail ne sert qu'au moment où l'on centre sur un corps
+   — c'est-à-dire exactement là où il est visible. Mais Mercure, Vénus et Mars sont anormalement
+   lourdes pour du 2048 × 1024 (873, 885 et 751 ko, les trois quarts du lot planètes) : à
+   **ré-encoder en JPEG qualité ~80**, ce qui divise typiquement par deux sans perte visible. La
+   résolution ne bouge pas, seul le taux de compression.
+3. **Le Soleil est texturé** (`2k_sun.jpg`, 822 ko). Il remplace la sphère unie du marqueur.
+
+### Plan d'exécution du lot 5
+
+**Étape 0 — outillage (à vérifier en premier, ça conditionne l'étape 1).** Y a-t-il de quoi
+convertir un TIFF et ré-encoder un JPEG sur cette machine ? Les deux cartes de la Terre (normal,
+specular) ne sont servies qu'en `.tif`, et l'étape 1 veut ré-encoder trois JPEG. Si rien n'est
+disponible : embarquer les JPEG tels quels, et garder les normal/specular actuelles (exemples
+three.js) en notant que la question de licence reste ouverte pour ces deux fichiers-là seulement.
+
+**Étape 1 — les fichiers.** Télécharger les 14 textures dans `web/public/textures/`. **Vérifier le
+code HTTP de chaque téléchargement** : une extension fausse répond 404 avec un corps HTML, qui
+s'écrit silencieusement dans le `.jpg`. Convertir les deux TIFF, ré-encoder les trois lourdes.
+Ajouter le crédit CC BY 4.0 dans l'UI (il y a déjà `NEO_CREDITS` et la classe `.credits`).
+
+**Étape 2 — les planètes texturées.** `makeLitBodyMaterial` prend une texture optionnelle : le
+fragment multiplie `uColor` par `texture2D(uMap, vUv)`. Le vertex shader doit sortir `vUv`, que
+`SphereGeometry` fournit déjà. Chargement **à la demande** au changement de pivot, comme les lunes du
+lot 4 — le mécanisme existe, `moons.js` en est le modèle. Le système Terre reste préchargé.
+
+**Étape 3 — l'anneau de Saturne.** `RingGeometry` avec des UV refaits : par défaut three.js mappe un
+anneau en coordonnées polaires, il faut remapper pour que `u` suive le **rayon** et échantillonne la
+bande de 2048 × 125. Matériau `transparent: true`, `side: DoubleSide`, `depthWrite: false`.
+L'anneau se couche dans le plan équatorial de Saturne, donc il dépend de l'étape 4.
+
+**Étape 4 — l'orientation (pôle + rotation propre).** Nouvelle route backend, une requête sans clé
+par planète et par mois, `EPHEM_TYPE=OBSERVER` et `QUANTITIES='14,32'`, **deux lignes à une heure
+d'écart** :
+- `N.Pole-RA` / `N.Pole-DC` → direction du pôle, déjà en ICRF donc directement dans les axes de la
+  scène. Orienter = pointer le +Y du mesh là (`Object3D.lookAt` sur l'axe, ou un quaternion depuis
+  `(0,1,0)` vers le vecteur du pôle) ;
+- `ObsSub-LON` sur les deux lignes → le taux de rotation par différence finie, et la phase à
+  l'époque. Propager ensuite localement, comme `globe.rotation.y` le fait déjà avec le temps sidéral
+  de Greenwich.
+
+Attention au sens : `ObsSub-LON` est la longitude **face à la Terre**, pas une phase absolue. La
+poser correctement demande de composer avec la direction Terre → planète du moment.
+
+**Étape 5 — la Lune enfin orientée.** Défaut repéré le 2026-09-29 : aucune rotation ne lui est
+appliquée alors qu'elle est en rotation synchrone, donc sa face visible pointe une direction fixe de
+l'espace et la face cachée tourne vers nous au fil du mois. Même mécanisme que l'étape 4. La Terre,
+elle, est déjà correcte sur les deux plans (rotation GMST, et son axe *est* +Y puisque la scène est
+équatoriale) — ne pas y toucher.
+
+**Étape 6 — docs et checklist de validation visuelle.**
+
+### Pièges connus avant de commencer
+
+- **Le `#include <colorspace_fragment>`** est obligatoire dans tout fragment shader écrit à la main,
+  sinon les couleurs sont sur-saturées (`gotchas.md`). Les textures rendront ça très visible.
+- **`texture.colorSpace = THREE.SRGBColorSpace`** sur les cartes de couleur, pas sur les normal/
+  specular maps. `bodies.js` le fait déjà pour la Terre, suivre le même motif.
+- **Ne pas précharger les 6,81 Mo.** `web/index.html` précharge déjà les textures de la Terre pour
+  passer devant les appels `/api/*` du serveur mono-requête ; y ajouter les planètes annulerait le
+  bénéfice.
+- **Après un déplacement de bloc entre fichiers, lire le log client de Vite, pas le succès du
+  build** : rolldown ne résout pas les identifiants inter-modules à la compilation (vécu deux fois
+  le 2026-09-29).
 
 ### Le piège à ne pas manquer : le cache froid
 
