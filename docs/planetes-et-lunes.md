@@ -733,6 +733,8 @@ cas (52,88° et −15,18°).
 
 ### Checklist de validation visuelle — à l'œil, par l'utilisateur
 
+**Passée et validée par l'utilisateur le 2026-09-29.** L'étape 4 est close, client compris.
+
 Rien de ce qui précède ne dit à quoi ça ressemble ; ces points-là, si. **La scène tourne en temps
 réel**, sans accélération : l'inclinaison des axes se voit d'un coup d'œil, la rotation propre demande
 de revenir plus tard.
