@@ -65,6 +65,42 @@ function makeCurve(kmNear, unitsNear, kmFar, unitsFar, minUnits) {
 export const EARTH_CURVE = makeCurve(LUNAR_DISTANCE_KM, 12, 0.5 * AU_KM, 20, EARTH_RADIUS * 1.5)
 
 /**
+ * Where the Sun lands on a moon-system curve, in scene units. Not a number
+ * anyone picked: it is read straight off `EARTH_CURVE`, whose own two anchors
+ * (Moon → 12, 0,5 ua → 20) predate all of this. Deriving it rather than writing
+ * 21,05 by hand is what makes `moonSystemCurve(LUNAR_DISTANCE_KM, AU_KM)`
+ * reproduce `EARTH_CURVE` instead of merely approximating it: checked, the two
+ * agree to 4 · 10⁻¹⁵ on both coefficients — double-precision rounding from taking
+ * a different route through the same algebra, not a divergence. Write 21,05 by
+ * hand instead and the Earth's own curve shifts in its third digit.
+ */
+const SUN_AT_UNITS = EARTH_CURVE.a + EARTH_CURVE.b * Math.log10(AU_KM)
+
+/**
+ * Readable curve for a pivot that has moons — the Earth's own case generalised.
+ *
+ * A pivot with satellites has to show two worlds at once, four to five orders of
+ * magnitude apart: its moons (10⁴ to 10⁷ km) and the solar system (10⁸ to 10⁹).
+ * `orbitingCurve` only knows the second, and that is not a detail of calibration
+ * — measured on the lot 3 curves, **all 38 moons land on the floor**, glued to
+ * their planet, with raw `a + b·log10(d)` values between −28 and −57. Phobos is
+ * at −57,2. No floor setting rescues that; the curve simply has no room there.
+ *
+ * So the same two-anchor shape `EARTH_CURVE` always had: the pivot's principal
+ * moon at 12 units, the Sun at `SUN_AT_UNITS`. Measured spreads at the readable
+ * end — Jupiter 9,6 (Amalthée) → 16,2 (Pasiphaé), Saturn 9,6 (Mimas) → 15,0
+ * (Phœbé), Neptune 10,1 (Naïade) → 15,7 (Halimède). The moons read as a system,
+ * and the Sun sits at the same place whichever planet you stand on.
+ *
+ * `principalMoonKm` is the **largest** moon's orbital radius, not the innermost:
+ * it is the one the view is actually about, and anchoring the set on it is what
+ * decides the slope. Mercury and Venus have no moons and keep `orbitingCurve`.
+ */
+export function moonSystemCurve(principalMoonKm, heliocentricKm) {
+  return makeCurve(principalMoonKm, 12, heliocentricKm, SUN_AT_UNITS, FOCUS_READABLE_RADIUS * 1.5)
+}
+
+/**
  * Readable curve for a pivot that orbits the Sun — the Sun's own view included,
  * where the yardstick is the Earth's orbit. `yardstickKm` is the distance that
  * defines the view's scale: 0,3x it lands at 6 units, 5x it at 26.
@@ -180,6 +216,16 @@ export function planetReadableRadius(radiusKm) {
 export function planetRadius(radiusKm, t) {
   return lerpLog(planetReadableRadius(radiusKm), radiusKm * KM_TO_UNITS, t)
 }
+
+/**
+ * A moon is sized by the very same curve, and that is deliberate rather than
+ * lazy: both answer one question — keep a set of bodies distinguishable when
+ * true proportions cannot be kept — and Ganymede, wider than Mercury, has no
+ * business being drawn by a different rule than Mercury. Aliased rather than
+ * duplicated so the two cannot drift apart by accident; named separately so they
+ * *can* be split later without touching a caller.
+ */
+export const moonRadius = planetRadius
 
 /** World units covered by one screen pixel at `distance` from a perspective camera. */
 export function worldPerPixel(distance, fovDeg, viewportHeightPx) {

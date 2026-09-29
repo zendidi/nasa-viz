@@ -68,6 +68,22 @@ export function fetchSolarSystemOrbit(id) {
 }
 
 /**
+ * Every moon of one planet in a single call, positions **relative to that
+ * planet** (not geocentric like the routes above), so the scene places them with
+ * `placeRelativeKm` while the planet is the pivot.
+ *
+ * `missing` is the contract: non-zero means the server has not got every table
+ * yet and the caller should come back. The route fetches at most one absent moon
+ * per call, so a cold cache converges in as many calls as there are moons, and a
+ * warm one answers everything at once (backend/API.md).
+ *
+ * @param {string} planetId
+ */
+export function fetchMoons(planetId) {
+  return getJson(`/solar-system/moons?${new URLSearchParams({ planet: planetId })}`)
+}
+
+/**
  * Per-object sheets (JPL SBDB + IMCCE ssoCard + JPL Sentry), keyed by
  * designation; null = unknown to both catalogues. At most 10 per call.
  *

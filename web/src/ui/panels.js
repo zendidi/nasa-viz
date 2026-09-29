@@ -57,6 +57,21 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed
  */
+/**
+ * The moons line of the planets panel. Only ever shown while a planet is the
+ * pivot — that is the only time any moon is fetched or drawn — and it says so
+ * plainly, because a planet with none (Mercury, Venus) must not look like one
+ * whose load failed.
+ */
+function moonsLine(moons) {
+  if (!moons) return ''
+  const name = FOCUSES[moons.planet].label
+  if (moons.loading) return `<p class="muted">lunes de ${name}…</p>`
+  if (moons.known === 0) return `<p class="muted">${name} n'a pas de lune</p>`
+  const plural = moons.known > 1 ? 's' : ''
+  return `<p class="muted">${moons.known} lune${plural} de ${name} · positions réelles (JPL Horizons)</p>`
+}
+
 /** The pivot buttons of one group, in the registry's own order. */
 const focusButtons = (group) =>
   FOCUS_IDS.filter((id) => FOCUSES[id].group === group)
@@ -344,8 +359,10 @@ export function createPanels({ app, wheelTarget, on }) {
    * @param {{known: number, orbits: number, total: number, loading: boolean, loadingOrbits: boolean}} state
    * @param {{label: string, color: string}[]} legend one swatch per planet
    * @param {boolean} drawn whether the current scale and pivot put them on screen
+   * @param {{planet: string, known: number, loading: boolean} | null} moons
+   *   the centred planet's moons, or null when the pivot is not a planet
    */
-  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend, drawn) {
+  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend, drawn, moons) {
     const swatches = legend.map((p) => `<span class="dot" style="background:${p.color}"></span>${p.label}`)
     planetsPanel.innerHTML = `
       ${PLANETS_HEADING}
@@ -363,6 +380,7 @@ export function createPanels({ app, wheelTarget, on }) {
           : `orbites : ${orbits}/${total}${loadingOrbits ? '…' : ''} (vue Soleil)`
       }</p>
       <p class="legend">${swatches.join(' &nbsp;')}</p>
+      ${moonsLine(moons)}
     `
   }
 

@@ -14,6 +14,7 @@ import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX
 import { latLngToVector3 } from './scene/geo.js'
 import { MOON_RADIUS, makeGlobe, makeIssMarker, makeSunMarker, makeMoon, createDistanceRings } from './scene/bodies.js'
 import { createPlanets } from './scene/planets.js'
+import { createMoons } from './scene/moons.js'
 import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
@@ -418,6 +419,12 @@ function updateCameraLimits() {
       if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
     }
   }
+  // A moon can be the furthest thing in the scene at the readable end —
+  // Pasiphae orbits 24 million km out, well past where Jupiter's own curve puts
+  // the inner planets.
+  for (const distanceKm of moons.distancesKm()) {
+    farthest = Math.max(farthest, sceneDistance(distanceKm, scaleT, curve))
+  }
   // The drawn orbit is part of the scene's extent: you must be able to pull
   // back far enough to see the whole ellipse, aphelion included.
   if (neoScene.heliocentricGroup.visible) {
@@ -494,6 +501,10 @@ function setFocus(nextId) {
   renderViewPanel()
   renderPlanetsPanel() // so does the pivot
   if (modalNeo) renderNeoModal()
+
+  // The one place moons are ever fetched: centring on a planet is the whole
+  // trigger. Nothing is loaded for a planet nobody looks at.
+  if (focusPlanet) moons.loadFor(focusPlanet.id)
 }
 
 // Dragging with the right button wanders off the pivot; this brings it back to
@@ -573,6 +584,7 @@ function applyScale(nowSeconds) {
 
   updateBodyOrbits(t)
   planets.update(nowSeconds, t)
+  moons.update(nowSeconds, t)
   neoScene.update(nowSeconds, t)
 }
 
@@ -627,7 +639,7 @@ function renderNeoPositionsStatus() {
 function renderPlanetsPanel() {
   // `scaleStep`, not `scaleT`: the panel describes the cran the slider is on,
   // not where a running transition happens to be — same choice as the scale label.
-  panels.renderPlanets(planets.status(), planets.legend(), planets.drawnAt(scaleStep / SCALE_STEPS))
+  panels.renderPlanets(planets.status(), planets.legend(), planets.drawnAt(scaleStep / SCALE_STEPS), moons.status())
 }
 
 function renderScalePanel() {
@@ -763,6 +775,20 @@ const planets = createPlanets({
   on: { changed: () => { renderPlanetsPanel(); renderViewPanel() } },
 })
 
+// The moons of the centred planet only — created after the planets because the
+// pivot they hang off is resolved there. Their samples are already relative to
+// that planet, so they never touch placeKm.
+const moons = createMoons({
+  scene,
+  labels,
+  traces,
+  placeRelativeKm,
+  minRadiusAt,
+  focusPlanet: () => focusPlanet,
+  sunPositionKm,
+  on: { changed: () => renderPlanetsPanel() },
+})
+
 // Rings (and their labels) belong to the current point of view, so both are
 // rebuilt on every switch — see setFocus(). Each carries its own vector: the
 // entry list is built whole before it is placed, so no two entries may share
@@ -837,6 +863,7 @@ function updateSceneLabels() {
     // After the four above, so a planet's name never pushes the Earth's or the
     // Moon's aside — the list order is the spacing arbitration.
     ...planets.labelEntries(),
+    ...moons.labelEntries(),
     ...rings,
     { el: moonOrbitLabel, worldPos: moonOrbitLabelPos, occludable: true, show: Boolean(moonOrbitDrawn) },
     // Perihelion / aphelion / nodes of the drawn heliocentric orbit.

@@ -244,6 +244,92 @@ server-side 40 days per planet.
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.
 
+## `GET /api/solar-system/moons?planet=jupiter`
+
+Every moon of one planet in a single response. `planet` takes the same values as
+the two routes above; Mercury and Venus answer `{"moons": [], "missing": 0}`,
+which is the truth and not an error. The Earth's Moon is **not** served here —
+the web client computes it locally and it costs no request at all.
+
+At most 9 moons per planet: all of them when the planet has 9 or fewer (Mars),
+otherwise the 9 largest. 38 bodies in all.
+
+```json
+{
+  "frame": "ICRF, centred on the planet",
+  "units": "km",
+  "planet": "jupiter",
+  "missing": 0,
+  "moons": [
+    {
+      "id": "ganymede",
+      "planet": "jupiter",
+      "name": "Ganymede",
+      "radius_km": 2634.1,
+      "orbit_km": 1070400,
+      "start": 1789483860,
+      "step_seconds": 13740,
+      "covers_full_orbit": true,
+      "orbit_samples": 46,
+      "positions": [[-1064661, 45253, 16880], "… up to 500 in all"]
+    }
+  ]
+}
+```
+
+- **Positions are relative to the planet, not to the Earth.** Every other route
+  here is geocentric; this one is not, because a client draws a moon while
+  centred on its planet and would otherwise have to subtract a number it already
+  has. Same ICRF axes as everything else, so no frame conversion either way.
+- **`missing` is the contract.** Non-zero means "call me again": the route
+  fetches **at most one** absent moon per call and serves the rest from cache.
+  That keeps the worst case to a single Horizons request inside PHP's 30 s limit
+  — the same wall that forced one-body-per-call on the planet routes, where two
+  bodies at once measured 31.6 s and returned an 80 kB HTML error page. A cold
+  cache therefore converges in as many calls as the planet has moons; a warm one
+  answers everything at once, in ~85 ms for Jupiter's nine (77 kB).
+- `missing` also counts a moon Horizons had nothing for, so a client must cap its
+  retries rather than loop on it.
+- **Sampling is per moon, and the window follows from it.** The step is about a
+  45th of the orbital period, rounded to whole minutes — a coarser one is not a
+  matter of taste: sampled daily, Io lands 509 065 km out, 120 % of its orbital
+  radius, i.e. on the wrong side of Jupiter. The window is then 500 samples' worth
+  or one year, whichever is shorter. Fast moons hit the budget (Phobos: 10-minute
+  step, 3.5-day window); slow ones hit the year cap and carry far fewer samples
+  (Halimede: 41.8-day step, 9 samples). Sample *k* is at
+  `start + k × step_seconds`.
+- Since the Horizons cost is per *request* and not per point, a fine step is free
+  in latency and costs only bytes — which is why the budget is on points rather
+  than on the window.
+- **`covers_full_orbit` and `orbit_samples` hand the drawn orbit over for free.**
+  An uncapped table spans about eleven orbits, so its first `orbit_samples`
+  points are exactly one loop and no second request is needed. It is `false` for
+  the four whose period outruns the one-year cap — Pasiphae, Phoebe, Sycorax,
+  Halimede — where `orbit_samples` is `null` and no closed loop can be drawn.
+  Their positions are still correct; only the décor is missing.
+- `start` is bucketed on **half** the window, so a table handed out always has at
+  least half its window of validity left, and every visitor of the same bucket
+  shares one cached table. Cached server-side for the window plus a day.
+- Keyless (JPL Horizons), so no NASA quota is spent. Pre-fill the cache with
+  `php bin/console app:solar-system:warm` — see below.
+
+### `php bin/console app:solar-system:warm`
+
+Cron companion to the three solar-system routes. Fetches the planet tables and
+the moons of planets a visitor has actually centred on, before anyone asks.
+
+- **Lazy fill, eager refresh.** The route records which planets get looked at; the
+  command refreshes only those. A moon nobody has ever looked at is never fetched,
+  and a planet untouched for 90 days drops off on its own. `--all-moons` forces
+  all 38 (use once after a deploy, not on a cron); `--dry-run` lists and fetches
+  nothing.
+- **It is a CLI command on purpose.** `max_execution_time` is 0 here against 30 s
+  for a web request, so the one-body-per-call rule does not apply and it can work
+  through forty bodies in one process — measured, Jupiter's eight remaining moons
+  in 7 s.
+- Always exits 0: an upstream failure is transient, the next run picks it up, and
+  the routes still fall back to fetching on demand.
+
 ## `GET /api/apod`
 
 Cached 24h server-side (one NASA call per day regardless of client traffic).

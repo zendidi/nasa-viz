@@ -4,6 +4,7 @@ namespace App\Controller;
 
 use App\Service\HorizonsClient;
 use App\Service\IssPositionClient;
+use App\Service\MoonClient;
 use App\Service\NasaApiClient;
 use App\Service\NasaUsageTracker;
 use App\Service\NeoFeedBuilder;
@@ -200,6 +201,100 @@ final class SpaceDataController
             'start' => $start->getTimestamp(),
             'step_seconds' => SolarSystemClient::STEP_SECONDS,
             'bodies' => [SolarSystemClient::describe($id) + ['positions' => $positions]],
+        ]);
+    }
+
+    /**
+     * Every moon of one planet, in one call — and that is the whole difference
+     * with the two planet routes above.
+     *
+     * A planet is served one body per call because each call may have to reach
+     * Horizons, and two bodies at once already overran PHP's 30 s limit
+     * (gotchas.md). A moon is served nine at a time because this route **fetches
+     * at most one missing moon per call** and serves everything else from cache.
+     * So the worst case is still exactly one Horizons request inside the 30 s,
+     * while the steady state — the only state a visitor ever sees once
+     * `app:solar-system:warm` has run — is a single call returning all nine.
+     *
+     * The client loops while `missing` is non-zero. Cold that is one call per
+     * moon, exactly like the planets; warm it is one call, full stop.
+     *
+     * Positions are relative to the **planet**, not the Earth (CENTER='500@599'),
+     * so the client places a moon by adding its planet's own position and needs
+     * no frame conversion.
+     */
+    #[Route('/api/solar-system/moons', name: 'api_solar_system_moons', methods: ['GET'])]
+    public function solarSystemMoons(
+        Request $request,
+        MoonClient $client,
+        #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
+    ): JsonResponse {
+        $planet = trim((string) $request->query->get('planet', ''));
+        if (!SolarSystemClient::isKnown($planet)) {
+            return new JsonResponse(['error' => sprintf('planet must be one of %s', implode(', ', SolarSystemClient::ids()))], 400);
+        }
+
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $moons = [];
+        $missing = 0;
+        $fetched = false;
+
+        foreach (MoonClient::forPlanet($planet) as $id) {
+            $start = MoonClient::windowStart($id, $now);
+            $item = $pool->getItem('moon_'.$id.'_'.$start->getTimestamp());
+
+            if ($item->isHit()) {
+                $table = $item->get();
+            } elseif ($fetched) {
+                // One Horizons request per call, no more: the next call takes
+                // the next one. Counted as missing so the client comes back.
+                ++$missing;
+                continue;
+            } else {
+                $fetched = true;
+                try {
+                    $table = $client->getPositions($id, $start);
+                } catch (ExceptionInterface $e) {
+                    return $this->upstreamError('solar-system/moons', $e);
+                }
+                // The key carries the window, so a table renews when its bucket
+                // rolls over whatever this says; the TTL only has to outlive it.
+                // A moon Horizons didn't answer for is retried within the hour.
+                $pool->save($item->set($table)->expiresAfter(null === $table ? 3600 : MoonClient::windowSeconds($id) + 86400));
+            }
+
+            if (null === $table) {
+                ++$missing;
+                continue;
+            }
+
+            $moons[] = MoonClient::describe($id) + [
+                'start' => $table['start'],
+                'step_seconds' => $table['step_seconds'],
+                'covers_full_orbit' => MoonClient::coversFullOrbit($id),
+                'orbit_samples' => MoonClient::coversFullOrbit($id) ? MoonClient::orbitSampleCount($id) : null,
+                'positions' => $table['positions'],
+            ];
+        }
+
+        // Record that someone actually looked at this planet's moons, so
+        // `app:solar-system:warm` knows what to keep fresh. A PSR-6 pool cannot
+        // be enumerated, so "what is in the cache" has to be written down as it
+        // happens — and this is the lazy half of the design: nothing is ever
+        // refreshed until a visitor has asked for it once.
+        $index = $pool->getItem(MoonClient::INDEX_KEY);
+        $seen = $index->isHit() ? $index->get() : [];
+        $seen[$planet] = time();
+        $pool->save($index->set($seen)->expiresAfter(MoonClient::INDEX_TTL_SECONDS));
+
+        return new JsonResponse([
+            'frame' => 'ICRF, centred on the planet',
+            'units' => 'km',
+            'planet' => $planet,
+            // Non-zero means "call me again": either a moon is still unfetched,
+            // or Horizons had nothing for it this time.
+            'missing' => $missing,
+            'moons' => $moons,
         ]);
     }
 

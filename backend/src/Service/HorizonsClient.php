@@ -26,6 +26,15 @@ final class HorizonsClient
 {
     public const STEP_SECONDS = 3600;
 
+    /** Earth centre — the frame every table shared until moons needed their own planet. */
+    public const GEOCENTRIC = '500@399';
+
+    /** CENTER for a body's own planet, e.g. `centreOf('599')` for Jupiter. */
+    public static function centreOf(string $horizonsId): string
+    {
+        return '500@'.$horizonsId;
+    }
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         #[Autowire(env: 'HORIZONS_BASE_URL')]
@@ -63,14 +72,17 @@ final class HorizonsClient
      * between the two dates, not a duration.
      *
      * @param array<string, string> $ids the caller's own key => Horizons id, e.g. '499'
+     * @param string $center Horizons CENTER — '500@399' is geocentric, '500@599' is
+     *   Jupiter-centred. A moon is asked for around *its planet*: the table then needs
+     *   no subtraction client-side, and stays usable whatever the planet itself does.
      *
      * @return array<string, array{start: int, positions: list<array{int, int, int}>}|null>
      *
      * @throws ExceptionInterface on transport failure
      */
-    public function getMajorBodyVectors(array $ids, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize): array
+    public function getMajorBodyVectors(array $ids, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize, string $center = self::GEOCENTRIC): array
     {
-        return $this->fetch(array_map(static fn (string $id) => sprintf("'%s'", $id), $ids), $start, $stop, $stepSize);
+        return $this->fetch(array_map(static fn (string $id) => sprintf("'%s'", $id), $ids), $start, $stop, $stepSize, $center);
     }
 
     /**
@@ -81,7 +93,7 @@ final class HorizonsClient
      *
      * @return array<string, array{start: int, positions: list<array{int, int, int}>}|null>
      */
-    private function fetch(array $commands, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize): array
+    private function fetch(array $commands, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize, string $center = self::GEOCENTRIC): array
     {
         /** @var array<string, ResponseInterface> $responses */
         $responses = [];
@@ -94,7 +106,7 @@ final class HorizonsClient
                 'OBJ_DATA' => 'NO',
                 'MAKE_EPHEM' => 'YES',
                 'EPHEM_TYPE' => 'VECTORS',
-                'CENTER' => "'500@399'",
+                'CENTER' => sprintf("'%s'", $center),
                 'START_TIME' => sprintf("'%s'", $start->format('Y-m-d H:i')),
                 'STOP_TIME' => sprintf("'%s'", $stop->format('Y-m-d H:i')),
                 'STEP_SIZE' => sprintf("'%s'", $stepSize),

@@ -84,13 +84,26 @@ par construction, faire sentir que le système de Neptune vaut 78 fois celui de 
 **quatrième anneau, à distance absolue de 1 ua**, en ambre au lieu du bleu pour qu'il ne se lise pas
 comme un membre de la même famille (décidé avec l'utilisateur le 2026-09-29).
 
-Il se resserre sur la planète à mesure qu'on s'éloigne. Au cran 1 (les anneaux sont masqués au
-cran 0) : 56 unités autour de Mercure, 45 autour de Vénus, 33 autour de Mars, **11 autour des quatre
-géantes** — pour un rayon de pivot de 1,8 à 2,7.
+Il se resserre sur la planète à mesure qu'on s'éloigne.
 
-Limite connue : à partir de Jupiter il sature. Ce n'est pas le plancher qui est grossier —
-`6 + 16,37·log10(d / 0,3a)` vaut déjà un nombre **négatif** à 1 ua pour Saturne et au-delà : la
-courbe n'a plus de place pour le représenter, aucun réglage de plancher n'y changerait rien.
+**Mis à jour le 2026-09-29 (lot 4).** La limite qui était documentée ici — saturation au plancher
+à partir de Jupiter, les quatre géantes indiscernables — **n'existe plus**. Elle venait de
+`orbitingCurve`, où `6 + 16,37·log10(d / 0,3a)` vaut déjà un nombre négatif à 1 ua pour Saturne et
+au-delà. Les cinq planètes à lunes sont passées à `moonSystemCurve`, qui enjambe quatre à cinq
+décades de plus, et le cercle y tombe naturellement :
+
+| pivot | rayon écran de l'anneau 1 ua |
+|---|---|
+| Mars | 20,67 |
+| Jupiter | 18,79 |
+| Saturne | 18,16 |
+| Uranus | 18,01 |
+| Neptune | 17,79 |
+
+Monotone décroissant, et **plus aucune saturation**. Mercure et Vénus, sans lune, gardent
+`orbitingCurve` — le cercle y est à 21,3 et 16,9, bien au-dessus du plancher puisqu'elles sont
+proches du Soleil. C'est là que la courbe du lot 4 rend le plus service sans qu'on le lui ait
+demandé.
 
 À « 100 % réel » il n'est plus comprimé du tout et vaut 46 962 unités pour **tous** les pivots —
 c'est là qu'il joue pleinement son rôle d'étalon fixe.

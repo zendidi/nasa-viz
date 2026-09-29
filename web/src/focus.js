@@ -11,7 +11,7 @@
  * Pure data + math, no Three.js.
  */
 
-import { AU_KM, EARTH_CURVE, LUNAR_DISTANCE_KM, SUN_CURVE, orbitingCurve } from './scale.js'
+import { AU_KM, EARTH_CURVE, LUNAR_DISTANCE_KM, SUN_CURVE, moonSystemCurve, orbitingCurve } from './scale.js'
 
 const lunarRing = (count, label) => ({ km: count * LUNAR_DISTANCE_KM, label })
 const auRing = (au) => ({ km: au * AU_KM, label: `${au.toLocaleString('fr-FR')} ua` })
@@ -108,39 +108,76 @@ const PLANET_LABELS = {
   neptune: 'Neptune',
 }
 
+/**
+ * Orbital radius, in km, of each planet's **largest** moon — the anchor its
+ * readable curve is pinned to (`moonSystemCurve`, scale.js), which lands it at
+ * 12 units exactly as the Earth's own Moon has always been.
+ *
+ * The largest and not the innermost: it is the moon the view is really about,
+ * and the choice sets the slope for the whole system. Mercury and Venus are
+ * absent because they have none — they keep `orbitingCurve`, which is honest:
+ * with no inner scale to span, there is nothing for a two-anchor curve to do.
+ *
+ * Here rather than fetched, for the same reason as `PLANET_AU`: the curve
+ * decides where everything in the scene is drawn, so it must exist before any
+ * Horizons table lands. Mean orbital radii, cross-checked against the backend's
+ * own moon catalogue (`MoonClient::MOONS`) which carries the same figures.
+ */
+const PLANET_MOON_ANCHOR = {
+  mars: 9376, // Phobos
+  jupiter: 1_070_400, // Ganymède
+  saturn: 1_221_870, // Titan
+  uranus: 436_300, // Titania
+  neptune: 354_759, // Triton
+}
+
+/**
+ * Reference circles around a planet that has moons. The heliocentric set the
+ * lot 3 used (0,5 a / 2 a / 5 a) no longer works here and the measurement says
+ * why: under `moonSystemCurve` those three land at 20,1 / 22,0 / 23,3 around
+ * Jupiter — bunched in two units just outside the Sun, and overlapping the 1 ua
+ * circle. The curve now spends most of its range on the moon system, so the
+ * rings have to follow it there.
+ *
+ * Two circles bracketing the anchor moon (0,3x and 3x its distance, so never on
+ * top of a moon), measured at 10,3–10,9 and 13,0–13,5 across the five planets,
+ * against moons spread over 9,6 to 16,2. Plus the absolute 1 ua kept from
+ * lot 3 — and it works better here than it did there: 20,67 around Mars, 18,79
+ * around Jupiter, 17,79 around Neptune. Monotone, and **no floor saturation at
+ * all**, which is exactly the limit that was documented as accepted on
+ * 2026-09-29. The new curve lifted it.
+ */
+const moonRing = (km) => ({
+  km: Math.round(km),
+  label: `${Math.round(km).toLocaleString('fr-FR', { maximumSignificantDigits: 2 })} km`,
+})
+
 export const PLANET_FOCUS_IDS = Object.keys(PLANET_AU)
 
 for (const id of PLANET_FOCUS_IDS) {
   const au = PLANET_AU[id]
+  const anchorKm = PLANET_MOON_ANCHOR[id]
   FOCUSES[id] = {
     id,
     label: PLANET_LABELS[id],
     frame: `centré sur ${PLANET_LABELS[id]}`,
     group: 'planet',
-    curve: orbitingCurve(au * AU_KM),
-    // Three circles scaled to this planet's own orbit, plus one at an absolute
-    // 1 ua. The scaled ones are what makes the view readable — they land at the
-    // same screen radius (9,63 / 19,49 / 26,00) whichever planet is the pivot,
-    // the same invariant as the curve. But that is exactly why they cannot show
-    // that Neptune's system is 78 times Mercury's: identical picture everywhere.
-    //
-    // The 1 ua circle is the fixed yardstick that can. Measured at slider step 1
-    // (rings are hidden at step 0): 56 units around Mercury, 33 around Mars,
-    // 11 around the four giants — it visibly collapses onto the planet as you
-    // move outward. Known limit, accepted 2026-09-29: from Jupiter out it is
-    // clamped by the curve's own floor, so the four giants look alike. That is
-    // not the floor being crude — `6 + 16,37·log10(d / 0,3a)` is already
-    // *negative* at 1 ua for Saturn and beyond; the curve has no room left to
-    // represent it, and no floor setting would change that.
-    //
-    // At 100 % réel it stops being compressed at all and reads 46 962 units for
-    // every pivot — which is the point of an absolute ring.
-    rings: [
-      { km: AU_KM, label: '1 ua (Terre)', absolute: true },
-      scaledRing(0.5 * au),
-      scaledRing(2 * au),
-      scaledRing(5 * au),
-    ],
+    // A planet with moons has to show two worlds four to five decades apart;
+    // one without has only the solar system to show.
+    curve: anchorKm ? moonSystemCurve(anchorKm, au * AU_KM) : orbitingCurve(au * AU_KM),
+    // With moons, the rings follow the curve into the moon system (see
+    // `moonRing`); without, the heliocentric set of lot 3 still applies. The
+    // absolute 1 ua circle is in both: it is the only thing on screen that says
+    // one system is bigger than another, all the scaled ones being pinned to
+    // land in the same place whichever pivot you choose.
+    rings: anchorKm
+      ? [{ km: AU_KM, label: '1 ua (Terre)', absolute: true }, moonRing(0.3 * anchorKm), moonRing(3 * anchorKm)]
+      : [
+          { km: AU_KM, label: '1 ua (Terre)', absolute: true },
+          scaledRing(0.5 * au),
+          scaledRing(2 * au),
+          scaledRing(5 * au),
+        ],
     reference: { label: 'Soleil', km: au * AU_KM },
   }
 }

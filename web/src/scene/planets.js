@@ -17,6 +17,7 @@ import * as THREE from 'three'
 import { fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { getSunEquatorial } from '../astronomy.js'
+import { makeLitBodyMaterial } from './bodies.js'
 import { icrfToScene, latLngToVector3 } from './geo.js'
 import { pivotRadius, planetRadius } from '../scale.js'
 
@@ -44,66 +45,6 @@ const PLANETS = {
 const PLANET_IDS = Object.keys(PLANETS)
 
 const planetGeometry = new THREE.SphereGeometry(1, 24, 24)
-
-/**
- * A planet's own material. One `ShaderMaterial` per body, because the whole
- * point is a per-body sun direction: `uSunDir` is `normalize(sunKm − planetKm)`
- * in scene axes, which is exact whatever the scale slider does to distances —
- * it is computed from the real km vectors, not from where the two ended up on
- * screen. That is what the flat discs were waiting for: a `DirectionalLight` has
- * a single direction for the whole scene (the Sun as seen from the *Earth*), so
- * lighting Mars with it drew Mars's terminator facing the Earth's way.
- *
- * Seven materials, one shader program: the sources are identical, so three.js's
- * program cache hands out the same compiled program and only the uniforms
- * differ.
- *
- * `uOpacity` rather than `material.opacity`: a hand-written ShaderMaterial gets
- * no automatic opacity, the fragment has to write the alpha itself.
- */
-function makePlanetMaterial(color) {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      uColor: { value: new THREE.Color(color) },
-      uSunDir: { value: new THREE.Vector3(1, 0, 0) },
-      uOpacity: { value: 1 },
-    },
-    // Required by the renderer's logarithmicDepthBuffer — a hand-written
-    // ShaderMaterial doesn't get these chunks automatically, and without them a
-    // planet's depth wouldn't match the Moon's or the NEO points'. Same trap the
-    // globe documents; see docs/agent/gotchas.md.
-    vertexShader: `
-      #include <common>
-      #include <logdepthbuf_pars_vertex>
-      varying vec3 vWorldNormal;
-      void main() {
-        vWorldNormal = normalize(mat3(modelMatrix) * normal);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        #include <logdepthbuf_vertex>
-      }
-    `,
-    fragmentShader: `
-      uniform vec3 uColor;
-      uniform vec3 uSunDir;
-      uniform float uOpacity;
-      varying vec3 vWorldNormal;
-      #include <logdepthbuf_pars_fragment>
-      void main() {
-        #include <logdepthbuf_fragment>
-        float sunFacing = dot(normalize(vWorldNormal), normalize(uSunDir));
-        // Soft terminator, same band as the globe's, and a floor of 0,12 so the
-        // night side stays a dark disc instead of a hole in the starfield — a
-        // planet is never truly unlit here, and at a few pixels across a hard
-        // black half would just read as the wrong shape.
-        float lit = 0.12 + 0.88 * smoothstep(-0.15, 0.6, sunFacing);
-        gl_FragColor = vec4(uColor * lit, uOpacity);
-        // Custom fragment shaders don't get the automatic linear->output
-        // colorspace encode that built-in materials do.
-        #include <colorspace_fragment>
-      }
-    `,
-  })
-}
 
 /**
  * Screen floor for a planet, in pixels of radius. Everything out here is
@@ -288,7 +229,7 @@ export function createPlanets({
 
   /** @type {PlanetBody[]} */
   const bodies = PLANET_IDS.map((id) => {
-    const mesh = new THREE.Mesh(planetGeometry, makePlanetMaterial(PLANETS[id].color))
+    const mesh = new THREE.Mesh(planetGeometry, makeLitBodyMaterial(PLANETS[id].color))
     // Nothing to place until a table arrives — and there is no fallback
     // position for a planet the way an approach distance is one for a NEO.
     mesh.visible = false

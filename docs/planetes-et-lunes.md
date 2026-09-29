@@ -283,6 +283,117 @@ Le lot 1 se suffit à lui-même et se voit tout de suite ; les suivants sont fac
    démarrage.
 5. **Habillage** (facultatif) — textures, anneaux de Saturne, inclinaison et rotation propre.
 
+## 4 bis. Lot 4 — plan d'exécution arrêté le 2026-09-29
+
+Les lots 1, 2 et 3 sont livrés. Ce qui suit remplace la ligne 4 du découpage ci-dessus, qui
+sous-estimait le sujet (« 4 lunes de Jupiter à la demande »).
+
+### Le périmètre, tranché par l'utilisateur
+
+**Au plus 9 lunes par planète : toutes si elle en a 9 ou moins, sinon les 9 plus grosses.**
+Identifiants vérifiés un par un contre `horizons_lookup.api` le 2026-09-29, les 38 répondent.
+
+| planète | lunes | ids Horizons |
+|---|---|---|
+| Mercure | aucune | — |
+| Vénus | aucune | — |
+| Terre | la Lune | **aucun appel** — `astronomy.js` la calcule déjà localement |
+| Mars | les 2 | Phobos 401, Deimos 402 |
+| Jupiter | 9 sur ~95 | Ganymède 503, Callisto 504, Io 501, Europe 502, Himalia 506, Amalthée 505, Thébé 514, Elara 507, Pasiphaé 508 |
+| Saturne | 9 sur ~274 | Titan 606, Rhéa 605, Japet 608, Dioné 604, Téthys 603, Encelade 602, Mimas 601, Hypérion 607, Phœbé 609 |
+| Uranus | 9 sur ~28 | Titania 703, Obéron 704, Umbriel 702, Ariel 701, Miranda 705, Puck 715, Sycorax 717, Portia 712, Juliette 711 |
+| Neptune | 9 sur ~16 | Triton 801, Protée 808, Néréide 802, Larissa 807, Galatée 806, Despina 805, Thalassa 804, Naïade 803, Halimède 809 |
+
+38 corps via Horizons. Réserve assumée : au-delà des 4 ou 5 premières de chaque géante, ce sont des
+cailloux de 30 à 100 km à des millions de km (Pasiphaé, Sycorax, Halimède) qui resteront des points
+au plancher de pixels. Plusieurs sont des **irrégulières rétrogrades** très inclinées — leurs orbites
+de travers sont une information juste, pas un artefact.
+
+### L'obstacle à lever en premier : la courbe ne sait pas représenter une lune
+
+Mesuré le 2026-09-29 sur les courbes du lot 3 : **les 38 lunes tombent sur le plancher (3,2 unités)**,
+collées à leur planète. Les valeurs brutes de `a + b·log10(d)` vont de **−28 à −57** — le système de
+lunes est 3 à 5 ordres de grandeur sous la plage d'une courbe calée sur l'orbite héliocentrique.
+
+| lune | distance | brut | dessinée à |
+|---|---|---|---|
+| Phobos / Mars | 9 376 km | −57,2 | 3,20 (plancher) |
+| Io / Jupiter | 421 700 km | −38,9 | 3,20 (plancher) |
+| Titan / Saturne | 1 221 870 km | −35,7 | 3,20 (plancher) |
+| Néréide / Neptune | 5 513 800 km | −33,1 | 3,20 (plancher) |
+
+La solution est déjà dans le code : `EARTH_CURVE` est calée sur **deux** échelles (Lune → 12 unités,
+0,5 ua → 20), donc elle enjambe le système lunaire *et* l'interplanétaire. Il faut généraliser.
+
+Vérifié numériquement : une courbe calée **(lune principale → 12 ; Soleil → 21,05)** redonne
+`EARTH_CURVE` exactement — même pente, 3,494. Donc la courbe actuelle de la Terre devient le cas
+particulier de la règle générale, exactement comme `SUN_CURVE` est devenue `orbitingCurve(1 ua)`.
+Mercure et Vénus, sans lune, gardent `orbitingCurve`.
+
+À revérifier une fois la courbe changée, puisqu'elle bouge sous eux : les anneaux mis à l'échelle
+(9,63 / 19,49 / 26,00 aujourd'hui) et l'anneau absolu à 1 ua.
+
+### Le budget de points : un quota « on tient X jours »
+
+Une lune va vite : au pas d'un jour, Io se retrouve **de l'autre côté de Jupiter** (erreur
+d'interpolation 509 065 km, 120 % du rayon orbital). Il faut ~1/45 de période. Mais le coût Horizons
+est **par requête, pas par point** — donc le pas fin est gratuit en latence, et c'est le volume qui
+paie.
+
+D'où la règle : **budget fixe de points par lune, fenêtre déduite**. Propriété clé, le poids devient
+constant — **~64 ko par lune à 500 points, quelle que soit la lune**. Seule la validité varie :
+
+| lune | pas | validité | refetch/an |
+|---|---|---|---|
+| Phobos | 10 min | 3,5 j | 103 |
+| Io | 57 min | 19,7 j | 19 |
+| Ganymède | 3,8 h | 79,5 j | 5 |
+| Callisto | 8,9 h | 185 j | 2 |
+| Titan | 8,5 h | 177 j | 2 |
+| | | **total** | **171/an, soit 0,5 requête/jour** |
+
+Même rythme que les 7 planètes aujourd'hui (14 requêtes/mois). Les lunes n'alourdissent pas, elles
+égalent. Volumes : 2,4 Mo de cache serveur pour les 38 (contre `backend/var` déjà à 6,2 Mo), et côté
+client seules les lunes des pivots réellement visités sont stockées — 0,56 Mo pour Jupiter + Saturne
+au complet, très en dessous des ~5 Mo de `localStorage`.
+
+### Pourquoi le calcul reste côté client
+
+Question posée par l'utilisateur (« alléger les clients qui tourneront peut-être sur du
+grille-pain »). Mesuré : interpolation + placement de **79 corps** (7 planètes, 38 lunes, 30 NEO,
+Terre/Lune/Soleil/ISS) coûte **0,0042 ms par frame**, soit **0,03 %** du budget d'une frame à 60 fps
+— 0,5 % sur une machine 20 fois plus lente. Ce n'est pas le calcul qui coûte, c'est le GPU (textures
+2048² du globe, shaders, 1 600 étoiles).
+
+Déporter l'interpolation ne gagnerait rien de mesurable et coûterait beaucoup : Phobos boucle en
+7 h 39, sa position change à la minute — il faudrait redemander en permanence, ce qui casse le
+cache-first et le hors-ligne.
+
+Les vrais gains backend, eux, sont retenus : **une requête par planète au lieu de neuf**, positions
+**déjà relatives à la planète** (`CENTER='500@599'`, aucune soustraction côté client), et tout le
+travail lourd dans la commande console — où `max_execution_time` vaut **0** (vérifié) contre 30 s en
+web, donc le mur des 30 s ne s'applique pas. Le quatrième gain classique, arrondir les nombres, est
+**déjà fait** : le backend renvoie des entiers en km.
+
+### Les cinq étapes
+
+0. **La courbe** (bloquant). `moonSystemCurve(luneKm, helioKm)` dans `scale.js`, `EARTH_CURVE` en
+   cas particulier. Vérification numérique sur les 5 planètes à lunes avant d'écrire quoi que ce soit
+   d'autre : les lunes doivent s'étaler lisiblement, le Soleil rester où il est, les anneaux garder
+   un sens.
+1. **Backend.** Catalogue des lunes (id Horizons, planète, nom, rayon), route
+   `/api/solar-system/moons?planet=jupiter` servant depuis le cache et ne complétant **qu'un** corps
+   manquant par appel — sûr à froid (jamais plus d'une requête Horizons dans les 30 s), un seul appel
+   à chaud. Fenêtre déduite du budget de points. `backend/API.md` à jour.
+2. **Commande console** `app:solar-system:warm` : renouvelle ce qui est **déjà en cache et proche de
+   l'expiration**, pas le catalogue entier. Peuplement paresseux par les visites, rafraîchissement
+   anticipé par le cron — personne n'attend Horizons sauf le tout premier visiteur d'une lune donnée.
+3. **Client.** Chargement à la demande au changement de pivot, affichage progressif, cache
+   `localStorage` par planète.
+4. **Scène.** Meshes, éclairage (elles héritent du `uSunDir` par corps écrit au lot 3), libellés, et
+   les lunes entrent dans la portée de la caméra.
+5. **Docs** et checklist de validation visuelle.
+
 ### Le piège à ne pas manquer : le cache froid
 
 `docs/agent/gotchas.md` note que sur cette machine Symfony retombe sur `NativeHttpClient`, qui
