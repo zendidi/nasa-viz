@@ -155,7 +155,7 @@ per object (1 day when unknown; not cached while a source is down).
   `{probability, palermo_cum, palermo_max, torino_max, n_impacts, range}`.
 - HTTP 502 only when both SBDB and ssoCard are unreachable.
 
-## `GET /api/solar-system/positions?body=mars`
+## `GET /api/solar-system/positions?body=mars` (ou `body=sun`)
 
 One planet's real geocentric positions, from JPL Horizons — keyless, not on
 the NASA quota. `body` is required and must be one of `mercury`, `venus`,
@@ -201,45 +201,66 @@ listing them. Cached server-side 40 days per planet.
   planet from one table instead of each keeping its own. It is a constant —
   cache it with the positions rather than refetching for it.
 
+
+### `body=sun`
+
+The Sun rides on this route because its table has exactly a planet's shape:
+geocentric, ICRF, daily, a year long, renewed monthly. `radius_km` is 696 340.
+
+It is served at all because the web client used to compute the Sun from a
+low-precision series working in the **equinox of date**, where the scene's axes
+are J2000. Measured 2026-09-29: 956 143 km apart, 0,3656° — the precession
+accumulated since J2000, and growing (1 017 187 km by mid-2027). That single
+error sat under the terminator on the globe, the Moon's phase, every body drawn
+in the heliocentric view, and the planet orbits. One table fixes them together,
+for one keyless request a month.
+
+`?body=sun` is **not** accepted by the orbit route: the Sun has no orbit to draw
+here, and `planetIds()` is what those routes validate against.
+
 ## `GET /api/solar-system/orbit?body=mars`
 
-One planet's whole orbit as a polyline — 181 samples over one sidereal period.
-Same `body` values and the same one-per-call rule as the route above. Cached
-server-side 40 days per planet.
+One planet's whole orbit as a polyline — 361 samples over one sidereal period.
+**Planets only**: the Sun is served by the positions route but has no orbit to
+draw here. Same one-per-call rule as the route above. Cached server-side 40 days
+per planet.
 
 ```json
 {
-  "frame": "ICRF geocentric",
+  "frame": "ICRF heliocentric",
   "units": "km",
   "body": { "id": "mars", "name": "Mars", "radius_km": 3389.5, "period_days": 686.98 },
   "start": 1788220800,
   "stop": 1847583060,
-  "positions": [[-62375421, 246373087, 109612684], "… 181 in all"]
+  "positions": [[-62375421, 246373087, 109612684], "… 361 in all"]
 }
 ```
 
-- Sample *k* is at `start + k/180 × (stop − start)`. `stop` is exactly the
+- Sample *k* is at `start + k/360 × (stop − start)`. `stop` is exactly the
   value sent to Horizons (truncated to the minute, which is all it reads), so
   a client can date every sample without re-deriving the period.
-- **The samples are geocentric, and the curve is meant to be drawn
-  heliocentric** — the client subtracts its own Sun from each sample. That is
-  not an oversight. A viewer that builds its heliocentric view as
-  `geocentric − Sun` must use *its* Sun here, or its planet will not sit on
-  its own orbit. The web viewer's low-precision Sun series is 951 057 km
-  (0.363°) from DE441 — the precession accumulated since J2000 — so a
-  ready-made heliocentric ellipse would miss Mercury by 966 557 km. Measured
-  2026-09-22; subtracting the same Sun brings the miss down to 8 572 km for
-  Mercury and 205 086 km for Neptune, which is the chord approximation, not
-  the Sun. A client with a proper ephemeris can of course subtract that one
-  instead and get DE441's true ellipse.
+- **The samples are heliocentric since 2026-09-29.** They used to be geocentric
+  on purpose, so a client could subtract *its own* Sun and have the line pass
+  through its own planet by cancellation even though that Sun was 951 057 km off.
+  Now that `?body=sun` serves the Sun from the same DE441 tables, there is
+  nothing left to cancel — and the subtraction was never possible here anyway,
+  these samples spanning a whole sidereal period (165 years for Neptune) where a
+  Sun table covers one. The curve is DE441's true ellipse and passes through the
+  planet by construction. A client must **not** subtract anything from it.
 - `start` is the first of the current UTC month, and the window is exactly one
   sidereal period — so "now" is always inside it (at most 31 days past the
   start, against Mercury's 88-day period). That is what makes the line pass
   through the planet.
-- 180 intervals is 2° of arc per segment; replacing the arc by a chord costs
-  0.015 % of the orbital radius. Neptune's 165-year orbit fits in one request
-  because Horizons reads a *unitless* `STEP_SIZE` as a number of intervals,
-  not a duration.
+- 360 intervals is 1° of arc per segment. Raised from 180 on 2026-09-29, for one
+  request either way (the Horizons cost is per request, not per point) and about
+  12 ko more. Measured worst miss between a planet and its own line, over 200
+  instants: Mars 32 127 → 7 781 km, Jupiter 113 844 → 28 443, Neptune 529 228 →
+  170 850 — the factor of 4 the 1/N² chord law predicts.
+  **Mercury does not improve** (53 230 → 55 722 km): its miss is not the chord
+  but its own daily *position* table, since near inferior conjunction it is
+  0,55 au away and sweeps ~4° a day. Only a finer positions step would help it.
+- Neptune's 165-year orbit fits in one request because Horizons reads a
+  *unitless* `STEP_SIZE` as a number of intervals, not a duration.
 - The curve does **not** close exactly: the orbit precesses between the first
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.

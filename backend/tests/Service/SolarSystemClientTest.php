@@ -99,11 +99,18 @@ final class SolarSystemClientTest extends TestCase
     /**
      * Two things this pins down. The unitless STEP_SIZE is a *number of
      * intervals*, which is what fits Neptune's 165 years in one request; and
-     * the centre stays geocentric even though the curve is drawn heliocentric
-     * — the client subtracts the same low-precision Sun it places the planet
-     * with, so the line passes through the body (see getOrbit()'s docblock).
+     * the centre is the **Sun**, not the Earth.
+     *
+     * That centre changed on 2026-09-29 and the assertion below is the guard.
+     * The curve used to be fetched geocentric so a client could subtract its own
+     * low-precision Sun and have the line pass through its own planet by
+     * cancellation. Now that the client places the Sun from DE441 too
+     * (`?body=sun`), the subtraction is both pointless and impossible — these
+     * samples span a whole sidereal period, 165 years for Neptune, where a Sun
+     * table covers one. Reverting this centre without reverting the client would
+     * put every planet 951 057 km off its own orbit.
      */
-    public function testOrbitIsOnePeriodOfGeocentricSamplesCutIntoIntervals(): void
+    public function testOrbitIsOnePeriodOfHeliocentricSamplesCutIntoIntervals(): void
     {
         [$client, $urls] = $this->clientRecording(
             static fn (string $url) => new MockResponse(json_encode(['result' => self::MARS_RESULT])),
@@ -114,9 +121,13 @@ final class SolarSystemClientTest extends TestCase
 
         self::assertCount(1, $urls);
         self::assertStringContainsString('COMMAND=%27499%27', $urls[0]);
-        self::assertStringContainsString('CENTER=%27500%40399%27', $urls[0]);
-        self::assertStringContainsString('STEP_SIZE=%27180%27', $urls[0]);
-        self::assertStringNotContainsString('STEP_SIZE=%27180d%27', $urls[0]);
+        self::assertStringContainsString('CENTER=%27500%4010%27', $urls[0]); // 500@10 = the Sun
+        self::assertStringNotContainsString('CENTER=%27500%40399%27', $urls[0]);
+        // Derived from the constant, not spelled out: what this pins down is that
+        // the value goes out **unitless** (a number of intervals) and not as a
+        // duration. Hard-coding 180 only made the test stale when it became 360.
+        self::assertStringContainsString('STEP_SIZE=%27'.SolarSystemClient::ORBIT_INTERVALS.'%27', $urls[0]);
+        self::assertStringNotContainsString('STEP_SIZE=%27'.SolarSystemClient::ORBIT_INTERVALS.'d%27', $urls[0]);
 
         // Mars' sidereal period is 686,980 d — the window is that long, so "now"
         // (at most 31 days past a monthly anchor) always falls inside it.
@@ -145,10 +156,18 @@ final class SolarSystemClientTest extends TestCase
 
     public function testEveryKnownIdDescribesItself(): void
     {
+        // The Sun rides along in BODIES because its table has exactly a planet's
+        // shape, but it is not a planet and `planetIds()` must keep it out — it
+        // has no moons and no orbit to draw.
         self::assertSame(
-            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'],
+            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'sun'],
             SolarSystemClient::ids(),
         );
+        self::assertSame(
+            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'],
+            SolarSystemClient::planetIds(),
+        );
+        self::assertSame(['id' => 'sun', 'name' => 'Sun', 'radius_km' => 696340.0], SolarSystemClient::describe('sun'));
         // The Earth is the frame's origin — a table of zeroes, deliberately absent.
         self::assertFalse(SolarSystemClient::isKnown('earth'));
         self::assertSame(['id' => 'jupiter', 'name' => 'Jupiter', 'radius_km' => 69911.0], SolarSystemClient::describe('jupiter'));

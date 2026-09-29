@@ -2,7 +2,8 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
-import { getSunEquatorial, getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
+import { getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
+import { createSunTable } from './sunTable.js'
 import { orbitSchematicSvg } from './orbit.js'
 import { FOCUSES } from './focus.js'
 import { createPanels } from './ui/panels.js'
@@ -135,13 +136,26 @@ const sunPositionKm = new THREE.Vector3()
 const moonPositionKm = new THREE.Vector3()
 const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)
 
+// The Sun comes from JPL Horizons, with `astronomy.js`'s series standing in
+// until the table lands. Declared here because updateAstronomy() below runs on
+// the very first frame, long before any fetch returns.
+const sunTable = createSunTable({
+  on: {
+    // Everything derived from the Sun has to be redone when the real one
+    // arrives: the scene's positions, and the Earth's own drawn orbit.
+    changed: () => {
+      updateAstronomy()
+      rebuildBodyOrbits()
+    },
+  },
+})
+
 function updateAstronomy() {
   const now = new Date()
 
-  const { ra, dec, distanceKm } = getSunEquatorial(now)
-  sunDirWorld.copy(latLngToVector3(dec, ra, 1))
-  sunDistanceKm = distanceKm
-  sunPositionKm.copy(sunDirWorld).multiplyScalar(sunDistanceKm)
+  sunTable.positionKmAt(now, sunPositionKm)
+  sunDistanceKm = sunPositionKm.length()
+  sunDirWorld.copy(sunPositionKm).divideScalar(sunDistanceKm)
   sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
   // The globe shader reads sunDirection in world space and does its own
   // modelMatrix transform per-fragment, so the globe's real rotation (set
@@ -293,14 +307,17 @@ function rebuildBodyOrbits() {
     }),
     () => true,
   )
+  // Straight from the Sun table when there is one — the Earth seen from the Sun
+  // is the Sun seen from the Earth, negated. Those are the very samples the
+  // globe's own position is interpolated from, so the Earth lands on its line by
+  // construction. Only while the fallback series is standing in is the curve
+  // sampled a year forward from now instead.
   traces.setKm(
     earthOrbitTrace,
-    sampleBodyOrbit(EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) => {
-      // The Earth seen from the Sun is the Sun seen from the Earth, negated —
-      // the same vector the globe is placed from.
-      const { ra, dec, distanceKm } = getSunEquatorial(date)
-      return latLngToVector3(dec, ra, distanceKm).negate()
-    }),
+    sunTable.earthOrbitSamplesKm() ??
+      sampleBodyOrbit(EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) =>
+        sunTable.positionKmAt(date, new THREE.Vector3()).negate(),
+      ),
     () => true,
   )
 }
@@ -953,6 +970,7 @@ renderViewPanel()
 // Not wired to "Mettre à jour": the planet tables are keyless (JPL Horizons,
 // no NASA quota) and cover a year, so there is nothing for that button to
 // refresh. They load themselves once, then come back from localStorage.
+sunTable.load()
 planets.load()
 
 const cachedIss = loadCached('iss')

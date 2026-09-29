@@ -230,8 +230,8 @@ final class SpaceDataController
         #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
     ): JsonResponse {
         $planet = trim((string) $request->query->get('planet', ''));
-        if (!SolarSystemClient::isKnown($planet)) {
-            return new JsonResponse(['error' => sprintf('planet must be one of %s', implode(', ', SolarSystemClient::ids()))], 400);
+        if (!in_array($planet, SolarSystemClient::planetIds(), true)) {
+            return new JsonResponse(['error' => sprintf('planet must be one of %s', implode(', ', SolarSystemClient::planetIds()))], 400);
         }
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
@@ -317,8 +317,10 @@ final class SpaceDataController
         #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
     ): JsonResponse {
         $id = trim((string) $request->query->get('body', ''));
-        if (!SolarSystemClient::isKnown($id)) {
-            return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', SolarSystemClient::ids()))], 400);
+        // Planets only: the Sun is served by the positions route but has no
+        // orbit of its own to draw here.
+        if (!in_array($id, SolarSystemClient::planetIds(), true)) {
+            return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', SolarSystemClient::planetIds()))], 400);
         }
 
         $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));

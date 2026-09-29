@@ -101,7 +101,7 @@ final class SolarSystemWarmCommand extends Command
             null === $positions ? ++$failed : ++$fetched;
         }
 
-        foreach (SolarSystemClient::ids() as $id) {
+        foreach (SolarSystemClient::planetIds() as $id) {
             $item = $this->pool->getItem('solar_system_orbit_'.$id.'_'.$planetStart->format('Y-m-d'));
             if ($item->isHit()) {
                 ++$skipped;
@@ -179,7 +179,7 @@ final class SolarSystemWarmCommand extends Command
     {
         if ($all) {
             return array_values(array_filter(
-                SolarSystemClient::ids(),
+                SolarSystemClient::planetIds(),
                 static fn (string $id) => [] !== MoonClient::forPlanet($id),
             ));
         }

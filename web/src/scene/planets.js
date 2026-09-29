@@ -16,9 +16,8 @@
 import * as THREE from 'three'
 import { fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
-import { getSunEquatorial } from '../astronomy.js'
 import { makeLitBodyMaterial } from './bodies.js'
-import { icrfToScene, latLngToVector3 } from './geo.js'
+import { icrfToScene } from './geo.js'
 import { pivotRadius, planetRadius } from '../scale.js'
 
 /**
@@ -98,6 +97,9 @@ function planetFade(t, hidden) {
 /** A table is refetched once "now" comes within this much of its end. */
 const TABLE_MARGIN_MS = 30 * 86_400_000
 
+/** Marks a stored orbit table as the heliocentric kind; see `orbitCovers`. */
+const ORBIT_FRAME = 'heliocentric'
+
 /** Dimmer than the Earth's own orbit (0.5): that one is the heliocentric view's yardstick. */
 const ORBIT_OPACITY = 0.35
 
@@ -123,51 +125,38 @@ function covers(record) {
  */
 function orbitCovers(record) {
   if (!record?.positions?.length) return false
+  // `frame` was added the day the route stopped serving geocentric samples. A
+  // stored table without it predates that, and drawing it as heliocentric would
+  // put a ring around the Earth's position instead of the Sun's. Rejecting it
+  // costs one refetch and the next save writes the marker — it self-heals,
+  // where a renamed cache key would have orphaned the old data for good.
+  if (record.frame !== ORBIT_FRAME) return false
   const nowMs = Date.now()
   return nowMs >= record.start * 1000 && nowMs <= record.stop * 1000
 }
 
 /**
- * The Sun, in km and scene axes, from the very series the scene places
- * everything else with — `main.js`'s `updateAstronomy()` does exactly this.
- * Reusing it (rather than a cleaner ephemeris) is the point: see
- * `orbitSamplesKm` below.
- */
-function sunPositionKmAt(date, out) {
-  const { ra, dec, distanceKm } = getSunEquatorial(date)
-  return out.copy(latLngToVector3(dec, ra, 1)).multiplyScalar(distanceKm)
-}
-
-/**
- * Turns a stored geocentric orbit table into the heliocentric polyline the
- * scene draws, by subtracting that same low-precision Sun at each sample's own
- * date.
+ * Turns a stored orbit table into the polyline the scene draws. Since
+ * 2026-09-29 that is a change of axes and nothing else: the backend serves these
+ * samples **heliocentric** (`CENTER='500@10'`), which is what the heliocentric
+ * view wants, so there is nothing left to subtract.
  *
- * **This subtraction is the whole design, not a detail.** Asking Horizons for
- * the heliocentric orbit directly gives a cleaner curve — but the scene's
- * heliocentric view is built as `geocentric − Sun`, and its Sun comes from
- * `astronomy.js`, which works in the equinox *of date* where the scene's axes
- * are J2000. Measured 2026-09-22: 951 057 km (0,363°) apart today, exactly the
- * precession accumulated since J2000, growing to 6 995 236 km by 2191. A DE441
- * ellipse would therefore miss Mercury by 966 557 km — 0,127 scene unit, half
- * the planet's own drawn radius. Subtracting the same Sun makes both errors
- * cancel where it matters: measured miss between planet and line, 8 630 km for
- * Mercury and 204 999 km for Neptune, i.e. 0,001 and 0,002 unit — which is the
- * chord approximation, not the Sun.
+ * It used to subtract, and the reason is worth keeping. The curve was fetched
+ * geocentric and the client took away *its own* Sun at each sample's date, so
+ * that two errors cancelled and the line passed through its planet even though
+ * that Sun was 951 057 km off. A DE441 ellipse would have missed Mercury by
+ * 966 557 km — 0,127 unit, half the planet's drawn radius — so subtracting the
+ * same wrong Sun was the lesser evil (docs/agent/decisions.md, 2026-09-18).
  *
- * The price is that the drawn curve is that far from DE441's true ellipse
- * (1,41 % of the radius for Mercury, 0,16 % for Neptune). A line that is
- * slightly the wrong ellipse but passes through its planet beats the true
- * ellipse sitting beside it — `docs/agent/decisions.md`, 2026-09-18.
+ * The scene's Sun now comes from Horizons too (`sunTable.js`), so the trade is
+ * over: the line is DE441's true ellipse and passes through the planet by
+ * construction rather than by cancellation. Mercury gets back the 1,41 % of
+ * orbital radius the old approximation cost it. The subtraction could not have
+ * survived anyway — these samples span a whole sidereal period, 165 years for
+ * Neptune, where a Sun table covers one.
  */
 function orbitSamplesKm(record) {
-  const span = record.stop - record.start
-  const last = record.positions.length - 1
-  const sun = new THREE.Vector3()
-  return record.positions.map(([x, y, z], k) => {
-    const point = icrfToScene(x, y, z, new THREE.Vector3())
-    return point.sub(sunPositionKmAt(new Date((record.start + (k / last) * span) * 1000), sun))
-  })
+  return record.positions.map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()))
 }
 
 /**
@@ -419,7 +408,7 @@ export function createPlanets({
         break // the rest go undrawn; retried on the next page load
       }
       if (!res.positions) continue
-      const record = { start: res.start, stop: res.stop, positions: res.positions }
+      const record = { frame: ORBIT_FRAME, start: res.start, stop: res.stop, positions: res.positions }
       if (!orbitCovers(record)) continue
       orbitTables[body.id] = record
       saveCached('solar-system-orbits', orbitTables)
