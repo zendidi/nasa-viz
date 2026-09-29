@@ -338,7 +338,14 @@ final class SpaceDataController
         }
 
         return new JsonResponse([
-            'frame' => 'ICRF geocentric',
+            // Must match `SolarSystemClient::getOrbit()`'s CENTER, and the web
+            // client compares this exact string before trusting a cached table
+            // (`ORBIT_FRAME` in scene/planets.js). The two drifted apart once,
+            // on 2026-09-29: the samples went heliocentric while this still said
+            // geocentric, and a client that had cached tables from the *old*
+            // server cache in between drew every planet ringed by its own
+            // retrograde loops. Change the centre, change this, in one go.
+            'frame' => 'ICRF heliocentric',
             'units' => 'km',
             'body' => SolarSystemClient::describe($id) + ['period_days' => SolarSystemClient::periodDays($id)],
             'start' => $orbit['start'] ?? $start->getTimestamp(),

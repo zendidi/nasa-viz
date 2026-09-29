@@ -97,8 +97,25 @@ function planetFade(t, hidden) {
 /** A table is refetched once "now" comes within this much of its end. */
 const TABLE_MARGIN_MS = 30 * 86_400_000
 
-/** Marks a stored orbit table as the heliocentric kind; see `orbitCovers`. */
-const ORBIT_FRAME = 'heliocentric'
+/**
+ * The frame the orbit route must declare, **in its own words**, for a stored
+ * table to be usable.
+ *
+ * The first version of this guard was a constant the client made up and stamped
+ * on whatever it received, and that failed for a reason worth remembering: the
+ * route was switched to heliocentric while the *server* cache still held the old
+ * geocentric tables for another forty days. A client fetching in that window got
+ * geocentric samples and labelled them heliocentric itself — and then drew them
+ * as such, which is how the planets ended up ringed by their own retrograde
+ * loops instead of their orbits.
+ *
+ * So the marker has to come from the side that knows. Storing the response's own
+ * `frame` string and demanding this exact value rejects all three bad cases at
+ * once: tables from before the field existed, tables mislabelled by the old
+ * guard (they say 'heliocentric', not 'ICRF heliocentric'), and any future
+ * response that changes frame again without anyone thinking of this cache.
+ */
+const ORBIT_FRAME = 'ICRF heliocentric'
 
 /** Dimmer than the Earth's own orbit (0.5): that one is the heliocentric view's yardstick. */
 const ORBIT_OPACITY = 0.35
@@ -125,11 +142,10 @@ function covers(record) {
  */
 function orbitCovers(record) {
   if (!record?.positions?.length) return false
-  // `frame` was added the day the route stopped serving geocentric samples. A
-  // stored table without it predates that, and drawing it as heliocentric would
-  // put a ring around the Earth's position instead of the Sun's. Rejecting it
-  // costs one refetch and the next save writes the marker — it self-heals,
-  // where a renamed cache key would have orphaned the old data for good.
+  // Drawing a geocentric table as heliocentric rings the Earth's position
+  // instead of the Sun's, and the retrograde loops look deliberate. Rejecting a
+  // wrong or missing frame costs one refetch and self-heals, where renaming the
+  // cache key would have orphaned the old data for good.
   if (record.frame !== ORBIT_FRAME) return false
   const nowMs = Date.now()
   return nowMs >= record.start * 1000 && nowMs <= record.stop * 1000
@@ -408,7 +424,8 @@ export function createPlanets({
         break // the rest go undrawn; retried on the next page load
       }
       if (!res.positions) continue
-      const record = { frame: ORBIT_FRAME, start: res.start, stop: res.stop, positions: res.positions }
+      // The server's own word for the frame, not ours — see ORBIT_FRAME.
+      const record = { frame: res.frame, start: res.start, stop: res.stop, positions: res.positions }
       if (!orbitCovers(record)) continue
       orbitTables[body.id] = record
       saveCached('solar-system-orbits', orbitTables)
