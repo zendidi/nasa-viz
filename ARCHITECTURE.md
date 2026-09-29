@@ -62,8 +62,14 @@ formes de réponse, pas ce fichier.
   - `/api/solar-system/positions?body=` — TTL 40 jours par planète (1 h si Horizons n'a pas
     répondu). **Un corps par appel** : une requête d'éphémérides Horizons coûte 5 à 16 s quelle que
     soit sa taille, plusieurs d'un coup dépassent la limite d'exécution de PHP (`gotchas.md`)
-  - `/api/solar-system/orbit?body=` — même règle, même TTL : l'orbite complète d'une planète en 181
-    points sur une période sidérale (Neptune va jusqu'en 2191)
+  - `/api/solar-system/orbit?body=` — même règle, même TTL : l'orbite complète d'une planète en 361
+    points sur une période sidérale (Neptune va jusqu'en 2191), **héliocentrique**
+  - `/api/solar-system/moons?planet=` — au plus 9 lunes par planète, positions relatives à la
+    planète ; la route ne va chercher qu'une lune absente par appel, donc un cache froid converge
+    en autant d'appels qu'il y a de lunes
+  - `/api/solar-system/orientation?body=` — TTL 40 jours : le pôle et le méridien origine en
+    vecteurs unitaires ICRF plus le taux de rotation signé. Accepte les sept planètes **et `moon`**.
+    Une table `OBSERVER` de deux lignes, donc ~1 s là où une table de vecteurs coûte 5 à 16 s
   - `/api/apod` — TTL 24h
   - `/api/usage` — pas de cache, lecture directe du compteur
 - CORS via `nelmio/cors-bundle` (`config/packages/nelmio_cors.yaml`), restreint à
@@ -77,8 +83,10 @@ formes de réponse, pas ce fichier.
   le bouton "Mettre à jour" (ou l'absence totale de cache, au tout premier lancement). C'est ce qui
   protège le quota NASA pendant qu'on développe/teste.
 - `src/main.js` — scène :
-  - Globe texturé (`public/textures/earth_atmos_2048.jpg` + specular + normal map, three.js
-    examples/mrdoob, imagerie NASA/domaine public)
+  - Globe texturé jour/nuit (`public/textures/earth_atmos_2048.jpg` + night, specular et normal
+    maps, three.js examples/mrdoob, imagerie NASA/domaine public ; le jeu Solar System Scope
+    CC BY 4.0 attend en réserve, voir `public/textures/CREDITS.md`). Rotation réelle par le GMST,
+    et son axe *est* le +Y de la scène puisque celle-ci est équatoriale
   - Ciel réel (`public/stars.json`, catalogue Hipparcos tronqué à mag ≤ 5 via d3-celestial ;
     couleur dérivée de l'indice B-V, taille dérivée de la magnitude — voir
     `docs/agent/gotchas.md` pour regénérer ce fichier)
@@ -90,11 +98,19 @@ formes de réponse, pas ce fichier.
     compression par corps pivot (`docs/echelle-reelle.md`)
   - `src/scene/planets.js` — les sept planètes : tables Horizons (`/api/solar-system/positions`,
     chargées une par une en arrière-plan, cache `localStorage`), interpolation à la minute, sphères
-    de couleur unie et leurs libellés. Placées par le même `placeKm()` que la Lune, donc visibles
-    dans les deux vues sans seconde source (`docs/planetes-et-lunes.md`). Le module charge ensuite
-    **l'orbite** de chaque planète (`/api/solar-system/orbit`) et en retranche le Soleil de
-    `astronomy.js` échantillon par échantillon — même fonction que celle qui place la planète, donc
-    le trait passe dessus. Orbites tracées **en vue héliocentrée seulement**
+    texturées et leurs libellés. Placées par le même `placeKm()` que la Lune, donc visibles dans les
+    deux vues sans seconde source (`docs/planetes-et-lunes.md`). Le module charge ensuite
+    **l'orbite** de chaque planète (`/api/solar-system/orbit`), servie héliocentrique depuis le
+    2026-09-29 : plus rien à soustraire côté client. Orbites tracées **en vue héliocentrée
+    seulement**. La carte de couleur et l'anneau de Saturne ne sont construits **qu'à la prise de
+    pivot** — de loin une planète fait 3,5 px, où le détail ne se voit pas
+  - `src/scene/orientation.js` — comment chaque corps est tourné : `/api/solar-system/orientation`,
+    son cache (validé sur l'`epoch`, pas sur un âge) et l'application au quaternion du maillage.
+    Un cache de module plutôt qu'une fabrique, parce que deux propriétaires sans lien s'en servent :
+    les planètes (`scene/planets.js`) et la Lune (`main.js`)
+  - `src/scene/geo.js` — la géométrie partagée, et **la convention de longitude des cartes** : bord
+    gauche à 180°, centre à 0, est vers la droite. Mesurée, pas supposée — voir
+    `tools/calibration/`
   - `src/focus.js` — point de vue : quel corps est au centre de la scène (Terre, Soleil ; le pivot
     est l'origine, tout le reste est placé relativement). En vue héliocentrée, le NEO sélectionné
     voit son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)

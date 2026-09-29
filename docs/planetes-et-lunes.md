@@ -893,7 +893,26 @@ Lune à `main.js`. Dupliquer la règle de l'`epoch` aurait été le vrai coût. 
 démarrage et non à la prise de pivot : elle est dessinée dès la première frame dans toutes les vues,
 il n'y a pas de moment « on centre dessus » où accrocher la requête.
 
-**Étape 6 — docs et checklist de validation visuelle.**
+**Étape 6 — docs et checklist de validation visuelle. FAITE le 2026-09-29.**
+
+Les checklists de validation à l'œil sont écrites avec l'étape qu'elles couvrent (étapes 3 et 4
+ci-dessus) plutôt que regroupées ici : une checklist loin de ce qu'elle vérifie ne se relit pas.
+
+Ce qui a été corrigé dans les docs humaines, et qui était **faux**, pas seulement incomplet :
+
+- `README.md` annonçait encore *« sphères/points simples pour le MVP web (pas de texture Terre ni de
+  modélisation réaliste) »*, contredit depuis le lot 1. La ligne est barrée et datée plutôt que
+  supprimée : c'était une vraie décision, elle a été dépassée, et l'historique vaut mieux que le
+  silence. Le statut backend ne listait aucune des quatre routes système solaire.
+- `ARCHITECTURE.md` décrivait `planets.js` comme traçant des *« sphères de couleur unie »* et
+  surtout comme **retranchant le Soleil d'`astronomy.js` échantillon par échantillon** — supprimé le
+  2026-09-29 quand les orbites sont passées en héliocentrique pur. Le décompte d'échantillons était
+  resté à 181 alors que `ORBIT_INTERVALS` est passé à 360, donc 361. Les routes `moons` et
+  `orientation` manquaient à la liste des caches.
+
+Ajoutés : `scene/orientation.js`, `tools/calibration/`, et le renvoi vers la convention de longitude
+dans `scene/geo.js` — c'est le fait le moins devinable de tout le lot et il ne vivait que dans un
+commentaire.
 
 ### Pièges connus avant de commencer
 
