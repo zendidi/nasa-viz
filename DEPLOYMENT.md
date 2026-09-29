@@ -14,7 +14,7 @@ des changements d'infra (nouvelle route, nouveau service, etc.).
 - **Clé NASA** : toujours `DEMO_KEY` (30 req/h, 50 req/j) — à remplacer avant toute exposition
   publique (voir étape 1).
 
-## Le cache serveur protège déjà le quota — pas besoin de cron pour ça
+## Le cache serveur protège déjà le quota NASA — pas besoin de cron pour ça
 
 `backend/src/Controller/SpaceDataController.php` met déjà chaque route derrière `cache.app` avec un
 TTL par type de donnée : NEO 1h, APOD 24h, ISS 5s. Ce cache est partagé entre **tous** les
@@ -28,6 +28,74 @@ visiteur après expiration déclencher l'appel) reste une amélioration possible
 petite latence supplémentaire pour cette personne-là et lisse le compteur `/api/usage` — mais ce
 n'est **pas un prérequis** pour tenir le quota. Voir `docs/agent/backlog.md` si on veut la faire un
 jour.
+
+## Un cron, pour Horizons cette fois — pas pour le quota
+
+La section ci-dessus dit qu'aucun cron n'est nécessaire pour tenir le quota NASA, et ça reste vrai.
+Mais depuis les planètes et les lunes, il y en a un qui vaut le coup pour une **autre** raison : la
+latence de JPL Horizons, qui est sans clé et hors quota, mais lente et variable.
+
+Mesuré sur cette machine : **~1 s par requête le 2026-09-29, 5 à 16 s le 2026-09-22**, même code et
+même `php.ini` — c'est la charge de Horizons qui varie, pas notre installation (voir la correction
+dans `docs/agent/gotchas.md`). Sans préchauffage, c'est le premier visiteur après chaque expiration
+qui paie, et il peut tomber un mauvais jour.
+
+```bash
+cd /chemin/vers/backend && php bin/console app:solar-system:warm
+```
+
+**À passer une fois après chaque déploiement**, pour remplir un cache vide sans attendre un
+visiteur :
+
+```bash
+php bin/console app:solar-system:warm --all-moons
+```
+
+`--dry-run` liste ce qui serait téléchargé sans rien télécharger.
+
+### Cadence
+
+**Une fois par heure suffit largement**, et une fois par jour marche aussi. La commande ne
+retélécharge que ce qui a expiré : quand tout est frais, elle ne fait aucune requête sortante et
+se termine en quelques dizaines de millisecondes. Faire tourner trop souvent ne coûte donc rien,
+mais n'apporte rien non plus.
+
+Ordres de grandeur en régime permanent :
+
+| ce qui est rafraîchi | cadence |
+|---|---|
+| 7 planètes (positions) + 7 orbites | 1 fois par mois chacune |
+| les 38 lunes, si toutes étaient visitées | ~6 requêtes/jour au total |
+
+### Ce qu'elle rafraîchit, et ce qu'elle ne rafraîchit pas
+
+Elle ne parcourt **pas** le catalogue entier. Elle reprend les planètes, plus les lunes des planètes
+qu'un visiteur a réellement centrées — la route l'écrit au passage, parce qu'un pool PSR-6 ne sait
+pas être énuméré. Une lune que personne n'a jamais regardée n'est jamais téléchargée, et une planète
+non visitée depuis 90 jours sort de la liste toute seule.
+
+C'est volontaire et c'est le cœur du dispositif : **remplissage paresseux par les visites,
+rafraîchissement anticipé par le cron**. Personne n'attend Horizons sauf le tout premier visiteur
+d'une planète donnée.
+
+### Détails qui comptent
+
+- Elle **sort toujours en code 0**. Un échec Horizons est transitoire par nature, la course suivante
+  le rattrape, et les routes savent de toute façon télécharger à la demande. Un code non nul ferait
+  envoyer un mail par le cron à chaque incident sans rien apporter.
+- Elle tourne en **CLI**, où `max_execution_time` vaut 0 contre 30 s pour une requête web (vérifié
+  sur cette machine). C'est ce qui lui permet d'enchaîner des dizaines de corps dans un seul
+  processus — mesuré : les 8 lunes restantes de Jupiter en 7 s, les 38 lunes en 33 s — là où une
+  route web doit s'en tenir à un corps par appel sous peine du fatal à 30 s.
+- Elle n'appelle **que** JPL Horizons : aucun quota NASA consommé, le compteur `/api/usage` ne bouge
+  pas.
+
+### À vérifier sur l'offre Infomaniak choisie
+
+Comme pour PHP 8.3+ et Composer (voir « Prérequis » plus haut), **la disponibilité des tâches cron
+dépend du plan** — à confirmer sur l'offre retenue. Si l'hébergement n'en propose pas, rien ne
+casse : le cache se remplit à la demande comme aujourd'hui, seul le premier visiteur de chaque
+planète paie la latence.
 
 ## Prérequis côté hébergeur (Infomaniak)
 
