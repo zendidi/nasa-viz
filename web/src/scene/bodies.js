@@ -17,6 +17,64 @@ import { EARTH_RADIUS, ISS_READABLE_RADIUS, KM_TO_UNITS, MOON_RADIUS_KM, SUN_REA
 export const MOON_RADIUS = MOON_RADIUS_KM * KM_TO_UNITS
 
 /**
+ * The default `uMap` of every lit body: one opaque white texel, so the shader
+ * can sample unconditionally. A body with no texture multiplies its colour by
+ * white and comes out exactly as before.
+ *
+ * This is what keeps the promise `makeLitBodyMaterial` makes below — **one
+ * shader source, one compiled program**. Branching the source on "has a map"
+ * would have split the program cache in two, and swapping `uMap.value` later
+ * would then have meant a recompile. Swapping a sampler's value on an unchanged
+ * source does not.
+ */
+const WHITE_PIXEL = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
+WHITE_PIXEL.needsUpdate = true
+
+/** @type {Map<string, Promise<THREE.Texture>>} */
+const colorMaps = new Map()
+
+/**
+ * Loads a colour map, once per URL, and resolves only when the image is
+ * actually decoded.
+ *
+ * **A promise rather than the texture**, which is the whole point:
+ * `TextureLoader.load()` hands back a `Texture` whose `image` is still
+ * undefined, and binding that to a sampler draws the body *black* until the
+ * download lands. Handing out the texture early would trade a flat-coloured
+ * planet for a black one — strictly worse, and it would read as a bug. The
+ * caller swaps its `uMap` in the `.then`, so a planet goes straight from flat
+ * colour to photograph.
+ *
+ * `SRGBColorSpace` because these are colour maps: the tag is what makes three.js
+ * decode the texel to linear before the shader multiplies it, and without it
+ * every textured body comes out washed out. It does **not** belong on a normal
+ * or specular map, whose values aren't colours — the globe's own maps
+ * deliberately don't set it.
+ */
+export function loadColorMap(url) {
+  const pending =
+    colorMaps.get(url) ??
+    new Promise((resolve, reject) => {
+      new THREE.TextureLoader().load(
+        url,
+        (texture) => {
+          texture.colorSpace = THREE.SRGBColorSpace
+          // Equirectangular maps wrap the full 360° in u; the default
+          // ClampToEdge smears the last column across any seam a float error
+          // puts past 1.
+          texture.wrapS = THREE.RepeatWrapping
+          texture.anisotropy = 4
+          resolve(texture)
+        },
+        undefined,
+        reject,
+      )
+    })
+  colorMaps.set(url, pending)
+  return pending
+}
+
+/**
  * Day/night terminator: a hand-rolled shader rather than MeshPhongMaterial,
  * blending the day map against a city-lights night map (mrdoob/three.js
  * examples, same source as the other Earth textures) by how much each
@@ -156,13 +214,24 @@ export function makeIssMarker() {
   return group
 }
 
-/** The Sun itself is self-lit (MeshBasicMaterial), not shaded by sunLight. */
+/**
+ * The Sun itself is self-lit (MeshBasicMaterial), not shaded by sunLight — so
+ * its map is the one texture in the scene that must *not* be darkened by a
+ * terminator: every point of the photosphere we can see is emitting.
+ *
+ * 48 segments on the body, still 16 on the glow: the glow is a soft halo whose
+ * silhouette nobody reads, the body's is read the moment the Sun is the pivot.
+ *
+ * `loadTexture()` on the returned group, rather than a map argument, because
+ * the 822 ko are only worth spending once the Sun *is* the pivot — the same
+ * rule the planets follow (`loadTextureFor` in planets.js). The white `color`
+ * is what makes the swap a straight replace instead of a cream-coloured tint,
+ * and keeping it cream until then is what keeps today's marker unchanged.
+ */
 export function makeSunMarker() {
   const group = new THREE.Group()
-  const body = new THREE.Mesh(
-    new THREE.SphereGeometry(SUN_READABLE_RADIUS, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xfff2cc }),
-  )
+  const material = new THREE.MeshBasicMaterial({ color: 0xfff2cc })
+  const body = new THREE.Mesh(new THREE.SphereGeometry(SUN_READABLE_RADIUS, 48, 48), material)
   group.add(body)
 
   const glow = new THREE.Mesh(
@@ -170,6 +239,26 @@ export function makeSunMarker() {
     new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.25 }),
   )
   group.add(glow)
+
+  let asked = false
+  group.userData.loadTexture = () => {
+    if (asked) return
+    asked = true
+    loadColorMap('/textures/2k_sun.jpg')
+      .then((map) => {
+        material.map = map
+        material.color.setHex(0xffffff)
+        // Required, and easy to miss: a MeshBasicMaterial that gains a map
+        // after its first compile needs a recompile, because `map` is a shader
+        // define and not merely a uniform. Without this the Sun stays cream and
+        // nothing says why. (The lit bodies don't need it — their `uMap` is
+        // always declared, which is exactly what the white texel buys.)
+        material.needsUpdate = true
+      })
+      .catch(() => {
+        asked = false
+      })
+  }
 
   return group
 }
@@ -239,12 +328,15 @@ const absoluteRingMaterial = new THREE.LineBasicMaterial({
  * `uOpacity` rather than `material.opacity`: a hand-written ShaderMaterial gets
  * no automatic opacity, the fragment has to write the alpha itself.
  */
-export function makeLitBodyMaterial(color) {
+export function makeLitBodyMaterial(color, map = null) {
   return new THREE.ShaderMaterial({
     uniforms: {
       uColor: { value: new THREE.Color(color) },
       uSunDir: { value: new THREE.Vector3(1, 0, 0) },
       uOpacity: { value: 1 },
+      // Swappable at any time — see `WHITE_PIXEL`. A body gets its map when it
+      // arrives, not when the mesh is built.
+      uMap: { value: map ?? WHITE_PIXEL },
     },
     // Required by the renderer's logarithmicDepthBuffer — a hand-written
     // ShaderMaterial doesn't get these chunks automatically, and without them a
@@ -254,8 +346,12 @@ export function makeLitBodyMaterial(color) {
       #include <common>
       #include <logdepthbuf_pars_vertex>
       varying vec3 vWorldNormal;
+      varying vec2 vUv;
       void main() {
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        // uv needs no declaration: three.js prepends it for a ShaderMaterial,
+        // and SphereGeometry already carries the attribute.
+        vUv = uv;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         #include <logdepthbuf_vertex>
       }
@@ -264,7 +360,9 @@ export function makeLitBodyMaterial(color) {
       uniform vec3 uColor;
       uniform vec3 uSunDir;
       uniform float uOpacity;
+      uniform sampler2D uMap;
       varying vec3 vWorldNormal;
+      varying vec2 vUv;
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
@@ -274,7 +372,15 @@ export function makeLitBodyMaterial(color) {
         // planet is never truly unlit here, and at a few pixels across a hard
         // black half would just read as the wrong shape.
         float lit = 0.12 + 0.88 * smoothstep(-0.15, 0.6, sunFacing);
-        gl_FragColor = vec4(uColor * lit, uOpacity);
+        // A plain multiply, and the caller decides what it means: an untextured
+        // body samples white and keeps its flat uColor; a textured one is given
+        // uColor white (TEXTURED_TINT in planets.js) so the multiply becomes a
+        // straight replace and the map is shown as photographed. Tinting a
+        // photograph by a legend hue was the other option and it saturates
+        // twice - Mars is already rust.
+        // (No backticks in here: this is inside a template literal.)
+        vec3 albedo = uColor * texture2D(uMap, vUv).rgb;
+        gl_FragColor = vec4(albedo * lit, uOpacity);
         // Custom fragment shaders don't get the automatic linear->output
         // colorspace encode that built-in materials do.
         #include <colorspace_fragment>

@@ -519,9 +519,17 @@ function setFocus(nextId) {
   renderPlanetsPanel() // so does the pivot
   if (modalNeo) renderNeoModal()
 
-  // The one place moons are ever fetched: centring on a planet is the whole
-  // trigger. Nothing is loaded for a planet nobody looks at.
-  if (focusPlanet) moons.loadFor(focusPlanet.id)
+  // The one place moons are ever fetched, and the one place a planet's colour
+  // map and its orientation are: centring on a planet is the whole trigger.
+  // Nothing is loaded for a planet nobody looks at — the moons and the
+  // orientation cost Horizons requests, the map costs bandwidth, and none of it
+  // buys anything at the few pixels a planet occupies from anywhere else.
+  if (focusPlanet) {
+    moons.loadFor(focusPlanet.id)
+    planets.loadTextureFor(focusPlanet.id)
+    planets.loadOrientationFor(focusPlanet.id)
+  }
+  if (focusId === 'sun') sunMarker.userData.loadTexture()
 }
 
 // Dragging with the right button wanders off the pivot; this brings it back to

@@ -14,10 +14,10 @@
  */
 
 import * as THREE from 'three'
-import { fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
+import { fetchSolarSystemBody, fetchSolarSystemOrbit, fetchSolarSystemOrientation } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
-import { makeLitBodyMaterial } from './bodies.js'
-import { icrfToScene } from './geo.js'
+import { loadColorMap, makeLitBodyMaterial } from './bodies.js'
+import { icrfToScene, setBodyOrientation } from './geo.js'
 import { pivotRadius, planetRadius } from '../scale.js'
 
 /**
@@ -32,18 +32,38 @@ import { pivotRadius, planetRadius } from '../scale.js'
  * for an asteroid.
  */
 const PLANETS = {
-  mercury: { label: 'Mercure', color: 0x9c9187 },
-  venus: { label: 'Vénus', color: 0xf0d9a6 },
-  mars: { label: 'Mars', color: 0xd0553a },
-  jupiter: { label: 'Jupiter', color: 0xd7b98e },
-  saturn: { label: 'Saturne', color: 0xe6cf9b },
-  uranus: { label: 'Uranus', color: 0x8fd8e0 },
-  neptune: { label: 'Neptune', color: 0x5b7ce8 },
+  mercury: { label: 'Mercure', color: 0x9c9187, map: '/textures/2k_mercury.jpg' },
+  venus: { label: 'Vénus', color: 0xf0d9a6, map: '/textures/2k_venus_surface.jpg' },
+  mars: { label: 'Mars', color: 0xd0553a, map: '/textures/2k_mars.jpg' },
+  jupiter: { label: 'Jupiter', color: 0xd7b98e, map: '/textures/2k_jupiter.jpg' },
+  saturn: { label: 'Saturne', color: 0xe6cf9b, map: '/textures/2k_saturn.jpg' },
+  uranus: { label: 'Uranus', color: 0x8fd8e0, map: '/textures/2k_uranus.jpg' },
+  neptune: { label: 'Neptune', color: 0x5b7ce8, map: '/textures/2k_neptune.jpg' },
 }
 
 const PLANET_IDS = Object.keys(PLANETS)
 
-const planetGeometry = new THREE.SphereGeometry(1, 24, 24)
+/**
+ * What `uColor` becomes once a planet wears its map. White, so the shader's
+ * multiply is a straight replace and the photograph is shown as photographed
+ * (`makeLitBodyMaterial` in bodies.js says why).
+ *
+ * The consequence is deliberate and visible: a textured planet is no longer
+ * drawn in its legend colour. That colour still names it everywhere it is
+ * *needed* — the swatch, the label, its orbit — and a body only gets its map
+ * when you centre on it, which is exactly when it is far too big to be confused
+ * with anything.
+ */
+const TEXTURED_TINT = 0xffffff
+
+/**
+ * 48 segments, not the 24 that were enough while a planet was a flat disc of at
+ * most a few pixels. A map is only ever loaded for a planet you have centred
+ * on, and at that size 24 segments put a visible 15° facet on the limb — the
+ * one place a sphere's silhouette is read against black. Seven shared-geometry
+ * spheres at 48x48 is ~4 600 triangles, nothing next to the starfield.
+ */
+const planetGeometry = new THREE.SphereGeometry(1, 48, 48)
 
 /**
  * Screen floor for a planet, in pixels of radius. Everything out here is
@@ -119,6 +139,44 @@ const ORBIT_FRAME = 'ICRF heliocentric'
 
 /** Dimmer than the Earth's own orbit (0.5): that one is the heliocentric view's yardstick. */
 const ORBIT_OPACITY = 0.35
+
+/**
+ * The frame the orientation route must declare for a stored record to be used —
+ * same guard, for the same reason, as `ORBIT_FRAME` above: a cache that outlives
+ * a change of frame is a wrong picture drawn confidently.
+ */
+const ORIENTATION_FRAME = 'ICRF'
+
+/**
+ * Whether a stored orientation is still the current one.
+ *
+ * The test is the epoch, not an age: the route anchors on the first of the UTC
+ * month and holds the pole fixed across it (Mars's moved five units in the
+ * fifth decimal over 40 days), so a record from last month is a pole that was
+ * never refreshed — while the phase it carries would still propagate happily
+ * and silently. A month-old epoch is therefore stale by construction, and an
+ * epoch from *this* month is exact however long the tab has been open, since a
+ * rigid body turns at a constant rate about a fixed axis.
+ */
+function orientationCovers(record, epochNow) {
+  return (
+    record?.frame === ORIENTATION_FRAME &&
+    record?.epoch === epochNow &&
+    Array.isArray(record.pole) &&
+    Array.isArray(record.primeMeridian) &&
+    // A record whose three fields are null is what the route serves when
+    // Horizons didn't answer, and a null rate would turn the phase into NaN —
+    // which is not a planet pointing the wrong way, it is a planet that
+    // disappears. Rejected here rather than guarded in the render loop.
+    Number.isFinite(record.rateDegPerDay)
+  )
+}
+
+/** First of the current UTC month, in seconds — the route's own anchor (`SolarSystemClient::windowStart`). */
+function currentEpochSeconds() {
+  const now = new Date()
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000
+}
 
 /**
  * @typedef {{
@@ -229,6 +287,20 @@ export function createPlanets({
     if (PLANET_IDS.includes(id) && orbitCovers(record)) orbitTables[id] = record
   }
 
+  /**
+   * How each planet is turned: the route's two ICRF unit vectors and its signed
+   * rate, kept exactly as served. Fetched only for a planet that becomes the
+   * pivot, like its colour map and for the same reason — from anywhere else a
+   * planet is a few pixels wide, where which way it faces cannot be seen.
+   *
+   * @type {Record<string, {frame: string, epoch: number, pole: number[],
+   *   primeMeridian: number[], rateDegPerDay: number}>}
+   */
+  const orientations = {}
+  for (const [id, record] of Object.entries(loadCached('solar-system-orientation')?.data ?? {})) {
+    if (PLANET_IDS.includes(id) && orientationCovers(record, currentEpochSeconds())) orientations[id] = record
+  }
+
   let loading = false
   let loadingOrbits = false
 
@@ -264,6 +336,115 @@ export function createPlanets({
 
   for (const body of bodies) {
     if (orbitTables[body.id]) traces.setKm(body.orbit, orbitSamplesKm(orbitTables[body.id]), () => true)
+  }
+
+  // --- textures ------------------------------------------------------------
+
+  /** Planets already wearing their map, so a second visit doesn't re-assign. */
+  const textured = new Set()
+
+  /**
+   * Gives one planet its colour map. Called when that planet becomes the pivot
+   * and at no other time — the same rule the moons follow, for the same reason:
+   * the detail only exists at the moment you centre on the body, and the seven
+   * maps are 2,6 Mo that nobody browsing the Sun view should pay for.
+   *
+   * Deliberately *not* added to the `<link rel="preload">` list in index.html:
+   * that list exists to jump the queue of a single-request `php -S`, and adding
+   * megabytes of planet maps ahead of the Horizons calls would destroy the very
+   * benefit it was built for (see the comment in index.html).
+   *
+   * The swap needs no recompile — `uMap` starts on a shared white texel and the
+   * shader source never changes — so a planet simply stops being flat on the
+   * frame the image decodes, with no hitch.
+   */
+  function loadTextureFor(id) {
+    if (textured.has(id) || !PLANETS[id]?.map) return
+    const body = bodies.find((b) => b.id === id)
+    if (!body) return
+    textured.add(id)
+    loadColorMap(PLANETS[id].map)
+      .then((map) => {
+        body.mesh.material.uniforms.uMap.value = map
+        body.mesh.material.uniforms.uColor.value.setHex(TEXTURED_TINT)
+        // No `on.changed()`: that redraws the *panel*, and a texture changes
+        // nothing it says. The render loop is a plain rAF, so the new map is on
+        // screen on the next frame by itself.
+      })
+      .catch(() => {
+        // Left flat and forgotten rather than retried in place: a planet in its
+        // legend colour is the state this scene shipped with for months, so a
+        // map that fails to load costs nothing but detail. Dropping it from the
+        // set lets the next visit to this pivot try again.
+        textured.delete(id)
+      })
+  }
+
+  // --- orientation ---------------------------------------------------------
+
+  /** Planets whose orientation is fetched or in flight, so a second visit doesn't re-ask. */
+  const oriented = new Set()
+
+  /**
+   * Fetches how one planet is turned. Same trigger as the colour map — becoming
+   * the pivot — and cheap to be wrong about: a planet with no record keeps the
+   * identity rotation, which puts its north on the scene's +Y. That is the
+   * celestial pole, not the body's, so it is wrong for everyone except the
+   * Earth; at the 3,5 px a non-pivot planet gets, it is also invisible.
+   *
+   * Not part of `load()`: one Horizons request per planet per month is cheap,
+   * but seven of them on the first frame would queue in front of the positions,
+   * which are what decides whether anything is drawn at all.
+   */
+  function loadOrientationFor(id) {
+    if (oriented.has(id) || orientations[id]) return
+    oriented.add(id)
+    fetchSolarSystemOrientation(id)
+      .then((res) => {
+        const served = res.bodies[0]
+        if (!served?.pole || !served?.prime_meridian) return
+        const record = {
+          frame: res.frame,
+          epoch: res.epoch,
+          pole: served.pole,
+          primeMeridian: served.prime_meridian,
+          rateDegPerDay: served.rotation_deg_per_day,
+        }
+        if (!orientationCovers(record, currentEpochSeconds())) return
+        orientations[id] = record
+        saveCached('solar-system-orientation', orientations)
+        // No `on.changed()`, for the reason `loadTextureFor` gives: this changes
+        // nothing the panel says, and the render loop picks it up next frame.
+      })
+      .catch(() => {
+        // Dropped from the set so the next visit tries again. An unoriented
+        // planet is the state the scene shipped with, so this costs detail and
+        // nothing else.
+        oriented.delete(id)
+      })
+  }
+
+  const poleScene = new THREE.Vector3()
+  const meridianScene = new THREE.Vector3()
+
+  /**
+   * Points one planet's north at its pole and its prime meridian where it is
+   * now: `prime_meridian` is where longitude 0 pointed at `epoch`, so the phase
+   * is the rate times the elapsed days, turned about the pole.
+   *
+   * The rate's sign carries the direction — negative for Venus and Uranus —
+   * which is exactly why `applyAxisAngle` is given it unmodified. The rotation
+   * is propagated rather than sampled because it has to be: Jupiter turns 2,4
+   * times between two daily samples, so no table could ever carry this.
+   */
+  function orient(body, nowSeconds) {
+    const record = orientations[body.id]
+    if (!record) return
+    icrfToScene(record.pole[0], record.pole[1], record.pole[2], poleScene).normalize()
+    icrfToScene(record.primeMeridian[0], record.primeMeridian[1], record.primeMeridian[2], meridianScene)
+    const days = (nowSeconds - record.epoch) / 86_400
+    meridianScene.applyAxisAngle(poleScene, THREE.MathUtils.degToRad(record.rateDegPerDay * days))
+    setBodyOrientation(body.mesh.quaternion, poleScene, meridianScene)
   }
 
   // --- position ------------------------------------------------------------
@@ -334,6 +515,7 @@ export function createPlanets({
       if (body.mesh.visible) {
         applyFade(body, fade)
         placeKm(body.mesh.position, body.positionKm, t)
+        orient(body, nowSeconds)
         // The real direction from this planet to the Sun, in scene axes. Both
         // vectors are geocentric km, so the difference is exact — unaffected by
         // what the scale slider did to either body's drawn position.
@@ -443,6 +625,8 @@ export function createPlanets({
     bodies,
     update,
     load,
+    loadTextureFor,
+    loadOrientationFor,
     /**
      * The record main.js needs to make `id` the pivot, or null if it cannot be
      * one yet. The position is brought up to date before handing it over: a

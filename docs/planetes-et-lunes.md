@@ -515,39 +515,268 @@ libre — ce qui écarte au passage le coût de parseur signalé au § 1.
 
 ### Plan d'exécution du lot 5
 
-**Étape 0 — outillage (à vérifier en premier, ça conditionne l'étape 1).** Y a-t-il de quoi
-convertir un TIFF et ré-encoder un JPEG sur cette machine ? Les deux cartes de la Terre (normal,
-specular) ne sont servies qu'en `.tif`, et l'étape 1 veut ré-encoder trois JPEG. Si rien n'est
-disponible : embarquer les JPEG tels quels, et garder les normal/specular actuelles (exemples
-three.js) en notant que la question de licence reste ouverte pour ces deux fichiers-là seulement.
+**Étape 0 — outillage.** ~~À vérifier en premier, ça conditionne l'étape 1.~~ **Faite le
+2026-09-29 : ImageMagick 7.1.2 est présent** (`/c/Program Files/ImageMagick-7.1.2-Q16/magick`), avec
+libtiff 4.7.0 (TIFF en `rw+`) et libjpeg-turbo 3.1.0. Aller-retour JPEG → TIFF → JPEG testé, et un
+ré-encodage q80 de `earth_atmos_2048.jpg` gagnait déjà 36 % sur une texture pourtant déjà raisonnable.
+Le repli « embarquer les JPEG tels quels et garder les normal/specular three.js » n'a pas servi.
+Attention : le `convert` du `PATH` est celui de `system32` (convertisseur de système de fichiers
+Windows), pas celui d'ImageMagick — utiliser `magick`.
 
-**Étape 1 — les fichiers.** Télécharger les 14 textures dans `web/public/textures/`. **Vérifier le
-code HTTP de chaque téléchargement** : une extension fausse répond 404 avec un corps HTML, qui
-s'écrit silencieusement dans le `.jpg`. Convertir les deux TIFF, ré-encoder les trois lourdes.
-Ajouter le crédit CC BY 4.0 dans l'UI (il y a déjà `NEO_CREDITS` et la classe `.credits`).
+**Étape 1 — les fichiers.** **Faite le 2026-09-29.** Les 15 fichiers (les 14 du tableau + le Soleil)
+sont dans `web/public/textures/`, sous leurs noms amont `2k_*` : zéro collision avec
+`earth_normal_2048.jpg` / `earth_specular_2048.jpg` (three.js, déjà validés à l'œil), et la frontière
+de nommage tombe pile sur la frontière de provenance — ce qui compte pour une licence à attribution.
+Chaque téléchargement a été vérifié au contenu réel (`magick identify`), pas à l'en-tête : **leur
+serveur répond `200 text/html` / 0 octet à tout HEAD** alors que les URLs sont bonnes, voir
+`gotchas.md` → « Solar System Scope répond au HEAD par `200 text/html` ». Les 15 sortent en
+2048 × 1024 (l'anneau en 2048 × 125), exactement les tailles relevées au § 4 ter.
 
-**Étape 2 — les planètes texturées.** `makeLitBodyMaterial` prend une texture optionnelle : le
-fragment multiplie `uColor` par `texture2D(uMap, vUv)`. Le vertex shader doit sortir `vUv`, que
-`SphereGeometry` fournit déjà. Chargement **à la demande** au changement de pivot, comme les lunes du
-lot 4 — le mécanisme existe, `moons.js` en est le modèle. Le système Terre reste préchargé.
+Conversions faites, écart mesuré au PSNR (pas à l'œil — c'est le rôle de l'utilisateur) :
+
+| fichier | avant | après | PSNR |
+|---|---|---|---|
+| `2k_mercury.jpg` | 873 ko | 442 ko (q80) | 34,6 dB |
+| `2k_venus_surface.jpg` | 885 ko | 455 ko (q80) | 35,9 dB |
+| `2k_mars.jpg` | 751 ko | 385 ko (q80) | 37,3 dB |
+| `2k_earth_normal_map` | 521 ko `.tif` | 109 ko `.jpg` (q90) | 45,7 dB |
+| `2k_earth_specular_map` | 339 ko `.tif` | 255 ko `.jpg` (q90) | 46,9 dB |
+
+Le pari de la décision 2 (« divise typiquement par deux ») tient : −49 % sur les trois. **Lot total :
+6,24 Mo** au lieu des ~7,6 Mo bruts. La spéculaire ressort en **JPEG niveaux de gris** (ImageMagick a
+vu que le contenu l'était) — sans conséquence, three.js n'en lit que le canal rouge, mais autant le
+savoir avant de s'en étonner à l'étape 2.
+
+Le crédit CC BY 4.0 est dans **`web/public/textures/CREDITS.md`** (fichier par fichier, avec la
+licence citée et ce qui a été ré-encodé) : la licence exige l'attribution dès la *distribution*,
+donc dès le dépôt. Le crédit **à l'écran** n'est délibérément pas posé : il mentirait tant que les
+textures ne sont pas affichées. À faire à l'étape 2, dans le panneau « Planètes »
+(`renderPlanets()` dans `web/src/ui/panels.js`) — et **pas** dans `NEO_CREDITS`, qui ne s'affiche que
+dans la fiche d'un NEO.
+
+`CREDITS.md` note aussi ce qui reste : les cinq fichiers three.js (`earth_atmos_2048.jpg`,
+`earth_lights_2048.png`, `earth_normal_2048.jpg`, `earth_specular_2048.jpg`, `moon_1024.jpg`) sont à
+retirer au moment où la scène bascule sur le jeu Solar System Scope, qui couvre exactement les mêmes
+cartes sous licence explicite. Cette bascule change la Terre déjà validée à l'œil : elle se décide,
+elle ne se glisse pas dans l'étape 2.
+
+**Étape 2 — les planètes texturées et le Soleil. Faite le 2026-09-29.**
+
+`makeLitBodyMaterial(color, map)` prend maintenant un `uMap`, qui vaut par défaut **un texel blanc
+partagé** (`WHITE_PIXEL` dans `bodies.js`). C'est ce détail qui tient la promesse du commentaire déjà
+là — *une source de shader, un seul programme compilé* : brancher la source sur « a une carte ou
+non » aurait coupé le cache de programmes en deux, et surtout aurait imposé une recompilation à
+chaque échange de carte. Échanger la valeur d'un sampler sur une source inchangée, non. Vérifié :
+deux matériaux, l'un texturé l'autre non, ont des sources identiques.
+
+Le fragment fait `uColor * texture2D(uMap, vUv)`, comme prévu — mais **une planète texturée reçoit
+`uColor` blanc** (`TEXTURED_TINT` dans `planets.js`), donc la multiplication devient un remplacement.
+Multiplier une photo par la teinte de légende était l'autre lecture du plan et elle sature deux fois :
+Mars est déjà rouille. Conséquence assumée et à valider à l'œil : **une planète centrée n'est plus
+dessinée dans sa couleur de légende.** Cette couleur nomme toujours la pastille, le label et l'orbite,
+c'est-à-dire partout où elle sert.
+
+Chargement à la demande sur le modèle de `moons.js` : `planets.loadTextureFor(id)` est appelé depuis
+`main.js` au changement de pivot, juste à côté de `moons.loadFor(id)`, et nulle part ailleurs. Le
+Soleil suit la même règle (`sunMarker.userData.loadTexture()` quand le pivot devient `sun`).
+
+Deux pièges rencontrés, tous deux corrigés :
+
+- **`TextureLoader.load()` rend une texture sans image.** La lier tout de suite au sampler dessine le
+  corps **en noir** le temps du téléchargement — on troquerait une planète en couleur unie contre une
+  planète noire, strictement pire et ça se lit comme un bug. `loadColorMap()` rend donc une
+  **promesse** résolue à l'image décodée, et l'appelant n'échange son `uMap` que dans le `.then`.
+- **`material.needsUpdate = true` est obligatoire sur le Soleil** : un `MeshBasicMaterial` qui gagne
+  une `map` après sa première compilation doit recompiler, `map` étant un define et pas seulement un
+  uniform. Sans ça le Soleil reste crème sans rien dire. Les corps éclairés n'en ont pas besoin —
+  leur `uMap` est toujours déclaré, c'est exactement ce que paie le texel blanc.
+
+Deux réglages qui ne sont pas du détail : `planetGeometry` passe de **24 à 48 segments** (à 24, une
+planète centrée montre une facette de 15° sur le limbe, seul endroit où la silhouette se lit contre
+le noir ; sept sphères partagées à 48×48 ≈ 4 600 triangles), et le Soleil aussi — mais pas son halo,
+dont personne ne lit la silhouette.
+
+**Piège de syntaxe, coûté une fois ici :** un commentaire écrit *à l'intérieur* d'un template literal
+de shader ne doit contenir **aucun backtick** — il termine la chaîne, et l'erreur de parse pointe
+l'ouverture de `new THREE.ShaderMaterial({` vingt lignes plus haut, pas le commentaire.
+
+Pas de `on.changed()` après un chargement de carte : ça redessine le *panneau*, qu'une texture ne
+change pas. La boucle de rendu est un rAF continu, la carte est à l'écran à la frame suivante.
+
+**Pas de crédit à l'écran** : décision de l'utilisateur du 2026-09-29, tout est regroupé pour une
+page dédiée à venir (`decisions.md`). **La Terre n'est pas basculée** sur le jeu SSS : elle garde ses
+textures three.js en service, les `2k_earth_*` restent en réserve, et l'exception est acceptée
+d'avance si l'ancien rend mieux (`decisions.md`).
+
+**À trancher à l'œil — Vénus.** Le tableau du § 4 ter retient `2k_venus_surface.jpg`, qui est la
+surface sous les nuages (radar), pas ce que Vénus *montre* : vue de l'espace c'est une boule jaunâtre
+sans relief. Dans une scène qui place les corps aux positions réelles de Horizons, afficher le sol
+comme s'il était l'apparence est une contre-vérité. `2k_venus_atmosphere.jpg` (230 ko) est donc
+téléchargé lui aussi et attend à côté ; la bascule est une ligne dans `PLANETS`. En service
+aujourd'hui : `surface`, comme le plan le disait. **Renvoyé au backlog par l'utilisateur le
+2026-09-29** plutôt que tranché — voir `docs/agent/backlog.md`.
 
 **Étape 3 — l'anneau de Saturne.** `RingGeometry` avec des UV refaits : par défaut three.js mappe un
 anneau en coordonnées polaires, il faut remapper pour que `u` suive le **rayon** et échantillonne la
 bande de 2048 × 125. Matériau `transparent: true`, `side: DoubleSide`, `depthWrite: false`.
 L'anneau se couche dans le plan équatorial de Saturne, donc il dépend de l'étape 4.
 
-**Étape 4 — l'orientation (pôle + rotation propre).** Nouvelle route backend, une requête sans clé
-par planète et par mois, `EPHEM_TYPE=OBSERVER` et `QUANTITIES='14,32'`, **deux lignes à une heure
-d'écart** :
-- `N.Pole-RA` / `N.Pole-DC` → direction du pôle, déjà en ICRF donc directement dans les axes de la
-  scène. Orienter = pointer le +Y du mesh là (`Object3D.lookAt` sur l'axe, ou un quaternion depuis
-  `(0,1,0)` vers le vecteur du pôle) ;
-- `ObsSub-LON` sur les deux lignes → le taux de rotation par différence finie, et la phase à
-  l'époque. Propager ensuite localement, comme `globe.rotation.y` le fait déjà avec le temps sidéral
-  de Greenwich.
+**Étape 4 — l'orientation (pôle + rotation propre). Backend ET client FAITS le 2026-09-29.**
 
-Attention au sens : `ObsSub-LON` est la longitude **face à la Terre**, pas une phase absolue. La
-poser correctement demande de composer avec la direction Terre → planète du moment.
+### Ce qui est livré et vérifié
+
+`GET /api/solar-system/orientation?body=mars` rend deux vecteurs unitaires ICRF — `pole` et
+`prime_meridian` (le méridien origine à `epoch`) — plus `rotation_deg_per_day` **signé**. Le client
+oriente en pointant le nord du corps sur `pole` et en tournant `prime_meridian` autour de `pole` de
+`rate × (t − epoch, en jours)`. Contrat complet dans `backend/API.md`.
+
+Fichiers, serveur : `backend/src/Service/PlanetOrientationClient.php`, son test,
+`HorizonsClient::getOrientations()`, la route dans `SpaceDataController`. Suite complète verte
+(68 tests, 1550 assertions). Route essayée en vrai : 400 sur corps inconnu, 200 en 0,8 s sur Mars,
+`pole · prime_meridian = 0` à 1e-16.
+
+Fichiers, client : `setBodyOrientation` et la convention dans `web/src/scene/geo.js`,
+`fetchSolarSystemOrientation` dans `web/src/api.js`, le chargement et l'application dans
+`web/src/scene/planets.js`, l'appel à la prise de pivot dans `web/src/main.js`.
+
+Coût : **une requête Horizons sans clé par planète et par mois**. Une table `EPHEM_TYPE=OBSERVER` de
+deux lignes répond en moins d'une seconde, là où les tables de vecteurs coûtent 5 à 16 s.
+
+### Trois choses que ce travail a corrigées, à ne pas re-litiger
+
+1. **Le plan d'origine disait de tirer le taux de rotation d'une différence finie sur une heure.
+   C'est faux.** Cette différence donne le taux *synodique* (relatif à la Terre), pas sidéral : sur
+   Mars 14,5974 °/h contre 14,6206 °/h, soit **~17° de dérive sur un mois**. Les taux IAU 2015 sont
+   codés en dur, pour la raison que `SolarSystemClient` donne déjà de ses rayons moyens.
+2. **Le temps-lumière.** `ObsSub-LON` décrit le corps à l'instant où la lumière l'a quitté, alors que
+   la scène place les planètes à leurs positions *géométriques*. L'ignorer dessine Jupiter tel qu'il
+   était il y a 49 minutes : **29,8°**. Uranus : **54,7°**.
+3. **Cette correction s'applique en `abs(taux)`, jamais en taux signé.** Sur un corps rétrograde elle
+   part sinon à l'envers, soit le double en erreur. **Seul Uranus l'expose** (rétrograde *et* à
+   19 au) : 2,34° de dérive sur 40 jours contre 0,00003° corrigé. Mars, Jupiter et Vénus passaient
+   tous les trois pendant que le bug était là — d'où un test à quatre corps.
+
+Validation : le test rejoue de vraies éphémérides Horizons (relevées le 2026-09-29) et reproduit
+`ObsSub-LON` sur 40 jours à **1e-3 degré**. Vérifié en réintroduisant le bug : 4 échecs.
+
+### La convention de longitude des textures : mesurée, plus devinée
+
+**Question tranchée le 2026-09-29**, et par la piste que le plan disait la plus solide : corréler les
+cartes avec des données dont la convention, elle, est publiée. Les cartes Solar System Scope sont en équirectangulaire **bord gauche à
+180°, centre à la longitude 0, longitude est croissante vers la droite, nord en haut, sans miroir**.
+
+Ce n'est pas une lecture de documentation — la page source n'en dit toujours rien — mais une mesure,
+refaisable : `tools/calibration/texture-longitude.py` corrèle chaque carte contre une vérité terrain
+extérieure au jeu de textures, sur **les 2048 décalages possibles et les deux parités de miroir**.
+
+| corps | vérité terrain | résultat |
+|---|---|---|
+| Terre | côtes Natural Earth 110 m (domaine public, CRS84, longitudes WGS84 explicites) contre la carte spéculaire, qui *est* un masque terre/mer (l'eau est spéculaire, pas la terre) | **accord 98,89 % à 0 px**, sommet net (97,33 % au mieux ailleurs), **miroir au mieux 72,90 %** |
+| Lune | les 59 mers, lacs et océans du gazetteer IAU/USGS (centre + diamètre) ; les mers sont du basalte sombre | **r = −0,578 à −3 px** (+0,444 à l'opposé) ; luminance 114 sous les mers contre 160 ailleurs |
+| Mars | les 29 formations d'albédo dont le nom classique dit « sombre » (Mare, Sinus, Lacus, Palus, Fretum, Syrtis), même gazetteer | **98,5 à −11 px** contre 117,9 à l'opposé et 112,2 de moyenne ; la convention telle quelle est **26e sur 4096** |
+
+Les quelques pixels d'écart sur la Lune et Mars sont dans la vérité terrain, pas dans la carte : les
+centres du gazetteer sont des points pour des taches étendues, et les coordonnées d'albédo martiennes
+sont arrondies à la grille de 5° de Schiaparelli. La Terre, dont la vérité terrain est vectorielle,
+donne **0 px sur 2048**.
+
+Deux contrôles de méthode dans le script : la corrélation circulaire par FFT est comparée à la force
+brute sur trois décalages (sinon une erreur de sens passerait inaperçue), et la fraction sombre
+pondérée en surface de la carte terrestre tombe à 0,286 pour 0,292 de terres émergées réelles — ce
+qui confirme au passage que « sombre = terre » et pas l'inverse.
+
+### Ce que le client en fait — étape 4 côté client, FAITE le 2026-09-29
+
+La convention se réduit à une phrase, posée dans `web/src/scene/geo.js` : **le point de longitude est
+λ est en `(cos λ, 0, −sin λ)` dans les axes propres du maillage**, donc le méridien origine est son
++X local et le pôle son +Y local. `setBodyOrientation(quaternion, pole, primeMeridian)` construit
+exactement ce repère, et `planets.js` lui donne le méridien du moment en tournant
+`prime_meridian` autour de `pole` de `rotation_deg_per_day × (t − epoch)`.
+
+Vérifié sans navigateur, en exécutant le vrai module sous Node, contre le seul cas déjà connu correct
+— la Terre, dont la rotation `globe.rotation.y = GMST` marche depuis le lot 1 :
+
+1. le texel de coordonnée `u` est bien à la longitude est `360u − 180` (écart max 1,3e-7 sur la
+   géométrie réelle de three.js 0.166) ;
+2. `setBodyOrientation` appliqué au pôle céleste et au méridien de Greenwich **reproduit
+   `rotation.y = GMST`** à 1,7e-6 degré, sur six valeurs de GMST ;
+3. l'ascension droite du texel de longitude λ vaut **GMST + λ** à 5,7e-14 degré ;
+4. ce texel et le point que `latLngToVector3` place à la même longitude tombent **au même endroit**
+   (5e-16) — c'est-à-dire que la carte et l'ISS parlent enfin de la même chose, ce qui n'avait jamais
+   été vérifié ;
+5. la longitude croît bien vers `pole × prime_meridian` (produit scalaire 1,000000).
+
+Le piège du point 5 mérite d'être nommé : prendre `Y × X` au lieu de `X × Y` pour le troisième axe
+**mire la carte est/ouest en laissant l'axe parfaitement incliné**. Uranus resterait couchée à ses
+105°, les anneaux resteraient dans le bon plan — seule une formation nommée trahirait l'erreur. C'est
+pourquoi le sens est écrit et vérifié plutôt que laissé au hasard d'un signe.
+
+Choix de câblage, tous alignés sur ce que la texture fait déjà :
+
+- **L'orientation se charge à la prise de pivot**, comme la carte de couleur et pour la même raison :
+  hors pivot une planète fait 3,5 px, où son orientation ne se voit pas. Une planète sans
+  enregistrement garde la rotation identité, donc son nord sur le +Y de la scène — faux pour tout le
+  monde sauf la Terre, invisible à cette taille.
+- **Le cache client est validé sur l'`epoch`, pas sur un âge.** La route fige le pôle sur le mois ;
+  un enregistrement du mois dernier porte donc un pôle jamais rafraîchi, pendant que sa phase, elle,
+  se propagerait sans broncher. Comparer l'`epoch` au premier du mois UTC courant rejette ça par
+  construction, et un onglet ouvert depuis trois semaines reste exact puisqu'un solide tourne à taux
+  constant autour d'un axe fixe.
+- **La Terre n'est pas touchée**, conformément au plan : sa rotation GMST est déjà juste, et la route
+  ne sert pas `earth`.
+
+Et sur de vraies réponses de la route, rejouées dans le vrai module client (Mars et Uranus,
+2026-09-29) : l'`epoch` servi tombe exactement sur celui que le client recalcule, le nord du maillage
+retombe sur `pole` et son +X sur le méridien du moment à 1e-16, et l'inclinaison de l'axe sur le pôle
+céleste sort à **37,13° pour Mars** et **105,17° pour Uranus** — soit 90° − Dec du pôle dans les deux
+cas (52,88° et −15,18°).
+
+### Checklist de validation visuelle — à l'œil, par l'utilisateur
+
+Rien de ce qui précède ne dit à quoi ça ressemble ; ces points-là, si. **La scène tourne en temps
+réel**, sans accélération : l'inclinaison des axes se voit d'un coup d'œil, la rotation propre demande
+de revenir plus tard.
+
+Ce que chaque planète doit montrer, **mesuré sur la route le 2026-09-29** et non estimé — l'angle est
+celui de l'axe avec la **verticale de la scène, qui est le pôle céleste** et pas la normale à
+l'écliptique :
+
+| corps | axe / verticale | rotation | un tour |
+|---|---|---|---|
+| Mercure | 28,6° | 6,139 °/j | 58,6 j |
+| Vénus | 22,8° | **−1,481 °/j** (rétrograde) | 243,0 j |
+| Mars | 37,1° | 350,892 °/j | 24,62 h |
+| Jupiter | 25,5° | 870,536 °/j | 9,92 h |
+| Saturne | **6,5°** | 810,794 °/j | 10,66 h |
+| Uranus | **105,2°** (pôle sous l'horizontale) | **−501,160 °/j** (rétrograde) | 17,24 h |
+| Neptune | 47,0° | 541,140 °/j | 15,97 h |
+
+D'un coup d'œil, en centrant sur chaque planète :
+
+1. **Uranus est couchée** — 105°, donc son axe passe sous l'horizontale. C'est le changement le plus
+   spectaculaire, et celui qui dit tout de suite si l'étape marche.
+2. **Saturne est presque droite** (6,5°), ce qui surprend quand on connaît son obliquité de 26,7° :
+   celle-ci se compte sur son orbite, alors que la scène est équatoriale et que le pôle de Saturne
+   est à 6,5° du pôle céleste. Conséquence pour l'étape 3 : ses anneaux seront quasi horizontaux.
+   Même piège de lecture sur Mars — 37,1° dans la scène, pas ses 25,2° d'obliquité.
+3. **Neptune penche le plus après Uranus** (47°), Mars ensuite (37°).
+4. **La Terre n'a pas bougé d'un pixel** : elle n'est pas touchée par cette étape. L'ISS doit rester
+   au-dessus du bon endroit, exactement comme avant. Un changement ici serait une régression.
+
+En revenant plus tard sur la même planète :
+
+5. **Jupiter tourne vite** : 36°/h. En dix minutes une formation se déplace de 6° — visible si on
+   repère sa position par rapport au bord ; en une heure c'est franc. Saturne, Uranus et Neptune sont
+   du même ordre.
+6. **Vénus ne bouge quasiment pas** (1,5°/jour) et à l'envers. Rien à voir en direct : ce qui se
+   vérifie ici, c'est seulement qu'elle n'est pas figée sur une orientation aberrante.
+
+Et un contrôle qui ne se fait qu'en connaissant les cartes : **une formation nommée à la bonne
+longitude** — Syrtis Major sur Mars, la Grande Tache Rouge sur Jupiter. C'est le seul qui attraperait
+un miroir est/ouest ; tous les autres passeraient.
+
+Reste hors de cette étape : l'anneau de Saturne (étape 3, qui dépendait de celle-ci et est maintenant
+débloquée) et la Lune (étape 5, qui demande une route côté serveur).
 
 **Étape 5 — la Lune enfin orientée.** Défaut repéré le 2026-09-29 : aucune rotation ne lui est
 appliquée alors qu'elle est en rotation synchrone, donc sa face visible pointe une direction fixe de

@@ -68,6 +68,24 @@ export function fetchSolarSystemOrbit(id) {
 }
 
 /**
+ * How one planet is turned in space: `pole` and `prime_meridian` as ICRF unit
+ * vectors at `epoch` (first of the current UTC month), plus the **signed**
+ * sidereal rotation rate in degrees per day.
+ *
+ * Vectors rather than the angles Horizons publishes, so that the sign of the
+ * longitude and the light-time correction — 29,8° on Jupiter — are settled once
+ * server-side instead of in every client (backend/API.md).
+ *
+ * @param {string} id one of the seven planets; not `sun`, which has no rigid surface
+ * @returns {Promise<{frame:string, epoch:number, bodies:{id:string, name:string,
+ *   radius_km:number, pole:?number[], prime_meridian:?number[],
+ *   rotation_deg_per_day:?number}[]}>}
+ */
+export function fetchSolarSystemOrientation(id) {
+  return getJson(`/solar-system/orientation?${new URLSearchParams({ body: id })}`)
+}
+
+/**
  * Every moon of one planet in a single call, positions **relative to that
  * planet** (not geocentric like the routes above), so the scene places them with
  * `placeRelativeKm` while the planet is the pivot.

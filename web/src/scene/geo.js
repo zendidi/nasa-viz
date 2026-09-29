@@ -7,6 +7,30 @@
 import * as THREE from 'three'
 import { AU_KM } from '../scale.js'
 
+/**
+ * Where a surface point sits in a body's **own** axes — and, with it, the
+ * convention every equirectangular map in this scene is read in.
+ *
+ * Two halves, both checked rather than assumed:
+ *
+ * - **The mesh.** `SphereGeometry` puts the texel of coordinate `u` at the
+ *   equator in the direction `(−cos 2πu, 0, sin 2πu)` — read off the buffer of
+ *   three.js 0.166, not remembered.
+ * - **The maps.** Their left column is **180°**, their centre is longitude 0,
+ *   east grows to the right and north is up. That is a measurement:
+ *   `tools/calibration/texture-longitude.py` correlates each map against data
+ *   whose convention is published — the Natural Earth coastlines, the lunar
+ *   maria and the classical Martian albedo features of the IAU/USGS gazetteer —
+ *   over all 2048 shifts and both mirror parities, and this alignment wins on
+ *   the Earth (98,89 % against 72,90 % for the best mirror), the Moon and Mars.
+ *
+ * Put together: the point at **east longitude λ is at `(cos λ, 0, −sin λ)`** in
+ * the body's frame, so the prime meridian is its local +X and the pole its
+ * local +Y. That is the frame `setBodyOrientation` builds, and it is what this
+ * function has returned since lot 1 — the ISS is placed with it, and the
+ * globe's `rotation.y = GMST` says the same thing a third time, since the
+ * result is RA = GMST + east longitude.
+ */
 export function latLngToVector3(lat, lng, radius) {
   const phi = (90 - lat) * (Math.PI / 180)
   const theta = (lng + 180) * (Math.PI / 180)
@@ -15,6 +39,34 @@ export function latLngToVector3(lat, lng, radius) {
     radius * Math.cos(phi),
     radius * Math.sin(phi) * Math.sin(theta),
   )
+}
+
+const bodyNorth = new THREE.Vector3()
+const bodyMeridian = new THREE.Vector3()
+const bodyThird = new THREE.Vector3()
+const bodyBasis = new THREE.Matrix4()
+
+/**
+ * Turns a body so its north pole points along `pole` and its prime meridian
+ * along `primeMeridian` — both in scene axes, which is what
+ * `/api/solar-system/orientation` serves once run through `icrfToScene`.
+ *
+ * The third axis has to be `X × Y` and not `Y × X`: east — the direction
+ * longitude grows in — then comes out as `pole × primeMeridian`, which is the
+ * standard "north × radial" and the direction the map's right-hand side is.
+ * Taking the other one mirrors every map east/west while leaving the axis
+ * perfectly tilted, so it would survive every check but a named feature.
+ *
+ * Writes into `quaternion` and returns it; allocates nothing.
+ */
+export function setBodyOrientation(quaternion, pole, primeMeridian) {
+  bodyNorth.copy(pole).normalize()
+  // Gram-Schmidt rather than trust: the route states the two vectors are
+  // perpendicular to 1e-16, but `makeBasis` does not orthogonalise, and a basis
+  // that is even slightly skewed shears the map instead of turning it.
+  bodyMeridian.copy(primeMeridian).addScaledVector(bodyNorth, -bodyNorth.dot(primeMeridian)).normalize()
+  bodyThird.crossVectors(bodyMeridian, bodyNorth)
+  return quaternion.setFromRotationMatrix(bodyBasis.makeBasis(bodyMeridian, bodyNorth, bodyThird))
 }
 
 /** Deterministic pseudo-random unit vector, stable per NEO id across refreshes. */
