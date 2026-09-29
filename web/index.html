@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <title>NASA Viz</title>
     <style>html,body,#app{margin:0;height:100%;background:#000}</style>
+    <!--
+      Les textures sont réclamées ici, pas seulement par `makeGlobe()`, pour
+      passer AVANT les appels /api/* dans la file : le mode « poste isolé »
+      tourne sur `php -S`, qui sert une requête à la fois (mesuré : une texture
+      demandée pendant un appel upstream de 600 ms attend ces 600 ms). Sur cache
+      froid les sept appels Horizons prennent des dizaines de secondes, et sans
+      ce préchargement la Terre et la Lune restent des sphères noires jusqu'à ce
+      que la file se vide. Le scanner de préchargement les demande dès l'analyse
+      du HTML, donc avant que le bundle n'ait pu lancer le moindre fetch.
+    -->
+    <link rel="preload" as="image" href="/textures/earth_atmos_2048.jpg" />
+    <link rel="preload" as="image" href="/textures/earth_lights_2048.png" />
+    <link rel="preload" as="image" href="/textures/earth_specular_2048.jpg" />
+    <link rel="preload" as="image" href="/textures/earth_normal_2048.jpg" />
+    <link rel="preload" as="image" href="/textures/moon_1024.jpg" />
   </head>
   <body>
     <div id="app"></div>

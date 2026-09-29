@@ -175,17 +175,32 @@ données des sources changent** (au plus une par heure et par plage de dates, ~2
 
 ## Faire tourner le site sur une machine sans outils de développement
 
-Vérifié le 2026-09-17 : **PHP seul suffit**, ni Node, ni Composer, ni serveur web à installer.
+Vérifié le 2026-09-22 : **PHP seul suffit**, ni Node, ni Composer, ni serveur web à installer.
 
-1. Sur la machine de dev : `cd web && npm run build`, puis copier le contenu de `web/dist/` dans
-   `backend/public/` (sans écraser `index.php`).
-2. Copier le dossier `backend/` entier — **`vendor/` inclus** (~29 Mo), c'est lui qui rend Composer
-   inutile sur la machine cible. `web/node_modules/` n'a pas à être copié.
-3. Sur la machine cible : installer PHP 8.3+ (sous Windows, le zip officiel « thread safe »
-   décompressé suffit, pas d'installateur), puis **double-cliquer `backend/start-windows.bat`** —
-   il vérifie PHP et `vendor/`, crée `.env` depuis `.env.example` si besoin, ouvre le navigateur et
-   lance le serveur. Équivalent manuel depuis `backend/` : `php -S 127.0.0.1:8000 -t public`.
-   Le script accepte un port et `--no-open` : `start-windows.bat 8010 --no-open`.
+1. Sur la machine de dev : `cd web && npm run build` (le lanceur recopie `web/dist/` dans
+   `backend/public/` tout seul à chaque démarrage — il n'y a plus à le faire à la main).
+2. **Copier le dossier du projet entier** sur la machine cible, y compris `backend/vendor/`
+   (~29 Mo, ce qui rend Composer inutile là-bas) et `web/dist/`. Ces deux dossiers sont dans
+   `.gitignore` : un `git clone` ne les contient pas, il faut alors `composer install` +
+   `npm install && npm run build`. `web/node_modules/` n'a pas à être copié.
+3. Sur la machine cible, **deux double-clics** :
+   - `Installer-PHP.bat` — ne fait rien si un PHP 8.3+ est déjà là ; sinon télécharge le zip
+     officiel de windows.php.net (version choisie dans `releases.json`, SHA256 vérifié), le
+     décompresse dans `tools/php/` et y écrit un `php.ini` activant `openssl`, `curl`, `mbstring`,
+     `fileinfo`. Aucun droit admin, PATH et registre inchangés ; désinstaller = supprimer
+     `tools/php/`. Arguments : `Installer-PHP.bat 8.3`, `Installer-PHP.bat --force`.
+   - `Lancer-NASA-Viz.bat` — vérifie PHP (`tools/php/` d'abord, puis le PATH) et `vendor/`, crée
+     `.env` depuis `.env.example`, recopie `web/dist/` dans `backend/public/` (sans toucher
+     `index.php`), prend le premier port libre à partir de 8010, **attend que le serveur réponde
+     vraiment en HTTP** avant d'annoncer l'URL, l'affiche, la copie dans le presse-papiers, l'écrit
+     dans `tools/derniere-url.txt` et ouvre le navigateur. Arguments :
+     `Lancer-NASA-Viz.bat 8080 --no-open`, et `--dev` pour lancer en plus le serveur Vite
+     (demande Node + `npm install`, et impose le port 8000 côté backend puisque
+     `web/vite.config.js` y proxifie `/api` en dur).
+
+   Les deux `.bat` ne font que déléguer à `tools/start.ps1` et `tools/install-php.ps1`, lancés en
+   `-ExecutionPolicy Bypass` pour ne rien exiger de la machine. Équivalent manuel depuis
+   `backend/` : `php -S 127.0.0.1:8000 -t public`.
 
 Le même processus sert la page, les assets et `/api/*` : même origine, donc pas de CORS.
 

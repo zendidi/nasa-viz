@@ -26,6 +26,18 @@
 
 ## Pour démarrer
 
+### En un clic (Windows, sans outils de dev)
+
+Copier le dossier du projet sur la machine, puis :
+
+1. **`Installer-PHP.bat`** — ne fait rien si PHP 8.3+ est déjà présent, sinon télécharge le zip
+   officiel dans `tools/php/` (aucun droit admin, PATH inchangé, désinstaller = supprimer le dossier).
+2. **`Lancer-NASA-Viz.bat`** — lance le serveur, affiche l'URL `http://127.0.0.1:<port>/`, la copie
+   dans le presse-papiers et ouvre le navigateur. Un seul processus PHP sert la page *et* l'API.
+
+Arguments : `Lancer-NASA-Viz.bat 8010 --no-open`, ou `--dev` pour lancer aussi le serveur Vite
+(demande Node). Détails et limites : `DEPLOYMENT.md`.
+
 ### Backend (proxy)
 ```bash
 cd backend

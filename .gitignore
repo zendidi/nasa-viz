@@ -9,3 +9,6 @@ Thumbs.db
 # Agent-facing working notes — local only, not part of the public repo.
 /CLAUDE.md
 /docs/agent/
+
+/tools/php/
+/tools/derniere-url.txt
