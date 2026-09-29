@@ -86,6 +86,105 @@ final class HorizonsClient
     }
 
     /**
+     * Orientation of a major body at one instant, from the OBSERVER ephemeris
+     * rather than the vector one — the only place Horizons publishes a body's
+     * pole and rotation phase.
+     *
+     * `QUANTITIES='1,14,20,32'` is one request carrying four things that must
+     * agree with each other, and that is the whole reason they are asked
+     * together rather than pieced from separate calls:
+     *
+     * - **1**, astrometric R.A./Dec of the body in ICRF — the direction the
+     *   Earth is seen from, once negated;
+     * - **14**, `ObsSub-LON/LAT`, the body longitude facing the Earth;
+     * - **20**, `delta`, the range in au — needed because 14 is reported for
+     *   the instant the light *left* (see PlanetOrientationClient);
+     * - **32**, `N.Pole-RA/DC`, the north pole in ICRF.
+     *
+     * `ANG_FORMAT='DEG'` matters: the default is HMS, and a parser reading
+     * "14 32 11.2" as a float silently gets 14.
+     *
+     * Two rows are asked for because Horizons refuses START == STOP; only the
+     * first is read.
+     *
+     * @param array<string, string> $ids caller's key => Horizons id
+     *
+     * @return array<string, array{ra: float, dec: float, sub_lon: float, sub_lat: float, delta_au: float, pole_ra: float, pole_dec: float}|null>
+     *
+     * @throws ExceptionInterface on transport failure
+     */
+    public function getOrientations(array $ids, \DateTimeImmutable $at): array
+    {
+        /** @var array<string, ResponseInterface> $responses */
+        $responses = [];
+        foreach ($ids as $key => $id) {
+            $query = http_build_query([
+                'format' => 'json',
+                'COMMAND' => sprintf("'%s'", $id),
+                'OBJ_DATA' => 'NO',
+                'MAKE_EPHEM' => 'YES',
+                'EPHEM_TYPE' => 'OBSERVER',
+                'CENTER' => sprintf("'%s'", self::GEOCENTRIC),
+                'START_TIME' => sprintf("'%s'", $at->format('Y-m-d H:i')),
+                'STOP_TIME' => sprintf("'%s'", $at->modify('+1 hour')->format('Y-m-d H:i')),
+                'STEP_SIZE' => "'1h'",
+                'QUANTITIES' => "'1,14,20,32'",
+                'ANG_FORMAT' => "'DEG'",
+                'CSV_FORMAT' => 'YES',
+            ], '', '&', PHP_QUERY_RFC3986);
+            $responses[$key] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => 30]);
+        }
+
+        $result = [];
+        foreach ($responses as $key => $response) {
+            if (200 !== $response->getStatusCode()) {
+                throw new TransportException(sprintf('Horizons answered HTTP %d: %s', $response->getStatusCode(), $response->getContent(false)));
+            }
+            $result[$key] = self::parseOrientationRow($response->toArray(false)['result'] ?? '');
+        }
+
+        return $result;
+    }
+
+    /**
+     * First data row of an OBSERVER table, as floats.
+     *
+     * Columns, in the order QUANTITIES puts them: date, two blank flag columns,
+     * R.A., Dec, ObsSub-LON, ObsSub-LAT, delta, deldot, N.Pole-RA, N.Pole-DC.
+     * The two blanks are the solar- and lunar-presence flags; they are always
+     * emitted, so the offsets below are fixed rather than searched for.
+     *
+     * @return array{ra: float, dec: float, sub_lon: float, sub_lat: float, delta_au: float, pole_ra: float, pole_dec: float}|null
+     */
+    private static function parseOrientationRow(string $text): ?array
+    {
+        $soe = strpos($text, '$$SOE');
+        $eoe = strpos($text, '$$EOE');
+        if (false === $soe || false === $eoe) {
+            return null;
+        }
+
+        foreach (explode("\n", trim(substr($text, $soe + 5, $eoe - $soe - 5))) as $line) {
+            $f = array_map('trim', explode(',', $line));
+            if (count($f) < 11 || '' === $f[3]) {
+                continue;
+            }
+
+            return [
+                'ra' => (float) $f[3],
+                'dec' => (float) $f[4],
+                'sub_lon' => (float) $f[5],
+                'sub_lat' => (float) $f[6],
+                'delta_au' => (float) $f[7],
+                'pole_ra' => (float) $f[9],
+                'pole_dec' => (float) $f[10],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
      * Fires one Horizons request per body concurrently (callers keep the batch
      * small — JPL asks users not to hammer the service), then reads them all.
      *

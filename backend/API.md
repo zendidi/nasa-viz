@@ -265,6 +265,79 @@ per planet.
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.
 
+## `GET /api/solar-system/orientation?body=mars`
+
+How one planet is turned in space. `body` takes the seven planets — not `sun`,
+which is not a rigid body and whose surface rotates differentially.
+
+```json
+{
+  "frame": "ICRF",
+  "epoch": 1788220800,
+  "bodies": [
+    {
+      "id": "mars",
+      "name": "Mars",
+      "radius_km": 3389.5,
+      "pole": [0.4461232671746381, -0.4066230851490753, 0.7972651360176702],
+      "prime_meridian": [-0.29797746863881497, -0.90748764180815, -0.29610067232123427],
+      "rotation_deg_per_day": 350.891982443297
+    }
+  ]
+}
+```
+
+- `pole` — the north pole, an **ICRF unit vector**, so already in the scene's
+  axes: nothing to convert.
+- `prime_meridian` — where the body's zero of longitude pointed at `epoch`, also
+  an ICRF unit vector, and perpendicular to `pole` to 1e-16.
+- `rotation_deg_per_day` — **signed**. Negative for Venus (−1,48) and Uranus
+  (−501,16), which turn backwards.
+- `epoch` — first of the current UTC month, the same anchor as the positions and
+  orbit routes.
+
+**To orient a body at time t**, point its north at `pole` and rotate
+`prime_meridian` about `pole` by `rotation_deg_per_day × (t − epoch, in days)`.
+That is all; the propagation is exact rather than approximate, because a rigid
+body turns at a constant rate about a fixed axis.
+
+### Why vectors and not the angles Horizons publishes
+
+Horizons gives a pole as RA/Dec and a phase as `ObsSub-LON`, and turning those
+into an orientation has two traps that every client would otherwise have to fall
+into separately:
+
+- **The sign of the longitude.** IAU planetographic longitude is counted
+  *opposite* to the rotation, so the sub-Earth longitude grows at |rate|
+  whichever way the body turns — but the direction it must be applied in flips
+  with the sign of the rate.
+- **The light-time correction.** `ObsSub-LON` describes the body at the instant
+  the light *left* it, while the positions route serves geometric positions
+  (Horizons `VECTORS` is uncorrected). Ignoring that draws Jupiter's surface as
+  it stood 49 minutes ago — **29,8°** of rotation — and Uranus's **54,7°** off.
+
+Both are handled server-side once. `PlanetOrientationClient` documents them, and
+its test replays real Horizons ephemerides for Mars, Jupiter, Venus and Uranus
+and checks the reconstruction reproduces `ObsSub-LON` over 40 days to **1e-3
+degree**. The four bodies are chosen so that no single sign error passes: Uranus
+is the only one both retrograde *and* far enough for the light-time term to
+matter, and it is the only row that caught applying that term with the signed
+rate instead of its absolute value — a live bug worth 2,34° of drift that Mars,
+Jupiter and Venus all failed to notice.
+
+### Cost
+
+**One Horizons request per planet per month**, and a cheap one: a two-row
+`EPHEM_TYPE=OBSERVER` table answers in well under a second, where the 366-row
+vector tables of the positions route take 5 to 16 s. The pole is treated as
+fixed over the month — Mars's moved five units in the fifth decimal over 40 days
+— and the phase is propagated rather than sampled, which no table could do
+anyway: Jupiter turns 2,4 times between two daily samples.
+
+Cached on the same shape as the other solar-system routes: the key carries the
+window, the TTL only has to outlive the month, and a body Horizons didn't answer
+for comes back as `null` vectors and is retried within the hour.
+
 ## `GET /api/solar-system/moons?planet=jupiter`
 
 Every moon of one planet in a single response. `planet` takes the same values as

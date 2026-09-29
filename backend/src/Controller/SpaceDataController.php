@@ -8,6 +8,7 @@ use App\Service\MoonClient;
 use App\Service\NasaApiClient;
 use App\Service\NasaUsageTracker;
 use App\Service\NeoFeedBuilder;
+use App\Service\PlanetOrientationClient;
 use App\Service\SmallBodyDetailsClient;
 use App\Service\SolarSystemClient;
 use Psr\Cache\CacheItemPoolInterface;
@@ -295,6 +296,70 @@ final class SpaceDataController
             // or Horizons had nothing for it this time.
             'missing' => $missing,
             'moons' => $moons,
+        ]);
+    }
+
+    /**
+     * How one planet is turned in space, as two ICRF unit vectors and a rate.
+     *
+     * Same window anchor, same cache shape and the same one-body-per-call rule
+     * as the two routes above — but for a different reason. There, one body per
+     * call is about time: a Horizons request costs 5 to 16 s and two at once
+     * overran PHP's limit. Here a body costs **one request a month** and the
+     * answer is seven numbers, so the rule is kept only for consistency with the
+     * client's existing per-planet loop.
+     *
+     * `prime_meridian` is where the body's zero of longitude pointed at `epoch`.
+     * To turn the body at time t, rotate that vector about `pole` by
+     * `rotation_deg_per_day * (t - epoch, in days)`. The rate is **signed**:
+     * negative for Venus and Uranus, which turn backwards.
+     *
+     * Two vectors rather than the angles Horizons publishes, and that is this
+     * contract's one real opinion: the sign of the longitude and the light-time
+     * correction are the two things easy to get wrong here, the second is worth
+     * 30 degrees on Jupiter and 55 on Uranus, and neither should have to be
+     * rediscovered by every client. PlanetOrientationClient says how both are
+     * handled, and its test checks the result against Horizons itself.
+     */
+    #[Route('/api/solar-system/orientation', name: 'api_solar_system_orientation', methods: ['GET'])]
+    public function solarSystemOrientation(
+        Request $request,
+        PlanetOrientationClient $client,
+        #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
+    ): JsonResponse {
+        $id = trim((string) $request->query->get('body', ''));
+        // Planets only. The Sun has no prime meridian worth drawing with — it is
+        // not a rigid body, its surface rotates differentially — and the Moon
+        // belongs to the moons route.
+        if (!PlanetOrientationClient::isKnown($id)) {
+            return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', PlanetOrientationClient::ids()))], 400);
+        }
+
+        $epoch = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
+        $item = $pool->getItem('solar_system_orientation_'.$id.'_'.$epoch->format('Y-m-d'));
+
+        if ($item->isHit()) {
+            $orientation = $item->get();
+        } else {
+            try {
+                $orientation = $client->getOrientation($id, $epoch);
+            } catch (ExceptionInterface $e) {
+                return $this->upstreamError('solar-system/orientation', $e);
+            }
+            // Same shape as the positions route: the key carries the window, so
+            // the TTL only has to outlive the month; a body Horizons didn't
+            // answer for is retried within the hour.
+            $pool->save($item->set($orientation)->expiresAfter(null === $orientation ? 3600 : 40 * 86400));
+        }
+
+        return new JsonResponse([
+            'frame' => 'ICRF',
+            'epoch' => $epoch->getTimestamp(),
+            'bodies' => [SolarSystemClient::describe($id) + ($orientation ?? [
+                'pole' => null,
+                'prime_meridian' => null,
+                'rotation_deg_per_day' => null,
+            ])],
         ]);
     }
 

@@ -142,6 +142,12 @@ final class SolarSystemClient
         return self::BODIES[$id][3];
     }
 
+    /** The Horizons addressing id, for the routes that ask it something other than a vector table. */
+    public static function horizonsId(string $id): string
+    {
+        return self::BODIES[$id][0];
+    }
+
     /**
      * The window every table shares: the first of the current UTC month. A
      * body fetched today and one fetched three weeks from now still line up
