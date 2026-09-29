@@ -394,6 +394,121 @@ web, donc le mur des 30 s ne s'applique pas. Le quatrième gain classique, arron
    les lunes entrent dans la portée de la caméra.
 5. **Docs** et checklist de validation visuelle.
 
+## 4 ter. Lot 5 — recherche préalable, menée le 2026-09-29
+
+Le § 5 posait la question 2 (« sphères de couleur unie ou textures ? Si textures, il faut une
+source — Solar System Scope, NASA SVS, USGS Astrogeology, **aucune testée** »). Elles sont testées.
+
+### Les textures : Solar System Scope, CC BY 4.0, vérifié
+
+Licence citée mot pour mot sur la page : *« Distributed under Attribution 4.0 International license:
+You may use, adapt, and share these textures for any purpose, even commercially. »* Attribution
+obligatoire — le projet a déjà un emplacement pour ça (`NEO_CREDITS`, classe CSS `.credits`).
+
+URLs sondées une par une le 2026-09-29, toutes valides. Format vérifié : **équirectangulaire
+2048 × 1024**.
+
+| fichier | poids |
+|---|---|
+| `2k_mercury.jpg` | 873 ko |
+| `2k_venus_surface.jpg` | 885 ko |
+| `2k_mars.jpg` | 751 ko |
+| `2k_jupiter.jpg` | 499 ko |
+| `2k_saturn.jpg` | 200 ko |
+| `2k_uranus.jpg` | 78 ko |
+| `2k_neptune.jpg` | 242 ko |
+| `2k_saturn_ring_alpha.png` | 12 ko |
+| `2k_earth_daymap.jpg` | 463 ko |
+| `2k_earth_nightmap.jpg` | 255 ko |
+| `2k_earth_normal_map.tif` | 521 ko |
+| `2k_earth_specular_map.tif` | 339 ko |
+| `2k_earth_clouds.jpg` | 966 ko |
+| `2k_moon.jpg` | 1 054 ko |
+
+**L'anneau de Saturne est résolu** : `2k_saturn_ring_alpha.png` est un **PNG RGBA 8 bits,
+2048 × 125**, en-tête vérifié. L'alpha est intégré, pas de second fichier à gérer — c'est une bande
+échantillonnée radialement, exactement ce qu'un anneau demande.
+
+**Deux fichiers sont en TIFF** (normal map et specular map de la Terre) et devront être convertis.
+Une extension fausse répond **404 avec un corps HTML** : un téléchargement qui ne regarde pas le code
+de statut écrit du HTML dans un `.jpg` sans rien dire. (C'est l'erreur que j'ai faite en sondant, et
+elle a produit des tailles fausses avant correction.)
+
+### Bénéfice inattendu : ça règle un problème existant
+
+Les textures Terre et Lune actuellement embarquées viennent des **exemples three.js**
+(`bodies.js` le dit). Or beaucoup d'assets du dépôt three.js **n'ont pas de licence propre** — c'est
+un sujet ouvert et suivi chez eux. Solar System Scope sert exactement le même jeu (day, night,
+normal, specular, clouds, Moon) sous une licence explicite. Basculer ne fait donc pas qu'ajouter les
+planètes : ça met aussi ce qui existe déjà sur une base saine.
+
+### Le trou : les lunes
+
+Solar System Scope ne couvre **aucune lune** hors la nôtre. Pas d'Io, Europe, Ganymède, Callisto,
+Titan, Triton, Phobos, Déimos.
+
+USGS Astrogeology a des mosaïques globales pour Io, Europe, Ganymède, Callisto et Titan (domaine
+public, produits Voyager/Galileo/Cassini). Mais ce sont des **produits scientifiques** : GeoTIFF ou
+JPEG2000, souvent multi-gigaoctets, en projection cylindrique simple. Les utiliser demande une
+conversion (GDAL ou équivalent), donc une étape de build et une chaîne d'attribution à tenir.
+
+Recommandation : **pas de textures de lunes au lot 5.** Sur 38 lunes, 4 ou 5 seulement sont assez
+grosses pour montrer du relief quand on est centré sur leur planète, et elles restent des sphères
+grises éclairées — ce qui est honnête. À rouvrir séparément si le besoin se confirme.
+
+### Le budget, et ce qu'il impose
+
+| | poids |
+|---|---|
+| système Terre (day, night, normal, specular, Lune) | 2,51 Mo |
+| 7 planètes + anneau de Saturne | 3,37 Mo |
+| nuages de la Terre (entrée séparée du backlog) | 0,92 Mo |
+| **total jeu complet 2K** | **6,81 Mo** |
+| embarqué aujourd'hui | 2,00 Mo |
+
+Trop lourd pour tout précharger, surtout que `web/index.html` précharge déjà les textures de la Terre
+pour passer devant les appels `/api/*` sur le serveur mono-requête du mode « poste isolé ».
+
+D'où la même stratégie qu'au lot 4 : **le système Terre reste préchargé** (c'est la vue par défaut),
+**les planètes se chargent à la demande** quand on centre sur elles ou quand elles deviennent assez
+grosses à l'écran. Le lot 4 a déjà tout le mécanisme.
+
+### L'orientation : aucune table IAU à coder en dur
+
+C'était la question ouverte — et la réponse est meilleure que prévu. Horizons sert tout en CSV, dans
+la forme de requête que le projet utilise déjà.
+
+`QUANTITIES='14,32'` en `EPHEM_TYPE=OBSERVER` rend, en un seul appel :
+
+```
+Date__(UT)__HR:MN, , , ObsSub-LON, ObsSub-LAT,  N.Pole-RA, N.Pole-DC,
+ 2026-Sep-29 00:00, , ,  55.527147,   0.148527,  268.05765,  64.49667,
+ 2026-Sep-29 01:00, , ,  91.794294,   0.148088,  268.05765,  64.49667,
+```
+
+- **`N.Pole-RA` / `N.Pole-DC` est la direction du pôle en ICRF** — c'est-à-dire *directement dans les
+  axes de la scène*, aucune conversion. Vérifié contre l'IAU : Jupiter 268,058° / 64,497°, Mars
+  317,652° / 52,870°. Orienter une planète, c'est pointer son +Y là.
+- **`ObsSub-LON` donne la phase de rotation** : la longitude qui fait face à la Terre à cet instant.
+  Deux lignes suffisent à en tirer le taux par différence finie (Jupiter : 36,27°/h, soit 9,92 h —
+  ses 9 h 55 ; Mars : 14,597°/h, soit 24,66 h).
+- Le pôle est constant à l'échelle du mois (valeurs identiques à 5 décimales sur deux jours). Donc
+  **une requête sans clé par planète et par mois**, et la rotation se propage localement — exactement
+  ce que la Terre fait déjà avec le temps sidéral de Greenwich.
+
+À noter pour ne pas s'y perdre : le bloc `OBJ_DATA=YES` donne la période de rotation et
+l'« obliquity to orbit », mais **pas** le pôle en ICRF. L'obliquité à l'orbite ne suffit pas à
+orienter un corps (il manque la direction du nœud). C'est la quantité 32 qu'il faut, pas le texte
+libre — ce qui écarte au passage le coût de parseur signalé au § 1.
+
+### Questions restant à trancher avec l'utilisateur
+
+1. **Les lunes** : on s'en tient aux sphères grises (recommandé), ou on ouvre le chantier USGS ?
+2. **La résolution** : 2K partout, ou redescendre Mercure/Vénus/Mars (les trois plus lourds, 2,5 Mo
+   à eux seuls) en 1K par ré-encodage ?
+3. **Le Soleil** : Solar System Scope a une texture solaire (822 ko). Le marqueur actuel est une
+   sphère unie. On texture, ou on garde le marqueur ?
+
 ### Le piège à ne pas manquer : le cache froid
 
 `docs/agent/gotchas.md` note que sur cette machine Symfony retombe sur `NativeHttpClient`, qui
@@ -407,9 +522,9 @@ visiteur.
 
 1. **Le périmètre des lunes** : seulement les grosses (Lune, Phobos/Deimos, 4 galiléennes, Titan,
    Triton ≈ 9 corps), ou tout le système de la planète centrée ? Pluton dans le lot 1 ou pas ?
-2. **L'aspect** : sphères de couleur unie comme les NEO (cohérent avec « MVP web = sphères simples »
-   du README), ou textures ? Si textures, il faut une source — Solar System Scope (CC BY 4.0),
-   NASA SVS, USGS Astrogeology sont les pistes habituelles, **non vérifiées** à ce stade.
+2. ~~**L'aspect** : sphères de couleur unie ou textures ? Source à trouver.~~ **Recherche faite le
+   2026-09-29, voir § 4 ter.** Solar System Scope retenu (CC BY 4.0, URLs et formats vérifiés un par
+   un) ; il ne couvre aucune lune, d'où la recommandation de les laisser en sphères grises.
 3. **Miriade en second avis** : on branche la comparaison INPOP19 / DE441 comme pour les NEO, ou on
    se contente de Horizons pour l'instant ?
 4. **La vue géocentrée** : accepte-t-on que les huit planètes s'y tassent entre 19 et 26 unités, ou
