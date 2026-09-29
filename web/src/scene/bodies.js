@@ -208,6 +208,21 @@ const ringGeometry = (() => {
 })()
 const ringMaterial = new THREE.LineBasicMaterial({ color: 0x4fa8ff, transparent: true, opacity: 0.3, depthWrite: false })
 
+/**
+ * Warm circle for a ring at an **absolute** distance, against the blue of the
+ * ones scaled to the pivot. The two say different things and must not be read as
+ * one family: a scaled ring always lands at the same place on screen whichever
+ * pivot you pick (that is what makes it legible), so it cannot show you that one
+ * system is bigger than another. The absolute one is the fixed yardstick that
+ * can — it shrinks onto the planet as you move outward.
+ */
+const absoluteRingMaterial = new THREE.LineBasicMaterial({
+  color: 0xffbf66,
+  transparent: true,
+  opacity: 0.32,
+  depthWrite: false,
+})
+
 export function createDistanceRings(scene) {
   // Unit circles are drawn in XZ (normal +Y); rotating the group by the obliquity
   // about X turns that normal into the ecliptic pole in scene axes, (0, cos ε, sin ε).
@@ -224,11 +239,15 @@ export function createDistanceRings(scene) {
     get list() {
       return list
     },
-    /** Replaces the whole set — the point of view decides which circles apply. */
+    /**
+     * Replaces the whole set — the point of view decides which circles apply.
+     * A spec marked `absolute` gets the warm material: it is a fixed distance,
+     * not one scaled to the pivot.
+     */
     rebuild(specs) {
       group.clear()
-      list = specs.map(({ km, label }) => {
-        const line = new THREE.LineLoop(ringGeometry, ringMaterial)
+      list = specs.map(({ km, label, absolute = false }) => {
+        const line = new THREE.LineLoop(ringGeometry, absolute ? absoluteRingMaterial : ringMaterial)
         group.add(line)
         return { line, distanceKm: km, label }
       })

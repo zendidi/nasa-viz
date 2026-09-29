@@ -13,12 +13,20 @@ import { sourcesPanelHtml } from '../neoInfo.js'
 import { FOCUSES, FOCUS_IDS } from '../focus.js'
 import { SCALE_PRESETS, SCALE_STEPS } from '../scale.js'
 
-/** Wording of the "point de vue" panel, one line per pivot. */
+/**
+ * Wording of the "point de vue" panel. The two frames of reference get a line
+ * each because each one changes what the scene *draws* of a NEO; a planet gets a
+ * generated line, since from a planet the NEO drawings are simply not available
+ * — the week-long trajectory is geocentric and the full ellipse heliocentric, so
+ * neo/scene.js draws neither (it tests for 'earth' and 'sun' by name).
+ */
 const VIEW_DESCRIPTIONS = {
   earth: 'Scène centrée sur la Terre · trajectoire de la semaine du NEO sélectionné',
   sun: 'Scène centrée sur le Soleil · orbite complète du NEO sélectionné',
 }
 
+const viewDescription = (id) =>
+  VIEW_DESCRIPTIONS[id] ?? `Scène centrée sur ${FOCUSES[id].label} · distances à l'échelle de son orbite`
 const NEO_HEADING = '<h2>Astéroïdes proches (NEO)</h2>'
 const PLANETS_HEADING = '<h2>Planètes</h2>'
 const ISS_HEADING = '<h2><span class="dot dot-iss"></span>ISS</h2>'
@@ -49,6 +57,12 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed
  */
+/** The pivot buttons of one group, in the registry's own order. */
+const focusButtons = (group) =>
+  FOCUS_IDS.filter((id) => FOCUSES[id].group === group)
+    .map((id) => `<button class="focus-btn" data-focus="${id}">${FOCUSES[id].label}</button>`)
+    .join('')
+
 export function createPanels({ app, wheelTarget, on }) {
   const ui = document.createElement('div')
   ui.id = 'ui'
@@ -108,7 +122,10 @@ export function createPanels({ app, wheelTarget, on }) {
   viewPanel.innerHTML = `
     <div class="scale-row">
       <label>Point de vue</label>
-      ${FOCUS_IDS.map((id) => `<button class="focus-btn" data-focus="${id}">${FOCUSES[id].label}</button>`).join('')}
+      ${focusButtons('frame')}
+    </div>
+    <div class="scale-row focus-planets">
+      ${focusButtons('planet')}
     </div>
     <div class="scale-row">
       <button id="recenter-btn">Recentrer</button>
@@ -190,6 +207,11 @@ export function createPanels({ app, wheelTarget, on }) {
     #scale-panel .scale-end { font-size: 11px; opacity: 0.6; }
     #scale-slider { width: 260px; accent-color: #4fa8ff; }
     .scale-preset.active, .focus-btn.active { background: #4fa8ff; color: #0e2233; }
+    /* Seven planets don't fit one line next to the scale panel, and the row must
+       not push #bottom-bar wider than the viewport. */
+    #view-panel .focus-planets { flex-wrap: wrap; max-width: 260px; }
+    #view-panel .focus-planets .focus-btn { font-size: 11px; padding: 2px 6px; }
+    .focus-btn:disabled { opacity: 0.35; cursor: default; }
     #scale-label { margin: 8px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
     #view-label { margin: 8px 0 0; font-size: 12px; opacity: 0.75; max-width: 220px; }
     #scale-panel .scale-hint, #view-panel .scale-hint { margin: 2px 0 0; font-size: 11px; opacity: 0.55; }
@@ -313,10 +335,17 @@ export function createPanels({ app, wheelTarget, on }) {
    * and are refetched when they near their end, so there is no "maj" stamp to
    * show — only how many of the seven are actually placed.
    *
+   * `drawn` is false when the scene is deliberately not showing them (the
+   * geocentric view below 100 % réel). Two words are enough: the panel must not
+   * claim seven placed planets over an empty sky, but *why* they are hidden is
+   * not news the user needs every time they move the slider — the reasoning
+   * lives in docs/echelle-reelle.md.
+   *
    * @param {{known: number, orbits: number, total: number, loading: boolean, loadingOrbits: boolean}} state
    * @param {{label: string, color: string}[]} legend one swatch per planet
+   * @param {boolean} drawn whether the current scale and pivot put them on screen
    */
-  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend) {
+  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend, drawn) {
     const swatches = legend.map((p) => `<span class="dot" style="background:${p.color}"></span>${p.label}`)
     planetsPanel.innerHTML = `
       ${PLANETS_HEADING}
@@ -327,6 +356,7 @@ export function createPanels({ app, wheelTarget, on }) {
             ? `${total} planètes · positions réelles (JPL Horizons)`
             : `${known}/${total} placées — les autres n'ont pas répondu`
       }</p>
+      ${drawn ? '' : '<p class="muted">planètes masquées</p>'}
       <p class="muted">${
         orbits === total && !loadingOrbits
           ? 'orbites tracées (vue Soleil)'
@@ -377,11 +407,20 @@ export function createPanels({ app, wheelTarget, on }) {
     scaleLabel.textContent = `${frame} · ${label}`
   }
 
-  function renderView(focusId) {
+  /**
+   * @param {string} focusId the current pivot
+   * @param {string[]} focusableIds planets whose position table has landed
+   */
+  function renderView(focusId, focusableIds) {
     for (const button of viewPanel.querySelectorAll('.focus-btn')) {
-      button.classList.toggle('active', button.dataset.focus === focusId)
+      const id = button.dataset.focus
+      button.classList.toggle('active', id === focusId)
+      // Greyed rather than hidden while a planet has no position table: main.js
+      // refuses the switch anyway, and a button that appears out of nowhere a
+      // minute into the session is worse than one that is visibly not ready.
+      button.disabled = FOCUSES[id].group === 'planet' && !focusableIds.includes(id)
     }
-    viewLabel.textContent = VIEW_DESCRIPTIONS[focusId] ?? ''
+    viewLabel.textContent = viewDescription(focusId)
   }
 
   // --- modal -------------------------------------------------------------

@@ -39,6 +39,7 @@ import {
   issOrbitRadius,
   issRadius,
   sunRadius,
+  pivotRadius,
   worldPerPixel,
   describeScale,
   remapCameraDistance,
@@ -52,7 +53,12 @@ const SUN_LIGHT_DISTANCE = 30
 // Floor on each body's on-screen radius, in pixels — at true scale almost
 // everything is sub-pixel (the whole Earth–Moon system is ~5 px when framing a
 // NEO at 0.5 au), so without these nothing would show at all.
-const MIN_RADIUS_PX = { earth: 2, moon: 1.5, iss: 2.5, sun: 3 }
+//
+// The Sun's sits above `PLANET_MIN_RADIUS_PX` (3,5, scene/planets.js) on
+// purpose: past the point where every body is on its floor, these numbers are
+// the only thing the scene still says about size, and the Sun must not end up
+// smaller than Jupiter when it is really ten times its radius.
+const MIN_RADIUS_PX = { earth: 2, moon: 1.5, iss: 2.5, sun: 4.5 }
 
 const app = document.getElementById('app')
 
@@ -159,9 +165,34 @@ function updateAstronomy() {
 
 let focusId = 'earth'
 const focusOf = () => FOCUSES[focusId]
-const focusPositionKm = () => (focusId === 'sun' ? sunPositionKm : EARTH_POSITION_KM)
-/** The pivot's own radius in scene units — what the camera must not enter. */
-const focusRadius = (t) => (focusId === 'sun' ? sunRadius(t, true) : EARTH_RADIUS)
+
+/**
+ * The planet's own record when a planet is the pivot, null otherwise. Resolved
+ * once on the switch rather than looked up per placement: `placeKm` runs for
+ * every NEO and every body, dozens of times a frame.
+ *
+ * It is also the guard. `setFocus` only assigns it once the planet's Horizons
+ * table has landed, so anything reading it can trust `positionKm`.
+ *
+ * @type {{id: string, radiusKm: number, positionKm: THREE.Vector3} | null}
+ */
+let focusPlanet = null
+
+const focusPositionKm = () => {
+  if (focusPlanet) return focusPlanet.positionKm
+  return focusId === 'sun' ? sunPositionKm : EARTH_POSITION_KM
+}
+
+/**
+ * The pivot's own radius in scene units — what the camera must not enter.
+ * `pivotRadius` covers all three cases by construction (see scale.js); the Earth
+ * branch stays written out because EARTH_RADIUS is the anchor the others are
+ * defined against, and reading it as a constant here is the clearer statement.
+ */
+const focusRadius = (t) => {
+  if (focusPlanet) return pivotRadius(focusPlanet.radiusKm, t)
+  return focusId === 'sun' ? sunRadius(t, true) : EARTH_RADIUS
+}
 
 const placeRelative = new THREE.Vector3()
 
@@ -306,6 +337,7 @@ function setScaleStep(step) {
   scaleStep = next
   scaleTransition = { from: scaleT, to: next / SCALE_STEPS, startMs: performance.now() }
   renderScalePanel()
+  renderPlanetsPanel() // the cran decides whether the geocentric view shows planets
 }
 
 /** NEO distances from the current pivot — what the scale label and the camera anchors quote. */
@@ -316,6 +348,9 @@ function neoDistancesKm() {
 
 /** The pivot's yardsticks, at their real current distance. */
 function focusReferences() {
+  // Around a planet the Sun is the only yardstick the scene can quote today;
+  // its moons will be the second one (lot 4).
+  if (focusPlanet) return [{ label: 'Soleil', km: focusPlanet.positionKm.distanceTo(sunPositionKm) }]
   return focusId === 'sun' ? [{ label: 'Terre', km: sunDistanceKm }] : [{ label: 'Lune', km: moonDistanceKm }]
 }
 
@@ -375,9 +410,13 @@ function updateCameraLimits() {
     if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
   }
   // Neptune sits further out than any NEO in both views — without this the
-  // zoom would stop short of the planet it is drawing.
-  for (const body of planets.bodies) {
-    if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+  // zoom would stop short of the planet it is drawing. Only while the planets
+  // are actually drawn: the geocentric view hides them below 100 % réel, and an
+  // invisible Neptune must not be what lets the camera pull back 26 units.
+  if (planets.drawnAt(scaleT)) {
+    for (const body of planets.bodies) {
+      if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+    }
   }
   // The drawn orbit is part of the scene's extent: you must be able to pull
   // back far enough to see the whole ellipse, aphelion included.
@@ -391,6 +430,20 @@ function updateCameraLimits() {
   // OrbitControls' dolly is multiplicative (×0.95 per wheel notch at speed 1):
   // spanning 2.6 → ~60 000 would take ~190 notches without this.
   controls.zoomSpeed = Math.max(1, Math.log(controls.maxDistance / controls.minDistance) / 3)
+
+  // The far plane has to follow the scene, and it is measured *from the camera*,
+  // not from the pivot. The fixed 1e6 it was built with is smaller than the
+  // scene itself at 100 % réel: Neptune sits 1,41 million units out, so it was
+  // clipped away outright — and pulled back far enough to frame it, every outer
+  // planet went with it. That is precisely the view that now has to show them.
+  // Widening it is free because of `logarithmicDepthBuffer`; `near` is what sets
+  // the precision, and it is untouched. Re-derived with a factor-4 hysteresis so
+  // an orbiting camera isn't rebuilding the projection matrix every frame.
+  const neededFar = Math.max(1e4, (camera.position.length() + farthest) * 2)
+  if (neededFar > camera.far || neededFar < camera.far / 4) {
+    camera.far = neededFar
+    camera.updateProjectionMatrix()
+  }
 }
 
 // --- changer de point de vue ------------------------------------------------------
@@ -404,12 +457,22 @@ const focusOffset = new THREE.Vector3()
  * distance through the old curve, then re-compressed with the new one.
  */
 function setFocus(nextId) {
-  if (nextId === focusId || !FOCUSES[nextId]) return
+  const next = FOCUSES[nextId]
+  if (nextId === focusId || !next) return
+
+  // A planet only becomes the pivot once its Horizons table has landed. Without
+  // a position there is no origin to subtract, so every body in the scene would
+  // silently be placed relative to (0,0,0) — that is, relative to the Earth,
+  // while the panel claimed another pivot. The button is disabled meanwhile
+  // (panels.renderView), this is the guard behind it.
+  const nextPlanet = next.group === 'planet' ? planets.focusBody(nextId, Date.now() / 1000) : null
+  if (next.group === 'planet' && !nextPlanet) return
 
   focusOffset.subVectors(camera.position, controls.target)
   const framedKm = sceneDistanceToKm(focusOffset.length(), scaleT, focusOf().curve)
 
   focusId = nextId
+  focusPlanet = nextPlanet
   recenterTween = null
   distanceRings.rebuild(focusOf().rings)
   rebuildRingLabels()
@@ -429,6 +492,7 @@ function setFocus(nextId) {
 
   renderScalePanel()
   renderViewPanel()
+  renderPlanetsPanel() // so does the pivot
   if (modalNeo) renderNeoModal()
 }
 
@@ -561,7 +625,9 @@ function renderNeoPositionsStatus() {
 }
 
 function renderPlanetsPanel() {
-  panels.renderPlanets(planets.status(), planets.legend())
+  // `scaleStep`, not `scaleT`: the panel describes the cran the slider is on,
+  // not where a running transition happens to be — same choice as the scale label.
+  panels.renderPlanets(planets.status(), planets.legend(), planets.drawnAt(scaleStep / SCALE_STEPS))
 }
 
 function renderScalePanel() {
@@ -579,7 +645,7 @@ function renderScalePanel() {
 }
 
 function renderViewPanel() {
-  panels.renderView(focusId)
+  panels.renderView(focusId, planets.focusableIds())
 }
 
 /** The NEO the modal is showing, so it can be re-rendered when its sheet arrives. */
@@ -688,7 +754,13 @@ const planets = createPlanets({
   // All the module is told about the point of view — its orbits are relative
   // to the pivot, so they only mean anything when the pivot is the Sun.
   isHeliocentric: () => focusId === 'sun',
-  on: { changed: () => renderPlanetsPanel() },
+  // Only the Earth's view hides them: from Mars the planets are the subject.
+  hidesPlanets: () => focusId === 'earth',
+  focusPlanetId: () => (focusPlanet ? focusPlanet.id : null),
+  // Passed by reference, not by value: `updateAstronomy()` copies into this same
+  // vector every minute, so the planets' lighting follows the Sun on its own.
+  sunPositionKm,
+  on: { changed: () => { renderPlanetsPanel(); renderViewPanel() } },
 })
 
 // Rings (and their labels) belong to the current point of view, so both are

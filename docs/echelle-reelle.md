@@ -45,11 +45,28 @@ Nouveau module `web/src/scale.js` (pur, sans état Three.js autant que possible)
   `wpp = 2·dist_caméra·tan(fov/2) / hauteur_px` ; `rayon = max(rayon(t), minPx · wpp)`.
   Valeurs de départ : Terre 3 px, Lune 2 px, ISS 4 px, NEO 4 px, Soleil 4 px. Les hit-targets NEO
   suivent la même règle (min ~10 px) pour rester cliquables.
+  Valeurs actuelles (`MIN_RADIUS_PX` dans `main.js`, `PLANET_MIN_RADIUS_PX` dans
+  `scene/planets.js`) : Terre 2, Lune 1,5, ISS 2,5, NEO 2,5, **planètes 3,5, Soleil 4,5**.
+  Ces deux derniers sont liés : passé le point où tout est sur son plancher, les px sont la seule
+  chose que la scène dit encore de la taille, et le Soleil ne doit pas finir plus petit que Jupiter
+  alors qu'il fait dix fois son rayon.
+- **Les planètes ne sont pas dessinées en vue géocentrée sous « 100 % réel »** (décision du
+  2026-09-29). `EARTH_CURVE` tasse tout le système entre 19,1 (Vénus) et 26,2 (Neptune) unités, et
+  la courbe est calée pour qu'un NEO à 0,5 au tombe à 20,00 — donc *entre* Vénus (19,12) et Mercure
+  (20,09) : les planètes ne sont pas seulement écrasées, elles sont mélangées au nuage d'astéroïdes.
+  Fondu sur le dernier cran (`GEOCENTRIC_FADE_FROM = 0.875`, cran 7 sur 8) plutôt que basculé, donc
+  le cran 7 n'affiche déjà rien. La vue héliocentrée les garde à tous les crans : `SUN_CURVE` est
+  faite pour cette plage.
 - Libellé du cran, calculé en direct : « Lune ÷x · NEO ÷y (médiane du feed) · tailles ×z ».
 
 ## Rendu
 
-- `WebGLRenderer({ logarithmicDepthBuffer: true })`, caméra `near 0.01`, `far 1e6`.
+- `WebGLRenderer({ logarithmicDepthBuffer: true })`, caméra `near 0.01`, `far` **dynamique**
+  (`updateCameraLimits()`) : `max(1e4, (distance_caméra + objet_le_plus_lointain) × 2)`, avec une
+  hystérésis de facteur 4 pour ne pas reconstruire la matrice de projection à chaque frame.
+  Le `far 1e6` fixe d'origine était **plus petit que la scène** à 100 % réel — Neptune est à
+  1,41 million d'unités — donc les planètes externes étaient purement détourées (2026-09-29).
+  Élargir est gratuit grâce au log depth buffer ; c'est `near` qui fixe la précision.
   **Piège** : un `ShaderMaterial` écrit à la main (globe, étoiles) ne reçoit pas le log depth
   automatiquement — ajouter `#include <common>`, `<logdepthbuf_pars_vertex>`, `<logdepthbuf_vertex>`,
   `<logdepthbuf_pars_fragment>`, `<logdepthbuf_fragment>`. À noter dans `docs/agent/gotchas.md`.

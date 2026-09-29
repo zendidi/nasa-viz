@@ -42,6 +42,17 @@ habituelle `sceneDistance(|rel|, t, courbe(F))` appliquée le long de `rel`. Tou
 |---|---|---|
 | Terre | Lune → 12 · 0,5 ua → 20 | inchangé (`EARTH_CURVE`, celle de `docs/echelle-reelle.md`) |
 | Soleil | 0,3 ua → 6 · 5 ua → 26 | 1 ua → 14,5 ; une orbite 0,9–2,5 ua occupe 13,8 → 20 : l'ellipse reste une ellipse |
+| Une planète | 0,3 a → 6 · 5 a → 26 | même forme, calée sur son **propre** demi-grand axe `a` |
+
+La ligne « planète » est `orbitingCurve(a)` dans `scale.js`, et la ligne « Soleil » en est le cas
+particulier `a = 1 ua`. Comme les deux calages sont des **multiples** de `a`, la pente est la même
+pour tous les pivots (`b = 20 / log10(5/0,3) = 16,37`) et le repère lui-même tombe **toujours à
+14,56 unités**. C'est la raison d'être de cette forme : quel que soit le pivot, le corps qui définit
+la vue est au même endroit à l'écran, donc l'image reste comparable d'un pivot à l'autre.
+
+Mesuré depuis Neptune (`a = 30,06 ua`) au cran lisible : le Soleil à 14,56, la Terre à 14,66,
+Jupiter à 13,53. Ils se télescopent — et c'est juste : vus de 30 ua, ils sont réellement dans la
+même direction à peu près à la même distance.
 
 Conséquence assumée : à t < 1, une ellipse passée dans une compression **radiale** est déformée
 (la compression n'est pas conforme), mais elle reste cohérente — le trait passe toujours sur le
@@ -57,7 +68,37 @@ lisible, la Lune et l'ISS suivent, et tout revient au réel à t = 1.
 ### Anneaux de repère
 
 Ils suivent le pivot : 10 et 100 distances lunaires autour de la Terre, cercles 0,5 / 2 / 5 ua autour
-du Soleil. Toujours masqués au cran « lisible », où les distances ne sont pas proportionnelles.
+du Soleil, et autour d'une planète **les mêmes multiples appliqués à son orbite** (0,5 a / 2 a / 5 a,
+libellés en ua arrondis à deux chiffres significatifs) — donc les anneaux tombent au même endroit à
+l'écran quel que soit le pivot, exactement comme la courbe : 9,63 / 19,49 / 26,00 unités pour les
+sept planètes.
+
+Garder les 0,5 / 2 / 5 ua fixes du Soleil autour d'une planète ne marcherait pas : autour de Neptune
+les trois tombent sur le plancher de la courbe (3,2) — **le même cercle tous les trois**, collé au
+pivot qui fait 2 unités de rayon.
+
+#### L'anneau absolu à 1 ua
+
+Corollaire assumé du paragraphe ci-dessus : une image identique d'un pivot à l'autre ne peut pas,
+par construction, faire sentir que le système de Neptune vaut 78 fois celui de Mercure. D'où un
+**quatrième anneau, à distance absolue de 1 ua**, en ambre au lieu du bleu pour qu'il ne se lise pas
+comme un membre de la même famille (décidé avec l'utilisateur le 2026-09-29).
+
+Il se resserre sur la planète à mesure qu'on s'éloigne. Au cran 1 (les anneaux sont masqués au
+cran 0) : 56 unités autour de Mercure, 45 autour de Vénus, 33 autour de Mars, **11 autour des quatre
+géantes** — pour un rayon de pivot de 1,8 à 2,7.
+
+Limite connue : à partir de Jupiter il sature. Ce n'est pas le plancher qui est grossier —
+`6 + 16,37·log10(d / 0,3a)` vaut déjà un nombre **négatif** à 1 ua pour Saturne et au-delà : la
+courbe n'a plus de place pour le représenter, aucun réglage de plancher n'y changerait rien.
+
+À « 100 % réel » il n'est plus comprimé du tout et vaut 46 962 unités pour **tous** les pivots —
+c'est là qu'il joue pleinement son rôle d'étalon fixe.
+
+L'écart est par ailleurs déjà chiffré dans le libellé d'échelle, et exactement : au même cran il
+affiche « Soleil ÷1 249 » autour de Mercure et « Soleil ÷96 958 » autour de Neptune. Le rapport des
+facteurs (×77,6) est rigoureusement celui des demi-grands axes, puisque le repère tombe toujours à
+14,56 unités. Toujours masqués au cran « lisible », où les distances ne sont pas proportionnelles.
 
 Ni cercle à 1 LD, ni cercle à 1 ua : à ces deux rayons c'est la **vraie orbite** du corps qui est
 tracée (voir ci-dessous), et elle joue le rôle de repère bien mieux qu'un cercle fixe.

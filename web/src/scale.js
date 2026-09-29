@@ -65,10 +65,28 @@ function makeCurve(kmNear, unitsNear, kmFar, unitsFar, minUnits) {
 export const EARTH_CURVE = makeCurve(LUNAR_DISTANCE_KM, 12, 0.5 * AU_KM, 20, EARTH_RADIUS * 1.5)
 
 /**
+ * Readable curve for a pivot that orbits the Sun — the Sun's own view included,
+ * where the yardstick is the Earth's orbit. `yardstickKm` is the distance that
+ * defines the view's scale: 0,3x it lands at 6 units, 5x it at 26.
+ *
+ * Because those two anchors are fixed *multiples*, the slope is the same for
+ * every pivot (`b = 20 / log10(5/0,3) = 16,37`) and the yardstick itself always
+ * lands at **14,56 units**. That invariant is the reason to write it this way:
+ * whether the scene is centred on the Sun, on Mercury or on Neptune, the body
+ * that defines the view sits at the same place on screen, and the picture stays
+ * comparable when you switch pivot. Pivot on Neptune and the Sun, Mercury and
+ * the Earth all collapse to ~14,6 — which is true: from 30 au they really are
+ * all in the same direction at nearly the same distance.
+ */
+export function orbitingCurve(yardstickKm) {
+  return makeCurve(0.3 * yardstickKm, 6, 5 * yardstickKm, 26, FOCUS_READABLE_RADIUS * 1.6)
+}
+
+/**
  * Sun-centred: 1 au lands at 14,5 and a typical NEO orbit (0,9–2,5 au) spans
  * 13,8 → 20, so the ellipse still reads as an ellipse at the readable end.
  */
-export const SUN_CURVE = makeCurve(0.3 * AU_KM, 6, 5 * AU_KM, 26, FOCUS_READABLE_RADIUS * 1.6)
+export const SUN_CURVE = orbitingCurve(AU_KM)
 
 export function readableDistance(distanceKm, curve = EARTH_CURVE) {
   return Math.max(curve.minUnits, curve.a + curve.b * Math.log10(distanceKm))
@@ -126,6 +144,17 @@ export function neoRadius(diameterKm, t) {
 /** A marker seen from the Earth; the scene's anchor when the Sun is the pivot. */
 export function sunRadius(t, isFocus = false) {
   return lerpLog(isFocus ? FOCUS_READABLE_RADIUS : SUN_READABLE_RADIUS, SUN_RADIUS_KM * KM_TO_UNITS, t)
+}
+
+/**
+ * The pivot's own drawn radius, whichever body it is: the anchor size at the
+ * readable end, its real radius at t = 1. One formula for all three kinds of
+ * pivot — `pivotRadius(EARTH_RADIUS_KM, t)` is a constant EARTH_RADIUS (the
+ * Earth *is* the anchor), and `pivotRadius(SUN_RADIUS_KM, t)` is exactly
+ * `sunRadius(t, true)`. Which is the point: a planet needs no third case.
+ */
+export function pivotRadius(radiusKm, t) {
+  return lerpLog(FOCUS_READABLE_RADIUS, radiusKm * KM_TO_UNITS, t)
 }
 
 /**
