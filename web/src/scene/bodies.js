@@ -51,7 +51,7 @@ const colorMaps = new Map()
  * or specular map, whose values aren't colours — the globe's own maps
  * deliberately don't set it.
  */
-export function loadColorMap(url) {
+export function loadColorMap(url, { wrapS = THREE.RepeatWrapping } = {}) {
   const pending =
     colorMaps.get(url) ??
     new Promise((resolve, reject) => {
@@ -59,10 +59,12 @@ export function loadColorMap(url) {
         url,
         (texture) => {
           texture.colorSpace = THREE.SRGBColorSpace
-          // Equirectangular maps wrap the full 360° in u; the default
-          // ClampToEdge smears the last column across any seam a float error
-          // puts past 1.
-          texture.wrapS = THREE.RepeatWrapping
+          // Equirectangular maps wrap the full 360° in u, so RepeatWrapping by
+          // default: ClampToEdge would smear the last column across any seam a
+          // float error puts past 1. A ring band is the opposite case — its u is
+          // a *radius*, not an angle — so its caller asks for ClampToEdge, and
+          // wrapping there would paint the inner edge outside the outer one.
+          texture.wrapS = wrapS
           texture.anisotropy = 4
           resolve(texture)
         },
@@ -383,6 +385,109 @@ export function makeLitBodyMaterial(color, map = null) {
         gl_FragColor = vec4(albedo * lit, uOpacity);
         // Custom fragment shaders don't get the automatic linear->output
         // colorspace encode that built-in materials do.
+        #include <colorspace_fragment>
+      }
+    `,
+  })
+}
+
+/**
+ * A planet's ring system, as a flat annulus meant to be **parented to the body's
+ * mesh**: it then inherits the orientation solved at step 4, so it lies in the
+ * equatorial plane for free, and it inherits the scale, so `innerRadius` and
+ * `outerRadius` are given in units of the drawn body radius.
+ *
+ * Two things the default `RingGeometry` does not do, and both would be silently
+ * wrong rather than obviously broken:
+ *
+ * - **It lies in XY, normal +Z.** Baked round to XZ with normal +Y here, which
+ *   is where the body's own pole is (`geo.js`).
+ * - **Its UVs map the bounding square**, so the band would be sampled as if it
+ *   were a picture pinned behind the ring. Rewritten so `u` follows the
+ *   *radius* — 0 at the inner edge, 1 at the outer — which is how a 2048 × 125
+ *   ring band is drawn: 2048 samples across the rings, one repeated row.
+ *
+ * `phiSegments = 1` is deliberate: with u linear in radius and vertices only at
+ * the two edges, the interpolator does exactly the right thing across the whole
+ * width, and a subdivided annulus would only add vertices that change nothing.
+ */
+export function makeRing({ innerRadius, outerRadius, segments = 180 }) {
+  const geometry = new THREE.RingGeometry(innerRadius, outerRadius, segments, 1)
+  geometry.rotateX(-Math.PI / 2)
+
+  const position = geometry.attributes.position
+  const uv = geometry.attributes.uv
+  for (let i = 0; i < position.count; i++) {
+    const radius = Math.hypot(position.getX(i), position.getZ(i))
+    uv.setXY(i, (radius - innerRadius) / (outerRadius - innerRadius), 0.5)
+  }
+  uv.needsUpdate = true
+
+  return new THREE.Mesh(geometry, makeRingMaterial())
+}
+
+/**
+ * The ring's own material. Close to `makeLitBodyMaterial`, and different in the
+ * two ways a sheet differs from a ball.
+ *
+ * **Both faces are lit alike** — hence `abs()`. A ring is a sheet a few tens of
+ * metres thick: what sets its brightness is how high the Sun stands above its
+ * plane, not which side you are looking from. Real rings are translucent, so the
+ * unlit face is not a copy of the lit one (on the unlit side the dense B ring
+ * goes dark and the Cassini division brightens); modelling that transmission is
+ * out of scope here, and this is the honest simple stand-in.
+ *
+ * **The floor is 0,30 and it is readability, not physics.** Measured for this
+ * scene on 2026-09-29: the Sun stands **7,2° below** Saturn's ring plane and is
+ * opening by about a degree a year, so an opaque-sheet model would draw the
+ * rings at sin(7,2°) = **12,5 %** of full brightness — nearly black, right when
+ * the user goes to look at what was just built. Same trade, and the same kind of
+ * number, as the 0,12 floor on a planet's night side.
+ */
+function makeRingMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uMap: { value: WHITE_PIXEL },
+      uSunDir: { value: new THREE.Vector3(1, 0, 0) },
+      uOpacity: { value: 1 },
+    },
+    transparent: true,
+    side: THREE.DoubleSide,
+    // The ring is a transparent surface: writing depth would make the half of
+    // it behind the planet occlude nothing while hiding whatever the sorted
+    // pass draws after it.
+    depthWrite: false,
+    // Required by the renderer's logarithmicDepthBuffer, like every other
+    // hand-written material here — see docs/agent/gotchas.md.
+    vertexShader: `
+      #include <common>
+      #include <logdepthbuf_pars_vertex>
+      varying vec3 vWorldNormal;
+      varying vec2 vUv;
+      void main() {
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      uniform vec3 uSunDir;
+      uniform float uOpacity;
+      varying vec3 vWorldNormal;
+      varying vec2 vUv;
+      #include <logdepthbuf_pars_fragment>
+      void main() {
+        #include <logdepthbuf_fragment>
+        vec4 texel = texture2D(uMap, vUv);
+        float facing = abs(dot(normalize(vWorldNormal), normalize(uSunDir)));
+        float lit = 0.30 + 0.70 * facing;
+        gl_FragColor = vec4(texel.rgb * lit, texel.a * uOpacity);
+        // The alpha channel is what carries the gaps. Discarding the empty
+        // texels rather than blending them keeps the Cassini division from
+        // writing a faint film over the stars behind it.
+        if (gl_FragColor.a < 0.01) discard;
         #include <colorspace_fragment>
       }
     `,

@@ -616,10 +616,69 @@ téléchargé lui aussi et attend à côté ; la bascule est une ligne dans `PLA
 aujourd'hui : `surface`, comme le plan le disait. **Renvoyé au backlog par l'utilisateur le
 2026-09-29** plutôt que tranché — voir `docs/agent/backlog.md`.
 
-**Étape 3 — l'anneau de Saturne.** `RingGeometry` avec des UV refaits : par défaut three.js mappe un
-anneau en coordonnées polaires, il faut remapper pour que `u` suive le **rayon** et échantillonne la
-bande de 2048 × 125. Matériau `transparent: true`, `side: DoubleSide`, `depthWrite: false`.
-L'anneau se couche dans le plan équatorial de Saturne, donc il dépend de l'étape 4.
+**Étape 3 — l'anneau de Saturne. FAITE le 2026-09-29**, une fois l'étape 4 livrée : l'anneau se
+couche dans le plan équatorial de Saturne, donc il en dépendait.
+
+`RingGeometry` avec des UV refaits, comme le plan le disait — par défaut three.js mappe le carré
+englobant, ce qui échantillonnerait la bande comme une image punaisée derrière l'anneau. `u` suit
+maintenant le **rayon**, 0 au bord interne, 1 au bord externe. Matériau `transparent: true`,
+`side: DoubleSide`, `depthWrite: false`. Le maillage est **enfant du maillage de la planète**, ce qui
+lui donne gratuitement l'orientation (donc le plan équatorial) et l'échelle dessinée.
+
+`phiSegments = 1` : avec `u` linéaire en rayon et des sommets aux deux seuls bords, l'interpolateur
+fait exactement ce qu'il faut sur toute la largeur. Subdiviser n'ajouterait que des sommets sans effet.
+
+### Ce que la bande ne dit pas : à quels rayons vont ses deux bords
+
+Même inconnue que la convention de longitude, et même méthode — mesurée, pas supposée.
+`tools/calibration/saturn-ring-radii.py` la refait.
+
+La bande porte ses repères dans son canal alpha. **Deux seulement s'effondrent en une colonne** : le
+bord externe de l'anneau B et celui de l'anneau A. Croisés avec la *Saturnian Rings Fact Sheet* de la
+NASA (NSSDCA, 117 507 km et 136 780 km), ils fixent **r(u) = 69 289 + 71 766 u km**, soit 35 km par
+colonne, soit **1,150 à 2,340 rayons équatoriaux**.
+
+**Un piège de détection, à ne pas refaire** : un simple seuil à mi-hauteur donne le mauvais bord.
+La division de Cassini n'est pas vide — son alpha remonte au-dessus du seuil quinze colonnes après le
+bord de B — et le seuil renvoie donc la *deuxième* chute, 15 colonnes plus loin, soit 525 km. C'est
+la **pente la plus raide** qu'il faut chercher, pas un franchissement.
+
+Deux structures n'ayant pas servi à l'ajustement le contrôlent :
+
+| repère | mesuré | table NASA | écart |
+|---|---|---|---|
+| bord interne de la division de Encke | 133 451 km | 133 410 km | **+41 km (1,2 colonne)** |
+| frontière C / B | 91 751 km | 91 975 km | −224 km (6,4 colonnes) |
+
+La frontière C/B est une **rampe douce** dans la bande, pas un bord : six colonnes y sont le bruit de
+lecture, pas un défaut de la carte. C'est le bord franc de Encke qui vaut contrôle.
+
+La bande commence à 69 289 km, **dans l'anneau D** — trop ténu (profondeur optique 1e-5) pour avoir
+été dessiné : l'alpha est plat à zéro sur ses 110 premières colonnes. Elle s'arrête avant l'anneau F.
+
+Les rayons sont stockés **en km** et divisés par `radiusKm` au moment de la construction. Le maillage
+est mis à l'échelle du rayon **moyen** de la planète, qui n'est pas le rayon équatorial dans lequel
+une table d'anneaux compte : les confondre poserait l'anneau 3,4 % trop loin.
+
+### L'éclairage, et le seul chiffre inventé de l'étape
+
+Les deux faces sont éclairées pareil — d'où le `abs()`. Un anneau est une feuille de quelques dizaines
+de mètres : ce qui fait sa luminosité est la hauteur du Soleil au-dessus de son plan, pas le côté d'où
+on regarde. Les vrais anneaux sont translucides, donc la face non éclairée n'est pas une copie de
+l'autre (côté nuit, l'anneau B dense s'assombrit et la division de Cassini s'éclaircit) ; modéliser
+cette transmission est hors sujet ici.
+
+**Le plancher de 0,30 est de la lisibilité, pas de la physique, et il faut le dire.** Mesuré pour
+cette scène le 2026-09-29 : le Soleil est à **7,2° sous** le plan des anneaux de Saturne et s'ouvre
+d'environ un degré par an. Un modèle de feuille opaque dessinerait donc les anneaux à
+sin(7,2°) = **12,5 %** de leur éclat — quasi noirs, exactement au moment où l'on va regarder ce qu'on
+vient de construire. Même arbitrage, et même famille de chiffre, que le plancher de 0,12 sur la face
+nuit d'une planète.
+
+**Pas d'ombres** : ni celle de la planète sur l'anneau, ni celle de l'anneau sur la planète. Les deux
+sont au backlog — la première est courte à écrire (dans l'espace local du maillage, la planète est la
+sphère unité à l'origine), la seconde demande d'échantillonner la bande depuis le shader de la
+planète. Aucune n'était dans le périmètre de l'étape 3.
 
 **Étape 4 — l'orientation (pôle + rotation propre). Backend ET client FAITS le 2026-09-29.**
 

@@ -16,7 +16,7 @@
 import * as THREE from 'three'
 import { fetchSolarSystemBody, fetchSolarSystemOrbit, fetchSolarSystemOrientation } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
-import { loadColorMap, makeLitBodyMaterial } from './bodies.js'
+import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { icrfToScene, setBodyOrientation } from './geo.js'
 import { pivotRadius, planetRadius } from '../scale.js'
 
@@ -36,7 +36,41 @@ const PLANETS = {
   venus: { label: 'Vénus', color: 0xf0d9a6, map: '/textures/2k_venus_surface.jpg' },
   mars: { label: 'Mars', color: 0xd0553a, map: '/textures/2k_mars.jpg' },
   jupiter: { label: 'Jupiter', color: 0xd7b98e, map: '/textures/2k_jupiter.jpg' },
-  saturn: { label: 'Saturne', color: 0xe6cf9b, map: '/textures/2k_saturn.jpg' },
+  saturn: {
+    label: 'Saturne',
+    color: 0xe6cf9b,
+    map: '/textures/2k_saturn.jpg',
+    /**
+     * Which radii the two ends of the 2048 × 125 ring band stand for — the one
+     * thing the band itself cannot say, and the same kind of unknown the maps'
+     * longitude was.
+     *
+     * **Measured, not assumed** (`tools/calibration/saturn-ring-radii.py`). The
+     * alpha channel has exactly two edges that collapse in a single column — the
+     * outer edge of the B ring and the outer edge of the A ring — found by
+     * steepest slope, because a threshold returns the wrong one: the Cassini
+     * division is not empty, and its alpha climbs back over any half-height
+     * threshold fifteen columns past the edge. Against NASA NSSDCA's Saturnian
+     * Rings Fact Sheet (117 507 km and 136 780 km) those two fix a linear map,
+     * **r(u) = 69 289 + 71 766 u km**, at 35 km per column.
+     *
+     * Two structures that took no part in the fit then check it: the inner edge
+     * of the Encke division lands 41 km out (1,2 columns, table 133 410), and
+     * the C/B boundary 224 km out (6,4 columns, table 91 975) — that one is a
+     * soft ramp in the band rather than an edge, so six columns is the noise of
+     * reading it, not a fault in the map.
+     *
+     * So the band runs 1,150 to 2,340 Saturn equatorial radii: it starts inside
+     * the D ring, too faint to have been drawn at all (alpha is flat zero over
+     * the first 110 columns), and stops short of the F ring.
+     *
+     * In km on purpose. The mesh is scaled by the body's **mean** radius, which
+     * is not the equatorial one a ring table counts in, so dividing by
+     * `radiusKm` at build time is what puts the ring at the right absolute
+     * distance instead of 3,4 % too far out.
+     */
+    ring: { map: '/textures/2k_saturn_ring_alpha.png', innerKm: 69_289, outerKm: 141_055 },
+  },
   uranus: { label: 'Uranus', color: 0x8fd8e0, map: '/textures/2k_uranus.jpg' },
   neptune: { label: 'Neptune', color: 0x5b7ce8, map: '/textures/2k_neptune.jpg' },
 }
@@ -182,6 +216,7 @@ function currentEpochSeconds() {
  * @typedef {{
  *   id: string, label: string, mesh: THREE.Mesh, radiusKm: number,
  *   positionKm: THREE.Vector3, known: boolean, fade: number,
+ *   ring: THREE.Mesh | null,
  * }} PlanetBody
  */
 
@@ -331,6 +366,8 @@ export function createPlanets({
       // Matches the material as constructed (opaque, opacity 1), so the first
       // frame that needs a fade is seen as a change — see `applyFade`.
       fade: 1,
+      // Saturn's, once it has been centred on; null everywhere else.
+      ring: null,
     }
   })
 
@@ -359,9 +396,12 @@ export function createPlanets({
    * frame the image decodes, with no hitch.
    */
   function loadTextureFor(id) {
-    if (textured.has(id) || !PLANETS[id]?.map) return
     const body = bodies.find((b) => b.id === id)
     if (!body) return
+    // Before the guard, not after: a ring that failed to build must get another
+    // chance on the next visit even though the map itself landed first time.
+    buildRingFor(body)
+    if (textured.has(id) || !PLANETS[id]?.map) return
     textured.add(id)
     loadColorMap(PLANETS[id].map)
       .then((map) => {
@@ -377,6 +417,39 @@ export function createPlanets({
         // map that fails to load costs nothing but detail. Dropping it from the
         // set lets the next visit to this pivot try again.
         textured.delete(id)
+      })
+  }
+
+  /**
+   * Hangs a planet's ring system under its mesh, once. Parented to the mesh and
+   * not to the group, which is what makes it free: it inherits the orientation
+   * (so it lies in the equatorial plane, which is why this step waited for step
+   * 4) and the drawn scale (so it follows the pixel floor with its planet).
+   *
+   * Spinning with the planet is harmless rather than wrong: the band has one
+   * repeated row, so the ring carries no azimuthal detail to smear. The real
+   * rings do not turn as a solid anyway — they orbit, each radius at its own
+   * rate — and nothing here could show that.
+   */
+  function buildRingFor(body) {
+    const spec = PLANETS[body.id]?.ring
+    if (!spec || body.ring || !body.radiusKm) return
+    const ring = makeRing({
+      innerRadius: spec.innerKm / body.radiusKm,
+      outerRadius: spec.outerKm / body.radiusKm,
+    })
+    body.ring = ring
+    body.mesh.add(ring)
+    loadColorMap(spec.map, { wrapS: THREE.ClampToEdgeWrapping })
+      .then((map) => {
+        ring.material.uniforms.uMap.value = map
+      })
+      .catch(() => {
+        // A ring with no band is a white annulus, which is worse than no ring:
+        // it would read as a solid disc. Dropped entirely, and rebuilt on the
+        // next visit to this pivot.
+        body.mesh.remove(ring)
+        body.ring = null
       })
   }
 
@@ -494,6 +567,9 @@ export function createPlanets({
     if (body.fade === fade) return
     body.fade = fade
     body.mesh.material.uniforms.uOpacity.value = fade
+    // The ring is already a transparent material, so it needs the fade value
+    // but never the `transparent` switch below.
+    if (body.ring) body.ring.material.uniforms.uOpacity.value = fade
     if (body.mesh.material.transparent !== fade < 1) {
       body.mesh.material.transparent = fade < 1
       body.mesh.material.needsUpdate = true
@@ -520,6 +596,9 @@ export function createPlanets({
         // vectors are geocentric km, so the difference is exact — unaffected by
         // what the scale slider did to either body's drawn position.
         body.mesh.material.uniforms.uSunDir.value.subVectors(sunPositionKm, body.positionKm).normalize()
+        // Same world-space direction for the ring: its shader reads it against
+        // the ring plane's own normal, which the parent's orientation carries.
+        if (body.ring) body.ring.material.uniforms.uSunDir.value.copy(body.mesh.material.uniforms.uSunDir.value)
         // The pivot is the scene's anchor, so it keeps the anchor radius like the
         // Earth and the Sun do when they are centred on; every other planet keeps
         // the compressed-proportion curve. The mesh is a unit sphere, so the
