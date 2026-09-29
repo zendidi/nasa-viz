@@ -16,6 +16,7 @@ import { latLngToVector3 } from './scene/geo.js'
 import { MOON_RADIUS, makeGlobe, makeIssMarker, makeSunMarker, makeMoon, createDistanceRings } from './scene/bodies.js'
 import { createPlanets } from './scene/planets.js'
 import { createMoons } from './scene/moons.js'
+import { loadOrientationFor, orientBody } from './scene/orientation.js'
 import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
@@ -527,7 +528,7 @@ function setFocus(nextId) {
   if (focusPlanet) {
     moons.loadFor(focusPlanet.id)
     planets.loadTextureFor(focusPlanet.id)
-    planets.loadOrientationFor(focusPlanet.id)
+    loadOrientationFor(focusPlanet.id)
   }
   if (focusId === 'sun') sunMarker.userData.loadTexture()
 }
@@ -582,6 +583,14 @@ function applyScale(nowSeconds) {
   placeKm(moon.position, moonPositionKm, t)
   const moonRadius = MOON_RADIUS * earthScale
   moon.scale.setScalar(Math.max(moonRadius, minRadiusAt(moon.position, MIN_RADIUS_PX.moon)) / MOON_RADIUS)
+  // Tidally locked, which is exactly why this cannot be skipped: with no
+  // rotation applied the Moon's near side points at a fixed direction in space,
+  // so the far side turns towards the viewer over a month. The orientation
+  // route says where the Moon's pole and prime meridian are, and the sub-Earth
+  // libration falls out of it on its own — the near side stays facing the
+  // Earth because that is what the real rotation does, not because anything
+  // here aims it.
+  orientBody(moon.quaternion, 'moon', nowSeconds)
 
   placeKm(sunMarker.position, sunPositionKm, t)
   sunMarker.scale.setScalar(
@@ -980,6 +989,10 @@ renderViewPanel()
 // refresh. They load themselves once, then come back from localStorage.
 sunTable.load()
 planets.load()
+// Unlike a planet's, this one is not waited for: the Moon is drawn from the
+// first frame in every view, so there is no "centre on it" moment to hang the
+// fetch on. One keyless Horizons request a month, cached like the rest.
+loadOrientationFor('moon')
 
 const cachedIss = loadCached('iss')
 const cachedNeo = loadCached('neo')

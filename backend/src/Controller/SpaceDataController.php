@@ -355,7 +355,7 @@ final class SpaceDataController
         return new JsonResponse([
             'frame' => 'ICRF',
             'epoch' => $epoch->getTimestamp(),
-            'bodies' => [SolarSystemClient::describe($id) + ($orientation ?? [
+            'bodies' => [PlanetOrientationClient::describe($id) + ($orientation ?? [
                 'pole' => null,
                 'prime_meridian' => null,
                 'rotation_deg_per_day' => null,

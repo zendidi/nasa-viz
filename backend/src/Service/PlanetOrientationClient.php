@@ -64,7 +64,70 @@ final class PlanetOrientationClient
         'saturn' => 810.7939024,
         'uranus' => -501.1600928,
         'neptune' => 541.1397757,
+        // The Moon, tidally locked: one turn per sidereal month, so its
+        // sub-Earth longitude stays near zero and only librates. It is here
+        // rather than in the moons route because what it needs is exactly this
+        // service — the moons route serves positions, not orientation.
+        //
+        // The IAU model for the Moon is the only one in this table that is not
+        // a straight line: W carries thirteen periodic terms, the largest
+        // 3,5610 sin E1 with E1 the node, and the pole's own RA and Dec carry
+        // their own. Propagating at a constant rate therefore cannot be exact
+        // the way it is for a planet, and the test measures what it costs
+        // instead of assuming it is negligible.
+        'moon' => 13.17635815,
     ];
+
+    /**
+     * Bodies this service orients that `SolarSystemClient` does not carry:
+     * Horizons id, name, mean radius.
+     *
+     * Deliberately not solved by adding the Moon to `SolarSystemClient::BODIES`.
+     * That table feeds the positions route, the orbit route, the moons route and
+     * the warm command — the Moon would arrive in all four, which means a
+     * monthly Horizons position table nobody reads and `planet=moon` accepted by
+     * routes where it is nonsense. One duplicated row is the cheaper of the two.
+     */
+    private const EXTRA_BODIES = [
+        'moon' => ['301', 'Moon', 1737.4],
+    ];
+
+    /**
+     * Bodies whose IAU longitudes are counted **east** even though they rotate
+     * prograde — the traditional exception the IAU grants the Earth, the Moon
+     * and the Sun, and the one place the rule below breaks down.
+     *
+     * The rule everywhere else is that planetographic longitude runs *opposite*
+     * to the rotation: west on a prograde body, east on a retrograde one. So the
+     * sign of the rate was enough to place the prime meridian, and for the seven
+     * planets it still is. The Moon rotates prograde and is nevertheless counted
+     * east — which is why its gazetteer runs 0–360° E and Mare Crisium sits at
+     * 59° E.
+     *
+     * **Measured, not deduced.** Taking the Moon for an ordinary prograde body
+     * reproduced Horizons' `ObsSub-LON` with a residual that was *mirrored about
+     * zero* and offset by a constant 2,39° — twice the 1,195° the sub-Earth
+     * point stood from the prime meridian in the first row, which is exactly
+     * what placing that meridian on the wrong side of it costs. See the test.
+     */
+    private const EAST_POSITIVE_LONGITUDE = [
+        'moon' => true,
+    ];
+
+    /**
+     * +1 when the reported sub-observer longitude is counted *against* the
+     * rotation (the planetographic default), −1 when it is counted east.
+     *
+     * This is the sign to turn by, going from the sub-observer meridian back to
+     * the prime meridian about the pole — east being the direction of a positive
+     * rotation about the pole.
+     */
+    public static function longitudeSign(string $id): int
+    {
+        $east = isset(self::EAST_POSITIVE_LONGITUDE[$id]) || self::ROTATION_DEG_PER_DAY[$id] < 0;
+
+        return $east ? -1 : 1;
+    }
 
     public function __construct(private readonly HorizonsClient $horizons)
     {
@@ -86,6 +149,23 @@ final class PlanetOrientationClient
         return self::ROTATION_DEG_PER_DAY[$id];
     }
 
+    /** The Horizons addressing id, wherever this service's body list gets it from. */
+    public static function horizonsIdOf(string $id): string
+    {
+        return SolarSystemClient::isKnown($id) ? SolarSystemClient::horizonsId($id) : self::EXTRA_BODIES[$id][0];
+    }
+
+    /** @return array{id: string, name: string, radius_km: float} the constants a client needs to draw it */
+    public static function describe(string $id): array
+    {
+        if (SolarSystemClient::isKnown($id)) {
+            return SolarSystemClient::describe($id);
+        }
+        [, $name, $radiusKm] = self::EXTRA_BODIES[$id];
+
+        return ['id' => $id, 'name' => $name, 'radius_km' => $radiusKm];
+    }
+
     /**
      * One body's orientation at `$at`.
      *
@@ -96,7 +176,7 @@ final class PlanetOrientationClient
      */
     public function getOrientation(string $id, \DateTimeImmutable $at): ?array
     {
-        $row = $this->horizons->getOrientations([$id => SolarSystemClient::horizonsId($id)], $at)[$id];
+        $row = $this->horizons->getOrientations([$id => self::horizonsIdOf($id)], $at)[$id];
 
         return null === $row ? null : self::build($id, $row);
     }
@@ -140,9 +220,10 @@ final class PlanetOrientationClient
         $inEquator = self::normalise(self::reject($toEarth, $pole));
 
         // Walk back along the meridians by the sub-Earth longitude to land on
-        // the prime meridian. The sign flips for a retrograde body, because the
-        // longitude is then counted the other way round the pole.
-        $primeMeridian = self::rotateAbout($inEquator, $pole, ($rate > 0 ? 1 : -1) * $longitude);
+        // the prime meridian. Which way round depends on how that longitude is
+        // counted — against the rotation for the seven planets, east for the
+        // Moon (`longitudeSign`).
+        $primeMeridian = self::rotateAbout($inEquator, $pole, self::longitudeSign($id) * $longitude);
 
         return [
             'pole' => $pole,
@@ -160,7 +241,7 @@ final class PlanetOrientationClient
      * @param array{pole: array{float, float, float}, prime_meridian: array{float, float, float}, rotation_deg_per_day: float} $orientation
      * @param array{float, float, float} $toEarth unit vector, body to Earth
      */
-    public static function subEarthLongitude(array $orientation, array $toEarth, float $daysLater): float
+    public static function subEarthLongitude(string $id, array $orientation, array $toEarth, float $daysLater): float
     {
         $pole = $orientation['pole'];
         $rate = $orientation['rotation_deg_per_day'];
@@ -172,7 +253,7 @@ final class PlanetOrientationClient
             self::dot($meridian, $inEquator),
         ));
 
-        return fmod(($rate > 0 ? -1 : 1) * $angle + 360.0, 360.0);
+        return fmod(-self::longitudeSign($id) * $angle + 360.0, 360.0);
     }
 
     /** @return array{float, float, float} unit vector from right ascension and declination, both degrees */

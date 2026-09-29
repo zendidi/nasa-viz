@@ -839,11 +839,59 @@ un miroir est/ouest ; tous les autres passeraient.
 Reste hors de cette étape : l'anneau de Saturne (étape 3, qui dépendait de celle-ci et est maintenant
 débloquée) et la Lune (étape 5, qui demande une route côté serveur).
 
-**Étape 5 — la Lune enfin orientée.** Défaut repéré le 2026-09-29 : aucune rotation ne lui est
-appliquée alors qu'elle est en rotation synchrone, donc sa face visible pointe une direction fixe de
-l'espace et la face cachée tourne vers nous au fil du mois. Même mécanisme que l'étape 4. La Terre,
-elle, est déjà correcte sur les deux plans (rotation GMST, et son axe *est* +Y puisque la scène est
-équatoriale) — ne pas y toucher.
+**Étape 5 — la Lune enfin orientée. FAITE le 2026-09-29.** Défaut repéré le même jour : aucune
+rotation ne lui était appliquée alors qu'elle est en rotation synchrone, donc sa face visible
+pointait une direction fixe de l'espace et la face cachée tournait vers nous au fil du mois. La
+Terre, elle, était déjà correcte sur les deux plans (rotation GMST, et son axe *est* +Y puisque la
+scène est équatoriale) — pas touchée.
+
+### Le plan disait « même mécanisme que l'étape 4 ». C'était faux, et de 12°
+
+Le mécanisme des planètes appliqué tel quel à la Lune reproduit `ObsSub-LON` à **12° près**. Mesuré
+avant de livrer, pas supposé — et la forme du résidu a dit pourquoi : il était **miroir autour de
+zéro**, avec un décalage constant de 2,39°, soit exactement le double des 1,195° qui séparaient le
+point sub-terrestre du méridien origine dans la première ligne. C'est la signature d'un méridien posé
+du mauvais côté.
+
+**La cause : la Lune tourne dans le sens direct et ses longitudes sont malgré tout comptées vers
+l'est.** La règle IAU générale est que la longitude planétographique se compte à l'inverse de la
+rotation — vers l'ouest sur un corps direct, vers l'est sur un rétrograde — et le signe du taux
+suffisait donc à poser le méridien pour les sept planètes. La Terre, la Lune et le Soleil sont
+l'exception traditionnelle que l'IAU maintient : comptés vers l'est quoi qu'il arrive. C'est
+d'ailleurs pour ça que le gazetteer lunaire va de 0 à 360° E et que Mare Crisium est à 59° E — ce que
+la calibration des textures avait déjà utilisé sans que la conséquence côté orientation soit vue.
+
+Corrigé par `PlanetOrientationClient::longitudeSign()`, qui rend explicite ce que le signe du taux
+disait implicitement, plus la liste des corps comptés vers l'est. **Après correction : 0,008° sur
+40 jours.**
+
+### Ce que la Lune coûte de plus que les planètes
+
+C'est le seul corps de la table dont le modèle IAU **n'est pas une droite** : `W` porte treize termes
+périodiques, et son pôle bouge de 0,26° en ascension droite sur les quarante jours où celui de Mars
+bouge de 5e-5. La propagation à taux constant ne peut donc pas être exacte comme elle l'est pour une
+planète. Elle coûte **0,008°**, d'où une tolérance de 1e-2 pour sa ligne de test contre 1e-3 pour les
+autres — écrite comme telle dans le jeu de données plutôt que par un assouplissement général.
+
+La libration, elle, sort toute seule : `ObsSub-LON` oscille de ±8° parce que la Lune tourne
+uniformément alors qu'elle orbite non uniformément, et la reconstruction utilise la vraie direction
+de la Terre à chaque date. Rien à modéliser.
+
+### Où la Lune est branchée
+
+**Côté serveur**, `moon` rejoint `PlanetOrientationClient`, pas `SolarSystemClient::BODIES`. Ce
+second choix aurait fait arriver la Lune dans la route des positions, celle des orbites, celle des
+lunes et la commande de préchauffage — donc une table Horizons mensuelle que personne ne lit et
+`planet=moon` accepté là où c'est un non-sens. Une ligne dupliquée (`EXTRA_BODIES`) est le moins cher
+des deux. Vérifié en vrai : `orientation?body=moon` rend 200 en 0,96 s, `positions?body=moon` et
+`moons?planet=moon` rendent toujours 400.
+
+**Côté client**, la logique d'orientation est sortie de `planets.js` dans
+`web/src/scene/orientation.js` — cache, règle de l'`epoch` et application — parce que deux
+propriétaires sans lien en ont maintenant besoin : les sept planètes appartiennent à `planets.js`, la
+Lune à `main.js`. Dupliquer la règle de l'`epoch` aurait été le vrai coût. La Lune se charge au
+démarrage et non à la prise de pivot : elle est dessinée dès la première frame dans toutes les vues,
+il n'y a pas de moment « on centre dessus » où accrocher la requête.
 
 **Étape 6 — docs et checklist de validation visuelle.**
 

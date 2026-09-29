@@ -267,8 +267,13 @@ per planet.
 
 ## `GET /api/solar-system/orientation?body=mars`
 
-How one planet is turned in space. `body` takes the seven planets — not `sun`,
-which is not a rigid body and whose surface rotates differentially.
+How one body is turned in space. `body` takes the seven planets **and `moon`** —
+not `sun`, which is not a rigid body and whose surface rotates differentially.
+
+The Moon is here rather than in the moons route because what it needs is exactly
+this: the moons route serves positions. It is not in `/api/solar-system/positions`
+either — `?body=moon` still answers 400 — so that nothing fetches a monthly
+position table no client reads.
 
 ```json
 {
@@ -310,16 +315,22 @@ into separately:
 - **The sign of the longitude.** IAU planetographic longitude is counted
   *opposite* to the rotation, so the sub-Earth longitude grows at |rate|
   whichever way the body turns — but the direction it must be applied in flips
-  with the sign of the rate.
+  with the sign of the rate. **And the Moon breaks even that rule**: it turns
+  prograde and its longitudes are still counted *east*, the exception the IAU
+  grants the Earth, the Moon and the Sun — which is why its gazetteer runs
+  0–360° E and Mare Crisium sits at 59° E. Reading it as an ordinary prograde
+  body put the reconstruction **12°** out.
 - **The light-time correction.** `ObsSub-LON` describes the body at the instant
   the light *left* it, while the positions route serves geometric positions
   (Horizons `VECTORS` is uncorrected). Ignoring that draws Jupiter's surface as
   it stood 49 minutes ago — **29,8°** of rotation — and Uranus's **54,7°** off.
 
 Both are handled server-side once. `PlanetOrientationClient` documents them, and
-its test replays real Horizons ephemerides for Mars, Jupiter, Venus and Uranus
-and checks the reconstruction reproduces `ObsSub-LON` over 40 days to **1e-3
-degree**. The four bodies are chosen so that no single sign error passes: Uranus
+its test replays real Horizons ephemerides for Mars, Jupiter, Venus, Uranus and
+the Moon and checks the reconstruction reproduces `ObsSub-LON` over 40 days to
+**1e-3 degree** — **1e-2 for the Moon**, the only body here whose IAU rotation is
+not a straight line (thirteen periodic terms in `W`, and a pole that moves 0,26°
+in R.A. over those forty days where Mars's moves 5e-5). The four bodies are chosen so that no single sign error passes: Uranus
 is the only one both retrograde *and* far enough for the light-time term to
 matter, and it is the only row that caught applying that term with the signed
 rate instead of its absolute value — a live bug worth 2,34° of drift that Mars,
