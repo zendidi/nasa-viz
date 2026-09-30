@@ -23,6 +23,7 @@ final class SmallBodyDetailsClientTest extends TestCase
                 str_contains($url, 'sbdb.api') => 'sbdb|'.$query['sstr'],
                 str_contains($url, 'ssocard.php') => 'ssocard|'.$query['q'],
                 str_contains($url, 'sentry.api') => 'sentry|'.$query['des'],
+                default => throw new \LogicException("La doublure HTTP ne connait pas cette URL : $url"),
             };
             [$body, $code] = $routes[$service] ?? ['{"error":"specified object not found"}', 200];
             $content = is_file(self::FIXTURES.$body) ? file_get_contents(self::FIXTURES.$body) : $body;

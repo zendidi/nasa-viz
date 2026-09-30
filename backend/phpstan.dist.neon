@@ -1,0 +1,19 @@
+# Analyse statique du backend. Niveau 5 sur src/ ET tests/, sans aucune erreur ni
+# aucune entree de baseline : c'est donc un vrai verrou de non-regression, pas un
+# indicateur decoratif.
+#
+# Le niveau 6 est le prochain cran. Il ajoute ~66 erreurs, toutes de la meme famille
+# (« missing iterable value type ») : ce sont les formes de tableau a documenter,
+# service par service. Chantier reel et separe, note dans docs/agent/backlog.md.
+#
+# Lancer : php vendor/bin/phpstan analyse
+parameters:
+    level: 5
+    paths:
+        - src
+        - tests
+
+    # Pas d'extension phpstan-symfony : on analyse le code, pas le cablage du
+    # conteneur. Suffisant ici, ou les services sont des clients d'API sans etat
+    # injectes par constructeur.
+    treatPhpDocTypesAsCertain: false

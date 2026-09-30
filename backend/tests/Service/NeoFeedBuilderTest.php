@@ -46,6 +46,7 @@ final class NeoFeedBuilderTest extends TestCase
                 str_contains($url, 'sentry.api') => 'sentry_list.json',
                 str_contains($url, '/feed') => 'neows_feed.json',
                 str_contains($url, 'esa.test') => $query['file'].'.txt',
+                default => throw new \LogicException("La doublure HTTP ne connait pas cette URL : $url"),
             };
 
             return new MockResponse(file_get_contents(self::FIXTURES.$fixture));

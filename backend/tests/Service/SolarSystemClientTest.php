@@ -27,6 +27,7 @@ final class SolarSystemClientTest extends TestCase
      */
     private function clientRecording(callable $body): array
     {
+        /** @var \ArrayObject<int, string> $urls */
         $urls = new \ArrayObject();
         $http = new MockHttpClient(function (string $method, string $url) use ($urls, $body) {
             $urls[] = $url;
