@@ -1,9 +1,9 @@
 ---
-description: Lance les trois vérifications automatiques du projet (PHPUnit + PHPStan backend, build Vite web) et rapporte les chiffres réels
+description: Lance les quatre vérifications automatiques du projet (PHPUnit + PHPStan backend, Vitest + build Vite web) et rapporte les chiffres réels
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
-Lance les trois vérifications automatiques du projet, **en parallèle dans un seul message**
+Lance les quatre vérifications automatiques du projet, **en parallèle dans un seul message**
 (elles sont indépendantes) :
 
 ```bash
@@ -12,6 +12,10 @@ cd backend && php bin/phpunit
 
 ```bash
 cd backend && php vendor/bin/phpstan analyse --no-progress
+```
+
+```bash
+cd web && npm test
 ```
 
 ```bash
@@ -27,13 +31,16 @@ Puis rapporte, en quelques lignes :
   et zéro entrée de baseline** (`backend/phpstan.dist.neon`) : une erreur ici est donc une
   régression réelle, jamais du bruit de fond. Ne la fais pas taire — ni `@phpstan-ignore`, ni
   baseline, ni `@var` inline, ni élargissement de type. Remonte à la cause ;
+- le nombre de tests Vitest passés, et le détail de chaque échec. Ils tournent en Node et ne
+  couvrent que les modules de calcul purs ;
 - si le build Vite a réussi, et le poids des bundles produits ;
 - pour chaque échec, la cause probable et le fichier concerné — mais **ne corrige rien** sans que
   l'utilisateur l'ait demandé.
 
-Rappelle, seulement s'il reste des modifications non vérifiées dans `web/src`, que la scène 3D
-n'est pas couverte par ces commandes : le visuel se valide à l'œil par l'utilisateur, les tests
-navigateur étant interdits sur ce projet.
+Rappelle, seulement s'il reste des modifications non vérifiées dans `web/src`, que le **rendu** de
+la scène 3D n'est couvert par aucune de ces commandes : Vitest couvre les calculs, le build couvre
+la compilation, et le visuel se valide à l'œil par l'utilisateur — les tests navigateur étant
+interdits sur ce projet.
 
 N'appelle jamais `/api/neo` ni `/api/apod` dans le cadre de cette vérification — elles dépensent
 le quota `DEMO_KEY`. `GET /api/usage` est gratuit si tu as besoin du compteur.

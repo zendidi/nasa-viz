@@ -83,10 +83,19 @@ jobs:
         working-directory: web
         run: npm ci
 
+      - name: Tests unitaires
+        working-directory: web
+        # Vitest, en Node. Il couvre les modules de calcul purs -- échelle,
+        # astronomie, orbites, pivots, mise en forme -- qui n'ont aucune
+        # dépendance au DOM. Aucun navigateur n'est lancé, ici pas plus
+        # qu'en local.
+        run: npm test
+
       - name: Build
         working-directory: web
         run: npm run build
 
       # Aucun test de navigateur ici, et ce n'est pas un oubli : l'utilisateur les
       # a explicitement refusés sur tous ses projets. Le rendu de la scène 3D se
-      # valide à l'œil, par une checklist. Ce job vérifie que ça compile.
+      # valide à l'œil, par une checklist. Ces deux étapes vérifient les calculs
+      # et la compilation, ce qui est tout ce qu'elles prétendent.
