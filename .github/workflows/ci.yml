@@ -1,0 +1,92 @@
+# Intégration continue — backend et web.
+#
+# ATTENTION : ce workflow est DORMANT à l'écriture (2026-09-30). Rien du travail
+# récent n'est poussé — `origin/master` est au commit 38c478d alors que le travail
+# local va bien plus loin, et la branche de travail n'a pas d'upstream. Une action
+# GitHub ne s'exécute que sur ce qui est poussé : ce fichier ne servira à rien
+# jusqu'à un `git push`. Il est écrit maintenant pour être prêt, pas pour tourner.
+#
+# Il n'appelle AUCUNE API externe : PHPUnit travaille sur les fixtures de
+# backend/tests/Fixtures/, et le build Vite est hors-ligne. Le quota NASA
+# (DEMO_KEY, 30 req/h partagées) n'est donc jamais touché, et aucun secret n'est
+# nécessaire.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend — PHPUnit + PHPStan (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.3 est le plancher déclaré dans backend/composer.json ; 8.4 est ce qui
+        # tourne en développement. Les deux, pour qu'aucun des deux ne dérive.
+        php: ['8.3', '8.4']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ctype, iconv, intl
+          coverage: none
+
+      - name: Cache des dépendances Composer
+        uses: actions/cache@v4
+        with:
+          path: backend/vendor
+          key: composer-${{ matrix.php }}-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: composer-${{ matrix.php }}-
+
+      - name: Installer les dépendances
+        working-directory: backend
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Tests unitaires
+        working-directory: backend
+        run: php bin/phpunit
+
+      - name: Analyse statique
+        working-directory: backend
+        # Niveau 5 sur src/ et tests/, zéro erreur et zéro baseline : un échec ici
+        # est une régression réelle, pas du bruit. Voir backend/phpstan.dist.neon.
+        run: php vendor/bin/phpstan analyse --no-progress
+
+  web:
+    name: Web — build Vite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Installer les dépendances
+        working-directory: web
+        run: npm ci
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+      # Aucun test de navigateur ici, et ce n'est pas un oubli : l'utilisateur les
+      # a explicitement refusés sur tous ses projets. Le rendu de la scène 3D se
+      # valide à l'œil, par une checklist. Ce job vérifie que ça compile.
