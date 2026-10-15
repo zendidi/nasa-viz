@@ -100,7 +100,8 @@ The union is returned: an object listed by a single source is still in
   `datetime` is `null` when only ESA listed it (its lists carry no time of day).
   Times are TDB (≈ UTC + 69 s).
 - Per-source `status`: `found`, `missing` (with a `reason`: `date_boundary`,
-  `distance_boundary`, `unknown`), `not_covered` (outside that source's
+  `distance_boundary`, `catalogue_cutoff` — NeoWs only, object designated after
+  2019, where its catalogue stops — or `unknown`), `not_covered` (outside that source's
   distance cap — 0.5 au for JPL/NeoWs, 0.05 au for ESA — or its date range),
   `unavailable`.
 - `mismatches` lists fields two sources disagree on, as
@@ -540,6 +541,19 @@ the moons of planets a visitor has actually centred on, before anyone asks.
   in 7 s.
 - Always exits 0: an upstream failure is transient, the next run picks it up, and
   the routes still fall back to fetching on demand.
+
+### `php bin/console app:cache:warm`
+
+Cron companion to `/api/apod` and, optionally, `/api/neo`. Recomputes the cached
+feed *before* it expires (shared `App\Service\CachedFeeds`, same keys and TTLs as
+the routes), so no visitor pays the post-expiry latency.
+
+- APOD is refreshed on every run (keyless, no NASA quota spent).
+- `--neo` also refreshes the NEO feed for the default range. **Spends one NeoWs call
+  per run** — 24 of `DEMO_KEY`'s 50/day on an hourly cron — so use it only with a
+  real `NASA_API_KEY`.
+- `--dry-run` lists what would be refreshed and calls nothing.
+- A failed recompute keeps the previous cache entry. Always exits 0.
 
 ## `GET /api/apod`
 

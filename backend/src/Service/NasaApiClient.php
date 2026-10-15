@@ -17,6 +17,16 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 final class NasaApiClient
 {
+    /**
+     * NeoWs is one of five requests /api/neo has in flight at once (see
+     * NeoFeedBuilder), so the route's worst case is the largest budget among
+     * them, not their sum. Explicit because the inherited `default_socket_timeout`
+     * (60 s) is longer than PHP's 30 s execution wall -- see ApodClient for the
+     * 2026-09-30 incident that taught it.
+     */
+    private const TIMEOUT_SECONDS = 8;
+    private const MAX_DURATION_SECONDS = 15;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly NasaUsageTracker $usageTracker,
@@ -43,6 +53,8 @@ final class NasaApiClient
                 'end_date' => $endDate,
                 'api_key' => $this->apiKey,
             ],
+            'timeout' => self::TIMEOUT_SECONDS,
+            'max_duration' => self::MAX_DURATION_SECONDS,
         ]);
 
         return static function () use ($response): array {

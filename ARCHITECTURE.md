@@ -150,7 +150,10 @@ scène web à l'identique. Elle consommera le même contrat backend (`backend/AP
    normalisée — jamais le JSON brut de NASA. Si ça touche `api.nasa.gov`, appeler
    `NasaUsageTracker::recordCall()` avant l'appel HTTP réel.
 2. **Route** dans `SpaceDataController` avec un TTL de cache adapté à la fréquence de mise à jour
-   réelle de la donnée.
+   réelle de la donnée. Si un cron doit pouvoir préchauffer
+   la donnée (cas du flux NEO et de l'APOD), la logique cache + recalcul vit dans
+   `src/Service/CachedFeeds.php`, partagée par la route et par `app:cache:warm`, plutôt que dans le
+   contrôleur.
 3. **Documenter** la route dans `backend/API.md` (contrat stable pour tous les clients, y compris
    Unity plus tard).
 4. **Frontend web** : fonction dans `api.js` ; passer par `cache.js` si la donnée doit survivre à

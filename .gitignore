@@ -21,3 +21,4 @@ Thumbs.db
 /tools/php/
 /tools/derniere-url.txt
 /tools/calibration/.cache/
+/tools/calibration/__pycache__/

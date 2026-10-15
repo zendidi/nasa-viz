@@ -3,6 +3,8 @@
 namespace App\Service;
 
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\HttpClient\Exception\TransportException;
+use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
@@ -19,6 +21,16 @@ final class EsaNeoccClient
 {
     /** ESA's close-approach lists stop here (largest distance seen on 2026-09-17: 0.049755 au over a year). */
     public const MAX_DIST_AU = 0.05;
+
+    /**
+     * Same budget as the other /api/neo sources (they run concurrently, see
+     * NeoFeedBuilder). Requests made later, one after another, are capped by
+     * the caller's $deadline instead -- see requestOrbit(). Without any budget
+     * the client inherits `default_socket_timeout` (60 s), longer than PHP's
+     * 30 s execution wall -- see ApodClient.
+     */
+    private const TIMEOUT_SECONDS = 8;
+    private const MAX_DURATION_SECONDS = 15;
 
     public function __construct(
         private readonly HttpClientInterface $httpClient,
@@ -131,14 +143,22 @@ final class EsaNeoccClient
      * - an unknown object returns HTTP 200 with a completely EMPTY body
      *   (`2018PL23.ke0`/`.ke1` both measured as 0 bytes), never a 404.
      *
+     * `$deadline` (a `microtime(true)` value) is the route's time budget: the
+     * `.ke0` fallback is a second round trip made *after* waiting on `.ke1`,
+     * so a route asking for ten objects would otherwise chain them without
+     * bound. Past it, the request is refused with a TransportException --
+     * ESA is a bonus source, and "unavailable" beats a PHP fatal.
+     *
      * @return \Closure(): ?array{epoch_jd: float, a_au: float, e: float, i_deg: float, node_deg: float, peri_deg: float, mean_anomaly_deg: float, period_days: ?float, q_au: ?float, ad_au: ?float, moid_earth_au: ?float, orbit_type: ?string, is_pha: ?bool, solution: string}
+     *
+     * @throws ExceptionInterface when $deadline is already spent
      */
-    public function requestOrbit(string $designation): \Closure
+    public function requestOrbit(string $designation, ?float $deadline = null): \Closure
     {
         $key = str_replace(' ', '', $designation);
-        $ke1 = $this->download($key.'.ke1');
+        $ke1 = $this->download($key.'.ke1', $deadline);
 
-        return function () use ($ke1, $key, $designation): ?array {
+        return function () use ($ke1, $key, $designation, $deadline): ?array {
             $orbit = self::parseOrbit($ke1->getContent(false), $designation);
             if ($orbit !== null) {
                 return $orbit + ['solution' => 'ke1'];
@@ -147,16 +167,31 @@ final class EsaNeoccClient
             // Fired only now — not alongside the .ke1 request above — because
             // firing it unconditionally would double ESA's request count for
             // every object just to cover the few without a .ke1.
-            $ke0 = $this->download($key.'.ke0');
+            $ke0 = $this->download($key.'.ke0', $deadline);
             $orbit = self::parseOrbit($ke0->getContent(false), $designation);
 
             return $orbit === null ? null : $orbit + ['solution' => 'ke0'];
         };
     }
 
-    private function download(string $file): ResponseInterface
+    /**
+     * @throws ExceptionInterface when $deadline leaves less than a second
+     */
+    private function download(string $file, ?float $deadline = null): ResponseInterface
     {
-        return $this->httpClient->request('GET', $this->baseUrl.'/download', ['query' => ['file' => $file]]);
+        $maxDuration = (float) self::MAX_DURATION_SECONDS;
+        if ($deadline !== null) {
+            $maxDuration = min($maxDuration, $deadline - microtime(true));
+            if ($maxDuration < 1.0) {
+                throw new TransportException('Route time budget spent before ESA could be asked for '.$file);
+            }
+        }
+
+        return $this->httpClient->request('GET', $this->baseUrl.'/download', [
+            'query' => ['file' => $file],
+            'timeout' => min((float) self::TIMEOUT_SECONDS, $maxDuration),
+            'max_duration' => $maxDuration,
+        ]);
     }
 
     /**

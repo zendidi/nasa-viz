@@ -29,6 +29,22 @@ final class HorizonsClient
     /** Earth centre — the frame every table shared until moons needed their own planet. */
     public const GEOCENTRIC = '500@399';
 
+    /**
+     * A Horizons ephemeris legitimately costs 5 to 16 s and stays silent until
+     * it is computed, so the idle `timeout` must exceed that -- but it must not
+     * equal PHP's 30 s wall, which is what `'timeout' => 30` used to do: the
+     * fatal then fired first and a hung JPL became an uncatchable error rendered
+     * as HTTP 200 (see ApodClient, 2026-09-30).
+     *
+     * `max_duration` is counted per request from the moment it is sent, and
+     * fetch() sends a whole batch before reading any, so a batch costs at most
+     * this once (plus the connect time of the later requests on
+     * NativeHttpClient), not once per body. 22 s leaves 8 s for parsing and
+     * the cache write, and still clears the 16 s worst case measured.
+     */
+    private const TIMEOUT_SECONDS = 20;
+    private const MAX_DURATION_SECONDS = 22;
+
     /** CENTER for a body's own planet, e.g. `centreOf('599')` for Jupiter. */
     public static function centreOf(string $horizonsId): string
     {
@@ -132,7 +148,7 @@ final class HorizonsClient
                 'ANG_FORMAT' => "'DEG'",
                 'CSV_FORMAT' => 'YES',
             ], '', '&', PHP_QUERY_RFC3986);
-            $responses[$key] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => 30]);
+            $responses[$key] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS]);
         }
 
         $result = [];
@@ -214,7 +230,7 @@ final class HorizonsClient
                 'OUT_UNITS' => "'KM-S'",
                 'CSV_FORMAT' => 'YES',
             ], '', '&', PHP_QUERY_RFC3986);
-            $responses[$key] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => 30]);
+            $responses[$key] = $this->httpClient->request('GET', $this->baseUrl.'/horizons.api?'.$query, ['timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS]);
         }
 
         $result = [];

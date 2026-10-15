@@ -14,6 +14,78 @@ des changements d'infra (nouvelle route, nouveau service, etc.).
 - **Clé NASA** : toujours `DEMO_KEY` (30 req/h, 50 req/j) — à remplacer avant toute exposition
   publique (voir étape 1).
 
+## Backlog de mise en prod
+
+Décision de l'utilisateur du 2026-10-15 : ce fichier tient désormais **le backlog interne de tout ce
+qui touche au déploiement**, pour qu'il n'encombre plus le backlog du projet. `docs/agent/backlog.md`
+ne porte plus aucune entrée de mise en prod et renvoie ici. Ce qui suit n'est ni daté ni promis :
+rien n'est à faire tant qu'une date de mise en ligne n'est pas posée.
+
+### Préchauffage solar-system : brancher sur un vrai cron
+
+La commande `app:solar-system:warm` est livrée (voir « Un cron, pour Horizons cette fois » plus
+haut, qui détaille cadence, comportement et mesures — rien n'est dupliqué ici). **Reste** : la
+brancher sur un vrai cron en prod, toutes les heures (une fois par jour marche aussi) :
+
+```
+0 * * * * cd /chemin/vers/backend && php bin/console app:solar-system:warm
+```
+
+plus un passage unique de `php bin/console app:solar-system:warm --all-moons` après chaque
+déploiement, et **confirmer que l'offre Infomaniak retenue propose des tâches cron**.
+
+### Vraie clé `NASA_API_KEY`
+
+Toujours sur `DEMO_KEY`. C'est déjà l'étape 1 de « Étapes de mise en prod » ci-dessous : l'entrée
+n'est plus qu'un renvoi. Rien à faire pour l'instant (décision de l'utilisateur, 2026-10-15).
+
+### Préchauffage NEO/APOD : cron à brancher
+
+La commande existe depuis le 2026-10-15 : `app:cache:warm`. Elle recalcule de force (même avant
+expiration) le flux APOD, et le flux NEO seulement avec `--neo` ; un recalcul qui échoue garde
+l'ancienne entrée, et elle sort toujours en code 0. Crontab complet, avec le préchauffage Horizons :
+
+```
+0 * * * * cd /chemin/vers/backend && php bin/console app:solar-system:warm && php bin/console app:cache:warm
+```
+
+- **APOD tourne à chaque passage** : sans clé (science.nasa.gov), ~24 appels par jour si le cron est
+  horaire, sans coût de quota. C'est voulu : une course juste après minuit ne doit pas figer l'image
+  de la veille sous la clé du jour.
+- **N'ajouter `--neo` qu'avec une vraie `NASA_API_KEY`.** Chaque passage dépense un appel NeoWs : en
+  cron horaire, 24 des 50 requêtes par jour de `DEMO_KEY` (calcul, pas mesure) — inacceptable en
+  `DEMO_KEY`, négligeable avec une vraie clé (1000 req/h).
+- `--dry-run` liste ce qui serait rafraîchi sans rien appeler.
+- Même réserve que plus haut : la disponibilité du cron dépend du plan Infomaniak.
+
+### Pré-publication (décidé le 2026-09-29)
+
+**La publication n'est pas prévue.** Décision explicite de l'utilisateur ce jour-là : *« il y aura
+un travail de prepublication. Mais la publication n'est pas prevue tant que ce n'est pas explicite
+dans le backlog. »* Donc : **rien ici n'est à faire tant que cette section ne porte pas une date de
+mise en ligne.** Ne pas traiter ces entrées comme du retard, et ne pas les déclencher au prétexte
+qu'une obligation légale est citée — l'obligation ne se déclenche qu'à la distribution publique.
+
+<a id="credits-page"></a>
+- **Page de crédits dédiée.** Le lieu unique décidé le 2026-09-29 (voir `docs/agent/decisions.md`),
+  plutôt que des attributions saupoudrées dans les panneaux. CC BY 4.0 exige l'attribution **dès la
+  distribution** : `web/public/textures/CREDITS.md` la couvre pour le dépôt, la page la couvrira
+  pour la mise en ligne. **Due avant toute publication, et seulement à ce moment-là.**
+  Matière déjà disponible :
+  - Solar System Scope, CC BY 4.0, fichier par fichier (`CREDITS.md`) ;
+  - `NEO_CREDITS` (`web/src/neoInfo.js`) : NASA/JPL, ESA NEOCC, IMCCE, NeoWs — aujourd'hui affiché
+    seulement dans la fiche d'un NEO, ce qui n'est pas un lieu de publication ;
+  - JPL Horizons pour les positions, orbites et orientations ;
+  - NASA NSSDCA, *Saturnian Rings Fact Sheet*, pour les rayons d'anneaux (ajouté le 2026-09-29) ;
+  - Natural Earth (domaine public) et le gazetteer IAU/USGS, utilisés par les scripts de
+    `tools/calibration/` — à citer si ces mesures sont publiées, pas pour le code lui-même.
+  - **Dépend d'un arbitrage en attente** : la bascule Terre -> Solar System Scope est faite le
+    2026-10-12 mais pas encore validée à l'œil (voir `comparer-textures-terre` dans
+    `docs/agent/backlog.md`) ; si la comparaison tourne finalement en faveur des assets three.js,
+    la page devra dire noir sur blanc que la Terre reste une exception sous **licence non
+    établie**. Depuis le 2026-10-15 (`moon_1024.jpg` retiré), **plus aucun asset three.js n'est en
+    service** : l'exception ne revient que si la comparaison Terre favorise le jeu three.js.
+
 ## Le cache serveur protège déjà le quota NASA — pas besoin de cron pour ça
 
 `backend/src/Controller/SpaceDataController.php` met déjà chaque route derrière `cache.app` avec un
@@ -24,10 +96,11 @@ jusqu'à expiration du TTL — donc au régime permanent, ~1 appel réel/heure p
 APOD, **quel que soit le nombre de visiteurs**. C'est déjà l'équivalent de la règle "1 req/h" visée.
 
 Une tâche cron qui rafraîchit le cache de façon proactive (plutôt que de laisser le premier
-visiteur après expiration déclencher l'appel) reste une amélioration possible — elle évite une
-petite latence supplémentaire pour cette personne-là et lisse le compteur `/api/usage` — mais ce
-n'est **pas un prérequis** pour tenir le quota. Voir `docs/agent/backlog.md` si on veut la faire un
-jour.
+visiteur après expiration déclencher l'appel) est désormais possible : `app:cache:warm` existe (voir
+« Backlog de mise en prod » plus haut). Elle évite une petite latence supplémentaire pour le
+premier visiteur et lisse le compteur `/api/usage` — mais ce n'est **pas un prérequis** pour tenir le
+quota. Avec `--neo`, elle dépense elle-même un appel NeoWs par passage, donc seulement avec une
+vraie clé.
 
 ## Un cron, pour Horizons cette fois — pas pour le quota
 

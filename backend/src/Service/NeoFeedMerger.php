@@ -32,6 +32,14 @@ final class NeoFeedMerger
     /** Distance this close to a source's cap may fall either side of it. */
     private const DISTANCE_BOUNDARY_AU = 0.001;
 
+    /**
+     * NeoWs's catalogue stops at objects designated in 2019. Measured
+     * 2026-10-15 over 12 days of the comparison journal: of the 141 JPL
+     * approaches NeoWs lacked, all but two were designated 2020–2026, while
+     * every one it did return was designated 2001–2019.
+     */
+    private const NEOWS_LAST_DESIGNATION_YEAR = 2019;
+
     /** Relative distance gap above which NeoWs no longer mirrors JPL. */
     private const NEOWS_DISTANCE_TOLERANCE = 0.001;
 
@@ -272,6 +280,10 @@ final class NeoFeedMerger
         if (!$withinDistance) {
             return ['status' => 'not_covered'];
         }
+        // Checked before the boundaries: NeoWs would not list this object at any date or distance.
+        if ($source === 'nasa_neows' && (self::designationYear($ref['designation'] ?? null) ?? 0) > self::NEOWS_LAST_DESIGNATION_YEAR) {
+            return ['status' => 'missing', 'reason' => 'catalogue_cutoff'];
+        }
         // Inside the cap by a hair: the other source's own solution may put it just outside.
         if ($au !== null && $cap - $au <= self::DISTANCE_BOUNDARY_AU) {
             return ['status' => 'missing', 'reason' => 'distance_boundary'];
@@ -284,6 +296,12 @@ final class NeoFeedMerger
         }
 
         return ['status' => 'missing', 'reason' => 'unknown'];
+    }
+
+    /** Year of a provisional designation ("2026 RD38" → 2026); null for a name or a survey designation. */
+    private static function designationYear(?string $designation): ?int
+    {
+        return $designation !== null && preg_match('/^(\d{4}) [A-Z]/', $designation, $m) ? (int) $m[1] : null;
     }
 
     /** @return list<array{field: string, jpl_cad: mixed, nasa_neows: mixed}> */

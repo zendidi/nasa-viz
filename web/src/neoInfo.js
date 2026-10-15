@@ -32,6 +32,7 @@ const SHORT_NAMES = { jpl_cad: 'JPL', nasa_neows: 'NASA', esa_neocc: "l'ESA" }
 const REASONS = {
   date_boundary: 'approche en limite de période (découpage des jours différent)',
   distance_boundary: 'à la limite de portée de la source',
+  catalogue_cutoff: "objet désigné après 2019 : le catalogue NeoWs s'arrête là",
   unknown: 'raison inconnue',
 }
 

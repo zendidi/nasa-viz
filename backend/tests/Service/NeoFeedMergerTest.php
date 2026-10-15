@@ -136,10 +136,10 @@ final class NeoFeedMergerTest extends TestCase
             [
                 // Far: beyond ESA's 0.05 au lists → not covered, not missing.
                 self::jpl('2021 LC', '2026-09-17T03:25Z', 0.284743887059297),
-                // Close, mid-day, absent from NeoWs and ESA → unexplained.
+                // Close, mid-day, absent from NeoWs and ESA → past NeoWs's catalogue, unexplained for ESA.
                 self::jpl('2026 RD38', '2026-09-17T12:21Z', 0.039),
                 // 40 min before the range ends → another day split may have excluded it.
-                self::jpl('2026 RJ39', '2026-09-18T23:20Z', 0.03),
+                self::jpl('2019 RJ39', '2026-09-18T23:20Z', 0.03),
                 // Just inside ESA's cap.
                 self::jpl('2020 AB1', '2026-09-17T15:00Z', 0.0495),
             ],
@@ -149,11 +149,37 @@ final class NeoFeedMergerTest extends TestCase
         $objects = $result['by_designation'];
 
         self::assertSame(['status' => 'not_covered'], $objects['2021 LC']['comparison']['esa_neocc']);
-        self::assertSame(['status' => 'missing', 'reason' => 'unknown'], $objects['2026 RD38']['comparison']['nasa_neows']);
+        self::assertSame(['status' => 'missing', 'reason' => 'catalogue_cutoff'], $objects['2026 RD38']['comparison']['nasa_neows']);
         self::assertSame(['status' => 'missing', 'reason' => 'unknown'], $objects['2026 RD38']['comparison']['esa_neocc']);
-        self::assertSame(['status' => 'missing', 'reason' => 'date_boundary'], $objects['2026 RJ39']['comparison']['nasa_neows']);
+        self::assertSame(['status' => 'missing', 'reason' => 'date_boundary'], $objects['2019 RJ39']['comparison']['nasa_neows']);
         self::assertSame(['status' => 'missing', 'reason' => 'distance_boundary'], $objects['2020 AB1']['comparison']['esa_neocc']);
         self::assertSame(['total' => 4, 'found' => 2, 'missing' => 2, 'not_covered' => 0, 'unavailable' => 0, 'mismatched' => 0], ['total' => $result['comparison']['total']] + $result['comparison']['nasa_neows']);
+    }
+
+    /**
+     * NeoWs's catalogue stops at 2019 designations (measured 2026-10-15), so the
+     * cut is on the designation year, not on the approach date — and only for
+     * NeoWs: ESA keeps up with 2026 discoveries.
+     */
+    public function testNeowsAbsenceAfterItsCatalogueCutoffIsExplained(): void
+    {
+        $result = $this->merge(
+            [
+                self::jpl('2020 AA', '2026-09-17T10:00Z', 0.03),
+                self::jpl('2019 YZ9', '2026-09-17T11:00Z', 0.03),
+                self::jpl('Apophis', '2026-09-17T12:00Z', 0.03),
+            ],
+            [],
+            self::esa([]),
+        );
+        $objects = $result['by_designation'];
+
+        self::assertSame(['status' => 'missing', 'reason' => 'catalogue_cutoff'], $objects['2020 AA']['comparison']['nasa_neows']);
+        self::assertSame(['status' => 'missing', 'reason' => 'unknown'], $objects['2020 AA']['comparison']['esa_neocc']);
+        // Last year NeoWs still carries: its absence stays unexplained.
+        self::assertSame(['status' => 'missing', 'reason' => 'unknown'], $objects['2019 YZ9']['comparison']['nasa_neows']);
+        // No provisional year to read: no guess either.
+        self::assertSame(['status' => 'missing', 'reason' => 'unknown'], $objects['Apophis']['comparison']['nasa_neows']);
     }
 
     public function testObjectsOnlyInOtherSourcesAreKeptAndFlagged(): void

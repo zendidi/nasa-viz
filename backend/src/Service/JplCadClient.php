@@ -23,6 +23,16 @@ final class JplCadClient
      */
     public const DIST_MAX_AU = 0.5;
 
+    /**
+     * Same budget as the other /api/neo sources, which all run concurrently
+     * (NeoFeedBuilder): the route's worst case is this value, not a sum.
+     * Without it the client inherits `default_socket_timeout` (60 s), longer
+     * than PHP's 30 s execution wall -- see ApodClient.
+     */
+    private const TIMEOUT_SECONDS = 8;
+    private const MAX_DURATION_SECONDS = 15;
+    private const BUDGET = ['timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS];
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         #[Autowire(env: 'JPL_SSD_API_BASE_URL')]
@@ -45,9 +55,9 @@ final class JplCadClient
             'fullname' => 'true',
             'diameter' => 'true',
         ];
-        $all = $this->httpClient->request('GET', $this->baseUrl.'/cad.api', ['query' => $query]);
+        $all = $this->httpClient->request('GET', $this->baseUrl.'/cad.api', ['query' => $query] + self::BUDGET);
         // CAD has no PHA column, only a filter — a second, filtered call gives the flag.
-        $pha = $this->httpClient->request('GET', $this->baseUrl.'/cad.api', ['query' => ['pha' => 'true'] + $query]);
+        $pha = $this->httpClient->request('GET', $this->baseUrl.'/cad.api', ['query' => ['pha' => 'true'] + $query] + self::BUDGET);
 
         return static function () use ($all, $pha): array {
             HttpResponses::settle($all, $pha);
@@ -67,7 +77,7 @@ final class JplCadClient
      */
     public function requestSentryList(): \Closure
     {
-        $response = $this->httpClient->request('GET', $this->baseUrl.'/sentry.api');
+        $response = $this->httpClient->request('GET', $this->baseUrl.'/sentry.api', self::BUDGET);
 
         return static function () use ($response): array {
             $data = $response->toArray();
