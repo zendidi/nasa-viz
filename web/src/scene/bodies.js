@@ -77,9 +77,52 @@ export function loadColorMap(url, { wrapS = THREE.RepeatWrapping } = {}) {
 }
 
 /**
+ * The Earth's maps, Solar System Scope's set since 2026-10-12 (CC BY 4.0,
+ * `web/public/textures/CREDITS.md`) — where the globe wore the three.js example
+ * textures, whose licence was never established, until the comparison the user
+ * had deferred was made.
+ *
+ * The switch is what makes the cloud layer possible at all, and that is the
+ * reason it happened now rather than on licence grounds: `earth_atmos_2048.jpg`
+ * has its clouds **painted into the day map**, so a cloud sphere over it would
+ * have drawn every weather system twice, a few degrees apart. SSS ships the day
+ * side cloud-free and the clouds as their own map, which is the only shape in
+ * which a separate, independently drifting layer means anything.
+ *
+ * Measured before swapping, since a drop-in replacement is a claim and not a
+ * hope: the two normal maps average (128,127,254) and (127,126,252), the two
+ * specular maps 172 and 173 grey — same encodings, so the shader below needed
+ * no change — and the 2026-09-29 longitude calibration had already found the
+ * two sets aligned to 0 px over 2048.
+ */
+const EARTH_MAPS = {
+  day: '/textures/2k_earth_daymap.jpg',
+  night: '/textures/2k_earth_nightmap.jpg',
+  specular: '/textures/2k_earth_specular_map.jpg',
+  normal: '/textures/2k_earth_normal_map.jpg',
+  clouds: '/textures/2k_earth_clouds.jpg',
+}
+
+/**
+ * Cloud layer, as a share of the Earth's radius. 0,3 % is 19 km — the real
+ * ceiling of weather, and the smallest offset that still keeps the layer clear
+ * of the surface at every scale the slider reaches: thinner and the two spheres
+ * z-fight, thicker and the clouds visibly float off the limb.
+ */
+const CLOUD_ALTITUDE = 1.003
+
+/**
+ * How far the cloud sphere turns per day, on top of the globe's own GMST
+ * rotation. A rigid drift is a **visual convention, not weather** — real
+ * systems move at different speeds in different latitude bands — so it is kept
+ * slow enough to read as motion over a minute of watching without ever
+ * suggesting it is a forecast. Eastward, like the mid-latitude flow.
+ */
+const CLOUD_DRIFT_DEG_PER_DAY = 7
+
+/**
  * Day/night terminator: a hand-rolled shader rather than MeshPhongMaterial,
- * blending the day map against a city-lights night map (mrdoob/three.js
- * examples, same source as the other Earth textures) by how much each
+ * blending the day map against a city-lights night map by how much each
  * fragment's world-space normal faces the real Sun direction
  * (`sunDirection`, updated in updateAstronomy() from real RA/dec — see the
  * "astronomy" section above). Everything here works in world space, so the
@@ -94,17 +137,17 @@ export function makeGlobe() {
   const group = new THREE.Group()
   const textureLoader = new THREE.TextureLoader()
 
-  const dayMap = textureLoader.load('/textures/earth_atmos_2048.jpg')
+  const dayMap = textureLoader.load(EARTH_MAPS.day)
   dayMap.colorSpace = THREE.SRGBColorSpace
-  const nightMap = textureLoader.load('/textures/earth_lights_2048.png')
+  const nightMap = textureLoader.load(EARTH_MAPS.night)
   nightMap.colorSpace = THREE.SRGBColorSpace
 
   const material = new THREE.ShaderMaterial({
     uniforms: {
       dayTexture: { value: dayMap },
       nightTexture: { value: nightMap },
-      specularTexture: { value: textureLoader.load('/textures/earth_specular_2048.jpg') },
-      normalTexture: { value: textureLoader.load('/textures/earth_normal_2048.jpg') },
+      specularTexture: { value: textureLoader.load(EARTH_MAPS.specular) },
+      normalTexture: { value: textureLoader.load(EARTH_MAPS.normal) },
       normalScale: { value: 0.6 },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       shininess: { value: 35.0 },
@@ -193,10 +236,79 @@ export function makeGlobe() {
   const sphere = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 64, 64), material)
   group.add(sphere)
 
-  // The material carries the `sunDirection` uniform the terminator reads, and
-  // the sphere is the mesh the size floor scales — both are handed back rather
-  // than dug out of the group later.
-  return { group, material, sphere }
+  /**
+   * The clouds. A child of `sphere` rather than of `group`, which is what makes
+   * the whole thing free of per-frame bookkeeping: the sphere is the mesh the
+   * pixel floor scales, so hanging off it means the layer tracks the Earth's
+   * drawn radius at every scale by inheritance, and it inherits the group's
+   * GMST rotation too — leaving its own `rotation.y` free to carry nothing but
+   * the drift (set in main.js's animate()). The ISS marker is the counter-case
+   * and the reason this distinction exists: it must *not* follow the floor, so
+   * it hangs off the group.
+   *
+   * The map is a JPEG, so it has no alpha channel: white cloud on black sky,
+   * read as opacity through its red channel. `depthWrite: false` because it is
+   * transparent; the far hemisphere's clouds are still hidden, by the opaque
+   * globe's own depth, 0,3 % below.
+   */
+  const cloudMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      cloudTexture: { value: textureLoader.load(EARTH_MAPS.clouds) },
+      // The same uniform object as the globe's, by reference: updateAstronomy()
+      // writes the Sun direction once and both shaders read it. Copying it into
+      // a second uniform would be one more thing to keep in step every minute.
+      sunDirection: material.uniforms.sunDirection,
+      opacity: { value: 0.85 },
+    },
+    transparent: true,
+    depthWrite: false,
+    vertexShader: `
+      #include <common>
+      #include <logdepthbuf_pars_vertex>
+      varying vec2 vUv;
+      varying vec3 vWorldNormal;
+      void main() {
+        vUv = uv;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D cloudTexture;
+      uniform vec3 sunDirection;
+      uniform float opacity;
+      varying vec2 vUv;
+      varying vec3 vWorldNormal;
+      #include <logdepthbuf_pars_fragment>
+
+      void main() {
+        #include <logdepthbuf_fragment>
+        float cloud = texture2D(cloudTexture, vUv).r;
+        float sunFacing = dot(normalize(vWorldNormal), normalize(sunDirection));
+        // Same terminator band as the globe below, so the cloud edge and the
+        // ground's day/night edge are one line and not two.
+        float dayMix = smoothstep(-0.15, 0.15, sunFacing);
+        // Clouds fade out with the night rather than going grey: on the night
+        // side the only thing worth seeing is the city lights, and a cloud deck
+        // over them would hide the one feature that map exists for.
+        gl_FragColor = vec4(vec3(0.75 + 0.25 * max(sunFacing, 0.0)), cloud * opacity * dayMix);
+        #include <colorspace_fragment>
+      }
+    `,
+  })
+  const clouds = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS * CLOUD_ALTITUDE, 64, 64), cloudMaterial)
+  sphere.add(clouds)
+
+  // The material carries the `sunDirection` uniform the terminator reads, the
+  // sphere is the mesh the size floor scales, and the clouds carry their own
+  // drift — all handed back rather than dug out of the group later.
+  return { group, material, sphere, clouds }
+}
+
+/** Where the cloud layer has drifted to at `date`, in radians. See CLOUD_DRIFT_DEG_PER_DAY. */
+export function cloudDriftAt(date) {
+  return (((date.getTime() / 86_400_000) * CLOUD_DRIFT_DEG_PER_DAY) % 360) * (Math.PI / 180)
 }
 
 export function makeIssMarker() {

@@ -62,8 +62,14 @@ export const FOCUSES = {
     frame: 'héliocentré',
     group: 'frame',
     curve: SUN_CURVE,
-    // No 1 ua circle: the Earth's own orbit is drawn there whenever a NEO is
-    // selected, and two lines a percent apart just read as one fat one.
+    // No 1 ua circle: the Earth's own orbit is drawn here, and two lines a
+    // percent apart just read as one fat one.
+    //
+    // The planets keep theirs even though that orbit now draws from their
+    // pivots too (2026-10-12), because the two don't collide there: a planet's
+    // ring is centred on the planet, the Earth's orbit on the Sun, so from
+    // Jupiter they are two plainly different circles. Only here do they
+    // coincide, and only here is the ring therefore dropped.
     rings: [auRing(0.5), auRing(2), auRing(5)],
     reference: { label: 'Terre', km: AU_KM },
   },

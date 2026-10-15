@@ -14,11 +14,18 @@
       que la file se vide. Le scanner de préchargement les demande dès l'analyse
       du HTML, donc avant que le bundle n'ait pu lancer le moindre fetch.
     -->
-    <link rel="preload" as="image" href="/textures/earth_atmos_2048.jpg" />
-    <link rel="preload" as="image" href="/textures/earth_lights_2048.png" />
-    <link rel="preload" as="image" href="/textures/earth_specular_2048.jpg" />
-    <link rel="preload" as="image" href="/textures/earth_normal_2048.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_daymap.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_nightmap.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_specular_map.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_normal_map.jpg" />
     <link rel="preload" as="image" href="/textures/moon_1024.jpg" />
+    <!--
+      Les nuages (`2k_earth_clouds.jpg`) sont le seul fichier Terre
+      volontairement ABSENT de cette liste : 966 ko, plus que les quatre
+      au-dessus réunies, pour une couche dont l'absence ne se voit presque pas —
+      une Terre sans nuages reste une Terre, une Terre sans carte de jour est
+      une sphère noire. Elle arrive par la file normale.
+    -->
   </head>
   <body>
     <div id="app"></div>

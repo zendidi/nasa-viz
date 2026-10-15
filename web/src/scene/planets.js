@@ -238,7 +238,6 @@ function orbitSamplesKm(record) {
  * @param {object} options.traces  scene/orbitTrace.js
  * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} options.placeKm
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
- * @param {() => boolean} options.isHeliocentric  is the Sun the pivot? (orbits)
  * @param {() => boolean} options.hidesPlanets  does the pivot hide planets below 100 % reel?
  * @param {() => string | null} options.focusPlanetId  which planet is the pivot, if any
  * @param {THREE.Vector3} options.sunPositionKm  live geocentric Sun, mutated in place by
@@ -252,7 +251,6 @@ export function createPlanets({
   traces,
   placeKm,
   minRadiusAt,
-  isHeliocentric,
   hidesPlanets,
   focusPlanetId,
   sunPositionKm,
@@ -308,7 +306,7 @@ export function createPlanets({
       // neutral cyan: there is only ever one NEO ellipse on screen, but seven
       // orbits at once in the same colour would say nothing about which ring
       // belongs to which dot.
-      orbit: traces.make(PLANETS[id].color, ORBIT_OPACITY, { parent: scene }),
+      orbit: traces.make(PLANETS[id].color, ORBIT_OPACITY, { parent: scene, frame: 'heliocentric' }),
       radiusKm: tables[id]?.radiusKm ?? 0,
       positionKm: new THREE.Vector3(),
       known: false,
@@ -460,7 +458,6 @@ export function createPlanets({
 
   /** Places and sizes every planet that has a table, for the current scale and camera. */
   function update(nowSeconds, t) {
-    const heliocentric = isHeliocentric()
     const fade = planetFade(t, hidesPlanets())
     const pivotId = focusPlanetId()
 
@@ -488,13 +485,25 @@ export function createPlanets({
         const radius = body.id === pivotId ? pivotRadius(body.radiusKm, t) : planetRadius(body.radiusKm, t)
         body.mesh.scale.setScalar(Math.max(radius, minRadiusAt(body.mesh.position, PLANET_MIN_RADIUS_PX)))
       }
-      // Drawn only from the Sun, because the stored samples ARE heliocentric and
-      // `traces.update` reads them as relative to the pivot. From the Earth they
-      // would draw a ring around the Earth; from Mars, a ring around Mars. Both
-      // are wrong, and fixing the second one means subtracting the pivot's own
-      // heliocentric position — see docs/agent/backlog.md.
-      if (heliocentric) traces.update(body.orbit, t)
-      else body.orbit.line.visible = false
+      // Drawn from every pivot since 2026-10-12. The samples are heliocentric
+      // and they now say so (`frame: 'heliocentric'`), so the trace subtracts
+      // the pivot's own heliocentric position instead of being read as already
+      // relative to it — which is what used to ring the Earth from the Earth
+      // and Mars from Mars, and why these lines were shown from the Sun only.
+      // The centred planet's own orbit is included, and passes through the
+      // pivot at the origin: that is the picture the backlog entry asked for.
+      //
+      // Tied to the same fade as the planet, not drawn unconditionally: in the
+      // geocentric view a planet only exists at 100 % réel, and an orbit with
+      // no planet on it would be the one line here pointing at nothing.
+      if (fade > 0.001) {
+        traces.update(body.orbit, t)
+        // Opacity only — `transparent` was set true at construction and must
+        // stay a constructor-time property, see docs/agent/decisions.md.
+        body.orbit.line.material.opacity = ORBIT_OPACITY * fade
+      } else {
+        body.orbit.line.visible = false
+      }
     }
   }
 

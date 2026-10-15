@@ -11,33 +11,53 @@ import * as THREE from 'three'
 import { eclipticAuToSceneKm } from './geo.js'
 
 /**
+ * @typedef {'pivot' | 'geocentric' | 'heliocentric'} OrbitFrame
+ *
+ * What the stored samples are relative to — the one thing a trace must declare,
+ * since nothing in a Float32Array says where its origin is:
+ *
+ * - `pivot`: already relative to the body the scene is centred on. A moon's
+ *   orbit around its planet, drawn only while that planet is the pivot;
+ * - `geocentric`: relative to the Earth, like every body position in this
+ *   scene (the Moon's own orbit);
+ * - `heliocentric`: relative to the Sun — where orbital elements and the
+ *   backend's orbit tables both land.
+ *
+ * The third one is new (2026-10-12) and it is the whole point of naming the
+ * frame. Heliocentric samples *are* pivot-relative when the pivot is the Sun,
+ * which is why they were drawn as such and only from there; read from any other
+ * pivot they ringed the wrong body. They now go through their own placer, so a
+ * heliocentric orbit draws correctly from every pivot.
+ *
  * @typedef {{
  *   line: THREE.LineSegments, km: Float32Array|null, pairs: Int32Array|null,
- *   relativeToPivot: boolean,
+ *   frame: OrbitFrame,
  * }} OrbitTrace
- *
- * `relativeToPivot` says how the stored samples are expressed: heliocentric
- * traces are already relative to the Sun (the pivot that draws them), the Moon's
- * is geocentric like every body position, and goes through placeKm().
  */
 
 /**
  * @param {object} placers
  * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} placers.placeKm
  * @param {(out: THREE.Vector3, relativeKm: ArrayLike<number>|THREE.Vector3, t: number) => void} placers.placeRelativeKm
+ * @param {(out: THREE.Vector3, heliocentricKm: THREE.Vector3, t: number) => void} placers.placeHeliocentricKm
  */
-export function createOrbitTraces({ placeKm, placeRelativeKm }) {
+export function createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricKm }) {
   const scratch = new THREE.Vector3()
+  /** @type {Record<OrbitFrame, Function>} */
+  const placers = { pivot: placeRelativeKm, geocentric: placeKm, heliocentric: placeHeliocentricKm }
 
-  /** @returns {OrbitTrace} */
-  function make(color, opacity, { parent, relativeToPivot = true }) {
+  /**
+   * @param {{parent: THREE.Object3D, frame?: OrbitFrame}} options
+   * @returns {OrbitTrace}
+   */
+  function make(color, opacity, { parent, frame = 'pivot' }) {
     const line = new THREE.LineSegments(
       new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false }),
     )
     line.frustumCulled = false // vertices move every frame; the bounding sphere would be stale
     parent.add(line)
-    return { line, km: null, pairs: null, relativeToPivot }
+    return { line, km: null, pairs: null, frame }
   }
 
   /**
@@ -76,7 +96,7 @@ export function createOrbitTraces({ placeKm, placeRelativeKm }) {
       trace.line.visible = false
       return
     }
-    const place = trace.relativeToPivot ? placeRelativeKm : placeKm
+    const place = placers[trace.frame]
     const positions = trace.line.geometry.getAttribute('position')
     for (let i = 0; i < trace.pairs.length; i++) {
       scratch.fromArray(trace.km, trace.pairs[i] * 3)

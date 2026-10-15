@@ -13,7 +13,15 @@ import { createOrbitTraces } from './scene/orbitTrace.js'
 import { createNeoScene, designationOf } from './neo/scene.js'
 import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
 import { latLngToVector3 } from './scene/geo.js'
-import { MOON_RADIUS, makeGlobe, makeIssMarker, makeSunMarker, makeMoon, createDistanceRings } from './scene/bodies.js'
+import {
+  MOON_RADIUS,
+  makeGlobe,
+  makeIssMarker,
+  makeSunMarker,
+  makeMoon,
+  createDistanceRings,
+  cloudDriftAt,
+} from './scene/bodies.js'
 import { createPlanets } from './scene/planets.js'
 import { createMoons } from './scene/moons.js'
 import { loadOrientationFor, orientBody } from './scene/orientation.js'
@@ -96,7 +104,7 @@ scene.add(sunLight)
 // The sky loads itself in the background and never blocks the scene (scene/starfield.js).
 const starfield = createStarfield(scene)
 
-const { group: globe, material: globeMaterial, sphere: globeSphere } = makeGlobe()
+const { group: globe, material: globeMaterial, sphere: globeSphere, clouds: globeClouds } = makeGlobe()
 scene.add(globe)
 
 // Child of globe (not scene) so it turns with the real Earth rotation set in
@@ -227,6 +235,36 @@ function placeRelativeKm(out, relativeKm, t) {
   return out.copy(relativeKm).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
 }
 
+const placeHeliocentric = new THREE.Vector3()
+
+/**
+ * Same, for a sample expressed relative to the **Sun** — orbital elements and
+ * the backend's orbit tables both come that way.
+ *
+ * It is `placeKm` with one addition, and that is the whole trick: adding the
+ * live geocentric Sun turns a heliocentric sample into a geocentric one, which
+ * is the frame every body position in this scene already speaks. The pivot's
+ * own subtraction then happens once, inside `placeKm`, instead of being
+ * re-derived per caller.
+ *
+ * What it buys: a heliocentric orbit used to be readable only from the Sun,
+ * where "relative to the pivot" and "relative to the Sun" are the same vector.
+ * Drawn from the Earth it ringed the Earth, from Mars it ringed Mars — which is
+ * why the planets' orbits were simply hidden anywhere but the Sun
+ * (docs/agent/backlog.md, `orbite-planete-centree-pivot`). Now they are right
+ * from every pivot.
+ *
+ * Note what is *not* subtracted: the pivot's position at each sample's own
+ * date. Taking the current one translates the whole orbit rigidly, which is the
+ * intended picture — where that orbit lies relative to us now. Subtracting a
+ * moving pivot would draw the relative motion instead, i.e. the retrograde
+ * rosettes that the 2026-09-29 cache bug accidentally put on screen.
+ */
+function placeHeliocentricKm(out, heliocentricKm, t) {
+  placeHeliocentric.addVectors(heliocentricKm, sunPositionKm)
+  return placeKm(out, placeHeliocentric, t)
+}
+
 updateAstronomy()
 // Real drift is slow (~1°/day for the Sun, ~0.5°/h for the Moon) — no need to
 // recompute every frame. The drawn orbits are re-sampled with it so their first
@@ -240,7 +278,7 @@ setInterval(() => {
 
 // Orbit traces are shared: the NEO's ellipse and the Moon's and Earth's own
 // orbits are the same kind of line, re-projected every frame.
-const traces = createOrbitTraces({ placeKm, placeRelativeKm })
+const traces = createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricKm })
 
 // The NEO points, the sheets that colour them, their real positions, and the
 // two drawings of the selected one all live together (neo/scene.js) — they
@@ -288,10 +326,10 @@ const DAY_MS = 86_400_000
 
 // Straight in the scene, not in a group: the Earth's orbit is the heliocentric
 // view's own yardstick (and its 1 au circle), worth drawing even with nothing
-// selected. The Moon's samples are geocentric like every body position, so it
-// goes through placeKm() rather than the pivot-relative path.
-const earthOrbitTrace = traces.make(0x4fa8ff, 0.5, { parent: scene })
-const moonOrbitTrace = traces.make(0x8ea3b8, 0.5, { parent: scene, relativeToPivot: false })
+// selected. Each declares its own frame — the Earth's samples are heliocentric
+// (the Sun table, negated), the Moon's are geocentric like every body position.
+const earthOrbitTrace = traces.make(0x4fa8ff, 0.5, { parent: scene, frame: 'heliocentric' })
+const moonOrbitTrace = traces.make(0x8ea3b8, 0.5, { parent: scene, frame: 'geocentric' })
 
 function sampleBodyOrbit(count, days, positionAt) {
   return Array.from({ length: count + 1 }, (_, i) =>
@@ -325,12 +363,22 @@ function rebuildBodyOrbits() {
 
 rebuildBodyOrbits()
 
-/** Each is meaningless from the other pivot: the Moon's collapses onto the Earth, and vice versa. */
+/**
+ * The Moon's orbit is geocentric, so it collapses onto the Earth from anywhere
+ * else: Earth's view only.
+ *
+ * The Earth's is heliocentric, and since 2026-10-12 that means it draws from
+ * every pivot — through the globe itself when the Earth is the pivot, exactly
+ * as Mars's orbit does from Mars. It follows the planets' own fade so that the
+ * heliocentric orbits come and go as one set: in the geocentric view, where a
+ * planet is only drawn at 100 % réel, an orbit left on screen with no planet on
+ * it would be the one line in the scene with nothing to point at.
+ */
 function updateBodyOrbits(t) {
   if (focusId === 'earth') traces.update(moonOrbitTrace, t)
   else moonOrbitTrace.line.visible = false
 
-  if (focusId === 'sun') traces.update(earthOrbitTrace, t)
+  if (planets.drawnAt(t)) traces.update(earthOrbitTrace, t)
   else earthOrbitTrace.line.visible = false
 }
 
@@ -643,6 +691,12 @@ const panels = createPanels({
     modalClosed: () => {
       modalNeo = null
     },
+    allOrbits: (enabled) => {
+      neoScene.setAllOrbits(enabled)
+      // Redrawn so the box keeps the state the scene actually holds, rather
+      // than whatever the DOM was left in — same rule as every other panel.
+      if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
+    },
   },
 })
 const { sceneLabels } = panels
@@ -663,7 +717,7 @@ function neoLegend() {
 }
 
 function renderNeoPanel(feed, error, fetchedAt) {
-  panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend())
+  panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend(), neoScene.allOrbitsStatus())
 }
 
 function renderNeoPositionsStatus() {
@@ -797,9 +851,6 @@ const planets = createPlanets({
   traces,
   placeKm,
   minRadiusAt,
-  // All the module is told about the point of view — its orbits are relative
-  // to the pivot, so they only mean anything when the pivot is the Sun.
-  isHeliocentric: () => focusId === 'sun',
   // Only the Earth's view hides them: from Mars the planets are the subject.
   hidesPlanets: () => focusId === 'earth',
   focusPlanetId: () => (focusPlanet ? focusPlanet.id : null),
@@ -1033,6 +1084,11 @@ function animate() {
   // frame) so it's exactly right regardless of frame rate or a backgrounded
   // tab, with no drift to correct for.
   globe.rotation.y = (getGreenwichSiderealTime(new Date(nowMs)) * Math.PI) / 180
+  // Same discipline for the clouds: a function of wall-clock time, not a
+  // per-frame increment, so a backgrounded tab comes back where it should be.
+  // It adds to the globe's rotation rather than replacing it — the layer is a
+  // child of the sphere (scene/bodies.js).
+  globeClouds.rotation.y = cloudDriftAt(new Date(nowMs))
 
   stepScaleTransition(performance.now())
   stepRecenter(performance.now())

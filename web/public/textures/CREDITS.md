@@ -44,3 +44,20 @@ voir `docs/planetes-et-lunes.md`.
 `earth_specular_2048.jpg` et `moon_1024.jpg` viennent des exemples three.js, dont beaucoup d'assets
 n'ont **pas de licence propre** — c'est un sujet ouvert chez eux. Le jeu Solar System Scope ci-dessus
 couvre exactement les mêmes cartes : ces cinq fichiers sont à retirer au moment où la scène bascule.
+
+**Bascule faite pour la Terre le 2026-10-12** (décision de l'utilisateur, en même temps que la
+couche nuageuse) : le globe sert désormais `2k_earth_daymap`, `2k_earth_nightmap`,
+`2k_earth_normal_map` et `2k_earth_specular_map`. Les **quatre** fichiers Terre three.js ne sont
+plus référencés nulle part — ni dans `scene/bodies.js`, ni dans les préchargements de
+`web/index.html` — et sont donc retirables dès que le rendu est validé à l'œil.
+
+Ce qui a rendu la bascule possible : `earth_atmos_2048.jpg` a **les nuages peints dans la carte de
+jour**, donc une couche nuageuse par-dessus les aurait dessinés deux fois. Le jeu SSS livre le jour
+sans nuages et les nuages à part, seule forme où une couche indépendante a un sens.
+
+**`moon_1024.jpg` reste en service**, et c'est délibéré : `2k_moon.jpg` attend en réserve, mais
+l'alignement en longitude des deux jeux n'a été mesuré que pour la Terre (0 px d'écart sur 2048, le
+2026-09-29). La Lune porte une orientation calibrée au degré — le comptage vers l'est valait 12°,
+voir `docs/agent/decisions.md` — qu'un jeu de textures décalé en longitude casserait sans que rien
+ne le signale à l'écran. La bascule de la Lune demande donc d'abord la même mesure
+(`tools/calibration/texture-longitude.py`), pas seulement un changement de chemin.
