@@ -1,10 +1,11 @@
 # Intégration continue — backend et web.
 #
-# ATTENTION : ce workflow est DORMANT à l'écriture (2026-09-30). Rien du travail
-# récent n'est poussé — `origin/master` est au commit 38c478d alors que le travail
-# local va bien plus loin, et la branche de travail n'a pas d'upstream. Une action
-# GitHub ne s'exécute que sur ce qui est poussé : ce fichier ne servira à rien
-# jusqu'à un `git push`. Il est écrit maintenant pour être prêt, pas pour tourner.
+# Ce workflow a DORMI du 2026-09-30 au 2026-10-15, faute de push. Son tout
+# premier run a trouvé deux choses que la machine de dev ne peut pas voir :
+# un lock dérivé vers Symfony 8 (donc PHP >= 8.4.1, cassant le job 8.3), et
+# l'absence de `.env` — gitignoré, donc jamais présent sur un clone vierge.
+# Les deux sont corrigés ; voir docs/agent/gotchas.md. C'est exactement ce
+# qu'on attend d'une CI : échouer là où le poste de travail ne peut pas.
 #
 # Il n'appelle AUCUNE API externe : PHPUnit travaille sur les fixtures de
 # backend/tests/Fixtures/, et le build Vite est hors-ligne. Le quota NASA
@@ -51,9 +52,27 @@ jobs:
           key: composer-${{ matrix.php }}-${{ hashFiles('backend/composer.lock') }}
           restore-keys: composer-${{ matrix.php }}-
 
+      # `backend/.env` est gitignoré : il n'existe donc jamais sur un clone
+      # vierge, et `tests/bootstrap.php` appelle `Dotenv::bootEnv()`, qui lève
+      # une PathException sans lui. On reproduit ici l'étape d'installation
+      # documentée dans CLAUDE.md (`cp .env.example .env`), avant Composer,
+      # dont les auto-scripts peuvent déjà vouloir booter le conteneur.
+      - name: Préparer l'environnement
+        working-directory: backend
+        run: cp .env.example .env
+
       - name: Installer les dépendances
         working-directory: backend
         run: composer install --prefer-dist --no-progress --no-interaction
+
+      # Garde-fou sur la complétude de `.env.example` lui-même : les variables
+      # d'env se résolvent paresseusement, donc ni PHPUnit (aucun test ne boote
+      # le noyau) ni `lint:container` ne remarquent qu'il en manque une. Un vrai
+      # warmup, si — c'est comme ça que l'absence de DEFAULT_URI, référencée par
+      # config/packages/routing.yaml, a été trouvée le 2026-10-15.
+      - name: Le conteneur se construit depuis .env.example seul
+        working-directory: backend
+        run: php bin/console cache:warmup
 
       - name: Tests unitaires
         working-directory: backend
