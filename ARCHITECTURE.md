@@ -37,6 +37,11 @@ formes de réponse, pas ce fichier.
 - `src/Service/NeoComparisonLog.php` + `src/Command/NeoComparisonReportCommand.php` — journal
   `var/log/neo-comparison.jsonl` (une ligne par changement réel) et son rapport
   (`php bin/console app:neo:comparison-report`).
+- `src/Service/NeoOrbitComparisonLog.php` — journal `var/log/neo-orbit-comparison.jsonl` : une
+  ligne par **objet**, pas par plage de dates, d'où un fichier distinct du précédent — un seul
+  fichier mélangeant les deux formes casserait le lecteur qui attend l'autre. Alimenté par
+  `/api/neo/details` lors d'un vrai fetch seulement, jamais sur un hit de cache ; lu par la
+  section « orbites » du même rapport.
 - `src/Service/SmallBodyDetailsClient.php` — fiche par objet pour `/api/neo/details` : JPL SBDB
   (toujours) + IMCCE ssoCard (bonus) + Sentry (risque d'impact).
 - `src/Service/NeoDesignation.php` — appariement des objets entre catalogues (numéro ou
