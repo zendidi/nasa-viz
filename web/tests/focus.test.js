@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { FOCUSES, FOCUS_IDS, PLANET_FOCUS_IDS } from '../src/focus.js'
+import { FOCUSES, FOCUS_IDS, PLANET_FOCUS_IDS, neoEllipsesVisible } from '../src/focus.js'
 import { AU_KM, readableDistance } from '../src/scale.js'
 
 // FOCUSES est une table de config, pas un algorithme : son vrai mode de
@@ -190,5 +190,22 @@ describe('FOCUS_IDS', () => {
   it('couvre exactement les cles de FOCUSES, sans doublon', () => {
     expect(new Set(FOCUS_IDS).size).toBe(FOCUS_IDS.length)
     expect([...FOCUS_IDS].sort()).toEqual(Object.keys(FOCUSES).sort())
+  })
+})
+
+describe('neoEllipsesVisible', () => {
+  // La regle de visibilite des ellipses NEO : Soleil ET 100 % reel, rien d'autre.
+  // Le piege est le « t » anime : il arrive a 1 par un flottant, pas par egalite.
+  it('ne montre les ellipses que depuis le Soleil, a l\'echelle reelle', () => {
+    expect(neoEllipsesVisible('sun', 1)).toBe(true)
+    expect(neoEllipsesVisible('sun', 1 - 1e-9)).toBe(true)
+    expect(neoEllipsesVisible('sun', 7 / 8)).toBe(false)
+    expect(neoEllipsesVisible('sun', 0)).toBe(false)
+  })
+
+  it('ne les montre depuis aucun autre pivot, meme a l\'echelle reelle', () => {
+    for (const id of FOCUS_IDS.filter((id) => id !== 'sun')) {
+      expect(neoEllipsesVisible(id, 1)).toBe(false)
+    }
   })
 })

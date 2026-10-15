@@ -5,7 +5,7 @@ import { loadCached, saveCached } from './cache.js'
 import { getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
 import { createSunTable } from './sunTable.js'
 import { orbitSchematicSvg } from './orbit.js'
-import { FOCUSES } from './focus.js'
+import { FOCUSES, neoEllipsesVisible } from './focus.js'
 import { createPanels } from './ui/panels.js'
 import { createStarfield } from './scene/starfield.js'
 import { createPicking } from './picking.js'
@@ -201,6 +201,9 @@ const focusOf = () => FOCUSES[focusId]
  * @type {{id: string, radiusKm: number, positionKm: THREE.Vector3} | null}
  */
 let focusPlanet = null
+
+/** Venus shows its cloud deck by default; ticked, the radar surface under it (planets panel). */
+let venusSurface = false
 
 const focusPositionKm = () => {
   if (focusPlanet) return focusPlanet.positionKm
@@ -405,6 +408,9 @@ function setScaleStep(step) {
   scaleTransition = { from: scaleT, to: next / SCALE_STEPS, startMs: performance.now() }
   renderScalePanel()
   renderPlanetsPanel() // the cran decides whether the geocentric view shows planets
+  // The ellipses (and the "all orbits" box that gates them) only exist at 100 % réel.
+  if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
+  if (modalNeo) renderNeoModal()
 }
 
 /** NEO distances from the current pivot — what the scale label and the camera anchors quote. */
@@ -565,7 +571,13 @@ function setFocus(nextId) {
 
   renderScalePanel()
   renderViewPanel()
+  // Venus's radar surface is an option of the view from Venus; leaving resets it.
+  if (venusSurface && nextId !== 'venus') {
+    venusSurface = false
+    planets.setVenusSurface(false)
+  }
   renderPlanetsPanel() // so does the pivot
+  if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
   if (modalNeo) renderNeoModal()
 
   // The one place moons are ever fetched, and the one place a planet's colour
@@ -691,6 +703,11 @@ const panels = createPanels({
     modalClosed: () => {
       modalNeo = null
     },
+    venusSurface: (enabled) => {
+      venusSurface = enabled
+      planets.setVenusSurface(enabled)
+      renderPlanetsPanel()
+    },
     allOrbits: (enabled) => {
       neoScene.setAllOrbits(enabled)
       // Redrawn so the box keeps the state the scene actually holds, rather
@@ -717,7 +734,11 @@ function neoLegend() {
 }
 
 function renderNeoPanel(feed, error, fetchedAt) {
-  panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend(), neoScene.allOrbitsStatus())
+  panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend(), {
+    ...neoScene.allOrbitsStatus(),
+    // Ticked or not, the box can do nothing from the Sun below 100 % réel.
+    scaleLocked: focusId === 'sun' && !neoEllipsesVisible(focusId, scaleStep / SCALE_STEPS),
+  })
 }
 
 function renderNeoPositionsStatus() {
@@ -727,7 +748,13 @@ function renderNeoPositionsStatus() {
 function renderPlanetsPanel() {
   // `scaleStep`, not `scaleT`: the panel describes the cran the slider is on,
   // not where a running transition happens to be — same choice as the scale label.
-  panels.renderPlanets(planets.status(), planets.legend(), planets.drawnAt(scaleStep / SCALE_STEPS), moons.status())
+  panels.renderPlanets(
+    planets.status(),
+    planets.legend(),
+    planets.drawnAt(scaleStep / SCALE_STEPS),
+    moons.status(),
+    focusId === 'venus' ? { surface: venusSurface } : null,
+  )
 }
 
 function renderScalePanel() {
@@ -788,7 +815,7 @@ function renderNeoModal() {
         : '<p class="muted">Pas de données d\'approche disponibles</p>'
     }
     ${entry ? neoScene.describeTrajectory(entry) : ''}
-    ${entry ? neoScene.describeOrbit(entry) : ''}
+    ${entry ? neoScene.describeOrbit(entry, scaleStep / SCALE_STEPS) : ''}
     ${sourcesBlockHtml(neo)}
     ${detailsBlockHtml(details, {
       loading: sheet.loading,

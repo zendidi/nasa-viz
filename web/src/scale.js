@@ -21,6 +21,14 @@ export const AU_KM = 149_597_870.7
 export const LUNAR_DISTANCE_KM = 384_400
 
 export const SCALE_STEPS = 8 // slider positions 0..8 → t = k / 8
+
+/**
+ * Whether `t` is the "100 % réel" end of the slider. `t` is animated, so it
+ * arrives at 1 through a float; the tolerance keeps the test from depending on
+ * the last ulp of the easing.
+ */
+export const isRealScale = (t) => t >= 1 - 1e-6
+
 export const SCALE_PRESETS = [
   { label: 'Lisible', step: 0 },
   { label: 'Intermédiaire', step: 4 },

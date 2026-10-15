@@ -560,6 +560,8 @@ retirer au moment où la scène bascule sur le jeu Solar System Scope, qui couvr
 cartes sous licence explicite. Cette bascule change la Terre déjà validée à l'œil : elle se décide,
 elle ne se glisse pas dans l'étape 2.
 
+*Note du 2026-10-15 : fait. Les quatre cartes Terre ont quitté les références le 2026-10-12 ; `moon_1024.jpg` a été retiré du dépôt le 2026-10-15, la Lune passant sur `2k_moon.jpg` (voir `docs/agent/decisions.md`).*
+
 **Étape 2 — les planètes texturées et le Soleil. Faite le 2026-09-29.**
 
 `makeLitBodyMaterial(color, map)` prend maintenant un `uMap`, qui vaut par défaut **un texel blanc

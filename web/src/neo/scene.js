@@ -29,6 +29,7 @@ import {
   julianDate,
 } from '../orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
+import { neoEllipsesVisible } from '../focus.js'
 import { neoRadius } from '../scale.js'
 
 // Unit spheres shared by every NEO, scaled per frame in update().
@@ -55,6 +56,7 @@ const NEO_POSITIONS_BATCH = 10 // backend maximum per call
 const TRAJECTORY_PAST_DIM = 0.3
 const APPROACH_MARKER_MIN_PX = 7
 const APPROACH_MARKER_NEO_FACTOR = 1.8
+const ARROW_PX = 7 // the arrow is twice this long on screen, whatever the zoom
 
 const ORBIT_SAMPLES = 360
 const ORBIT_ARC_DAYS = 30
@@ -263,6 +265,16 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   approachMarker.visible = false
   scene.add(approachMarker)
 
+  // Arrowhead on the NEO's current position, pointing where it is going: the
+  // dimmed past already says which end is which, this says it outright. A cone
+  // with its base at the origin and its tip along +Y, so scaling keeps the base
+  // put and the quaternion swings the tip onto the motion.
+  const arrowGeometry = new THREE.ConeGeometry(0.6, 2, 12)
+  arrowGeometry.translate(0, 1, 0)
+  const trajectoryArrow = new THREE.Mesh(arrowGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff }))
+  trajectoryArrow.visible = false
+  scene.add(trajectoryArrow)
+
   /** @type {NeoEntry|null} */
   let selected = null
   let trajectoryTable = null // the Horizons table the geometry was built from
@@ -301,6 +313,39 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   }
 
   const trajectorySample = new THREE.Vector3()
+  const arrowFrom = new THREE.Vector3()
+  const arrowTo = new THREE.Vector3()
+  const arrowDir = new THREE.Vector3()
+  const ARROW_AXIS = new THREE.Vector3(0, 1, 0)
+
+  /**
+   * Puts the arrow on the NEO and aims it along the hourly segment "now" falls
+   * in (the nearest end's segment when "now" is outside the table). Position
+   * comes from the interpolated km vector through `placeKm`, like the dot; the
+   * direction from the two placed samples, so it follows the scale's bending.
+   */
+  function updateArrow(nowIndex, count, t) {
+    const clamped = THREE.MathUtils.clamp(nowIndex, 0, count - 1)
+    const i = Math.min(Math.floor(clamped), count - 2)
+    arrowFrom.fromArray(trajectoryKm, i * 3)
+    arrowTo.fromArray(trajectoryKm, (i + 1) * 3)
+    arrowDir.copy(arrowFrom).lerp(arrowTo, clamped - i)
+    placeKm(trajectoryArrow.position, arrowDir, t)
+    placeKm(arrowFrom, arrowFrom, t)
+    placeKm(arrowTo, arrowTo, t)
+    arrowDir.subVectors(arrowTo, arrowFrom)
+    if (arrowDir.lengthSq() < 1e-20) {
+      trajectoryArrow.visible = false
+      return
+    }
+    arrowDir.normalize()
+    trajectoryArrow.quaternion.setFromUnitVectors(ARROW_AXIS, arrowDir)
+    // Base just past the dot rather than inside it, or the dot hides the arrow.
+    trajectoryArrow.position.addScaledVector(arrowDir, selected.mesh.scale.x)
+    trajectoryArrow.scale.setScalar(minRadiusAt(trajectoryArrow.position, ARROW_PX))
+    trajectoryArrow.material.color.copy(selected.mesh.material.color)
+    trajectoryArrow.visible = true
+  }
 
   function updateTrajectory(nowSeconds, t) {
     // Geocentric path only makes sense centred on the Earth; the heliocentric
@@ -308,6 +353,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     const table = selected && focusId() === 'earth' ? positions.objects[selected.designation] : null
     if (!table || table.positions.length < 2) {
       trajectoryLine.visible = false
+      trajectoryArrow.visible = false
       approachMarker.visible = false
       return
     }
@@ -329,6 +375,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     linePositions.needsUpdate = true
     colors.needsUpdate = true
     trajectoryLine.visible = true
+    updateArrow(nowIndex, linePositions.count, t)
 
     approachMarker.visible = true
     approachMarker.quaternion.copy(camera.quaternion) // billboard
@@ -437,7 +484,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   }
 
   function updateHeliocentricOrbit(t) {
-    const orbit = focusId() === 'sun' ? selectedOrbitElements() : null
+    const orbit = neoEllipsesVisible(focusId(), t) ? selectedOrbitElements() : null
     heliocentricGroup.visible = orbit !== null
     if (!orbit) {
       orbitBuiltFrom = null
@@ -464,11 +511,15 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     }
   }
 
-  /** Human summary of the heliocentric trace, for the modal. */
-  function describeOrbit(entry) {
+  /** Human summary of the heliocentric trace, for the modal. `t` is the slider's own value. */
+  function describeOrbit(entry, t) {
     if (focusId() !== 'sun') return ''
     const orbit = entry === selected ? selectedOrbitElements() : null
     if (!orbit) return ''
+    if (!neoEllipsesVisible(focusId(), t)) {
+      return `<p class="muted">Orbite complète visible en échelle réelle (Maj + molette jusqu'à « 100 % réel ») :
+      en échelle comprimée, la courbe déforme les ellipses.</p>`
+    }
     return `<p class="muted">Orbite complète tracée dans la scène (képlérienne, éléments JPL SBDB) —
     trait plein au-dessus de l'écliptique, pointillé en dessous, arc vif = ±${ORBIT_ARC_DAYS} jours autour de l'approche.</p>`
   }
@@ -518,13 +569,14 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   }
 
   function updateAllOrbits(t) {
-    // Heliocentric view only, like the selected NEO's ellipse. Not because
-    // the frame forbids it — since 2026-10-12 it would draw correctly from any
-    // pivot — but because the geocentric view's curve squeezes the whole solar
-    // system into seven scene units (19,1 to 26,2, measured in
-    // scene/planets.js): a hundred ellipses would land on top of each other
-    // there. See `neo-ellipse-pivot` in docs/agent/backlog.md.
-    allOrbitsGroup.visible = allOrbitsEnabled && focusId() === 'sun'
+    // Sun pivot at 100 % réel only, like the selected NEO's ellipse
+    // (`neoEllipsesVisible`). Not because the frame forbids other pivots —
+    // since 2026-10-12 it would draw correctly from any — but because every
+    // compressed curve bends the ellipses and a hundred of them pile up; the
+    // geocentric one squeezes the whole solar system into seven scene units
+    // (19,1 to 26,2, measured in scene/planets.js). See `neo-ellipse-pivot` in
+    // docs/agent/backlog.md.
+    allOrbitsGroup.visible = allOrbitsEnabled && neoEllipsesVisible(focusId(), t)
     if (!allOrbitsGroup.visible) return
     if (allOrbitsStale) buildAllOrbits()
     for (const trace of Object.values(allOrbits)) traces.update(trace, t)
