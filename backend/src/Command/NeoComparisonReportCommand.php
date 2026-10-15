@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Service\NeoComparisonLog;
+use App\Service\NeoOrbitComparisonLog;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -11,15 +12,29 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
- * Summarizes var/log/neo-comparison.jsonl. Each close approach is counted
- * once, using its most recent journal line (sources refine orbits over time,
- * the latest state is the one worth judging).
+ * Summarizes var/log/neo-comparison.jsonl (close approaches) and
+ * var/log/neo-orbit-comparison.jsonl (orbital elements). Each close approach,
+ * and each object's orbit, is counted once, using its most recent journal
+ * line — sources refine their fit over time, the latest state is the one
+ * worth judging.
  */
-#[AsCommand(name: 'app:neo:comparison-report', description: 'Summarize how JPL CAD, NASA NeoWs and ESA NEOCC agree on NEO close approaches')]
+#[AsCommand(name: 'app:neo:comparison-report', description: 'Summarize how JPL CAD, NASA NeoWs and ESA NEOCC agree on NEO close approaches and orbits')]
 final class NeoComparisonReportCommand extends Command
 {
-    public function __construct(private readonly NeoComparisonLog $log)
-    {
+    /**
+     * Relative deviation (spread ÷ |mean|, spread ÷ 360 for angles) flagged as
+     * a genuine disagreement rather than two independent fits landing a hair
+     * apart. Apophis — about as well-observed as a NEO gets — measures ~1e-7
+     * between SBDB and ESA (fixture dated 2026-10-12); 0.1% is two orders of
+     * magnitude above that, and matches NeoFeedMerger::NEOWS_DISTANCE_TOLERANCE,
+     * this project's existing idea of "no longer a rounding difference".
+     */
+    private const ORBIT_DISAGREEMENT_THRESHOLD = 0.001;
+
+    public function __construct(
+        private readonly NeoComparisonLog $log,
+        private readonly NeoOrbitComparisonLog $orbitLog,
+    ) {
         parent::__construct();
     }
 
@@ -96,7 +111,64 @@ final class NeoComparisonReportCommand extends Command
         }
         $disagreements === [] ? $io->text('Aucun désaccord sur les objets journalisés.') : $io->table(['objet|date', 'Sentry', 'ESA'], $disagreements);
 
+        $this->orbitsSection($io, $since);
+
         return Command::SUCCESS;
+    }
+
+    /** @param ?\DateTimeImmutable $since */
+    private function orbitsSection(SymfonyStyle $io, ?\DateTimeImmutable $since): void
+    {
+        $lines = 0;
+        $orbits = [];
+        foreach ($this->orbitLog->read($since) as $entry) {
+            ++$lines;
+            $orbits[$entry['designation']] = $entry;
+        }
+
+        $io->section('Comparaison des orbites (SBDB ↔ ESA ↔ ssoCard)');
+        $io->text(sprintf('Journal : %s — %d ligne(s)%s, %d objet(s) distinct(s).', $this->orbitLog->getPath(), $lines, $since ? sprintf(' depuis %s', $since->format('Y-m-d')) : '', count($orbits)));
+        if ($orbits === []) {
+            $io->warning('Rien à analyser.');
+
+            return;
+        }
+
+        $fields = ['a_au', 'e', 'i_deg', 'node_deg', 'peri_deg', 'period_days'];
+        $spreadsByField = array_fill_keys($fields, []);
+        $worst = [];
+        foreach ($orbits as $designation => $entry) {
+            $comparison = $entry['comparison'];
+            foreach ($fields as $field) {
+                if ($comparison['spread'][$field] !== null) {
+                    $spreadsByField[$field][] = $comparison['spread'][$field];
+                }
+            }
+            if ($comparison['worst'] !== null && $comparison['worst']['relative'] > self::ORBIT_DISAGREEMENT_THRESHOLD) {
+                $worst[] = [$designation, implode(',', $comparison['compared']), $comparison['worst']['field'], sprintf('%.6f', $comparison['worst']['relative'])];
+            }
+        }
+
+        $rows = [];
+        foreach ($fields as $field) {
+            $values = $spreadsByField[$field];
+            if ($values === []) {
+                $rows[] = [$field, '—', '—', 0];
+                continue;
+            }
+            sort($values);
+            $count = count($values);
+            $median = $count % 2 ? $values[intdiv($count, 2)] : ($values[$count / 2 - 1] + $values[$count / 2]) / 2;
+            $rows[] = [$field, sprintf('%.3g', $median), sprintf('%.3g', end($values)), $count];
+        }
+        $io->table(['champ', 'étendue médiane', 'étendue max', 'objets comparés'], $rows);
+
+        if ($worst === []) {
+            $io->text(sprintf('Aucun objet au-delà du seuil de désaccord (%.1f %%).', self::ORBIT_DISAGREEMENT_THRESHOLD * 100));
+        } else {
+            $io->text(sprintf('Objets au-delà du seuil de désaccord (%.1f %%) :', self::ORBIT_DISAGREEMENT_THRESHOLD * 100));
+            $io->table(['désignation', 'sources comparées', 'champ le plus divergent', 'écart relatif'], $worst);
+        }
     }
 
     /** @param array<string, array<string, mixed>> $approaches */
