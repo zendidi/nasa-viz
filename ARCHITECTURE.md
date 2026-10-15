@@ -3,12 +3,12 @@
 ## Vue d'ensemble
 
 ```
-                                                        ┌─► NASA api.nasa.gov (NeoWs, APOD)  ← seul quota
+                                                        ┌─► NASA api.nasa.gov (NeoWs)  ← seul quota
 Web (Three.js)  ─┐                                      ├─► JPL (CAD, SBDB, Sentry, Horizons) ┐
-                  ├─► Backend Symfony (proxy, cache) ───┤                                     ├ sans clé
-Unity VR (futur) ─┘      + comparaison des sources      ├─► ESA NEOCC (approches, risque)     │
-                                                        ├─► IMCCE SsODNet (ssoCard)           ┘
-                                                        └─► wheretheiss.at (ISS)
+                  ├─► Backend Symfony (proxy, cache) ───┤─► science.nasa.gov (APOD)           │
+Unity VR (futur) ─┘      + comparaison des sources      ├─► ESA NEOCC (approches, risque)     ├ sans clé
+                                                        ├─► IMCCE SsODNet (ssoCard)           │
+                                                        └─► wheretheiss.at (ISS)              ┘
 ```
 
 Aucun client n'appelle NASA directement : le backend cache les réponses, cache la clé API, et
@@ -18,10 +18,15 @@ formes de réponse, pas ce fichier.
 
 ## Backend (`backend/`, Symfony 7, proxy sans état)
 
-- `src/Service/NasaApiClient.php` — NeoWs (une des trois sources de `/api/neo`) + APOD
-  (`/api/apod`), normalise les réponses NASA en JSON stable, appelle
-  `NasaUsageTracker::recordCall()` avant chaque requête réelle vers `api.nasa.gov` (pas avant un
-  hit de cache).
+- `src/Service/NasaApiClient.php` — NeoWs seul (une des trois sources de `/api/neo`), normalise
+  les réponses NASA en JSON stable, appelle `NasaUsageTracker::recordCall()` avant chaque requête
+  réelle vers `api.nasa.gov` (pas avant un hit de cache). **C'est le dernier consommateur du
+  quota.**
+- `src/Service/ApodClient.php` — image du jour (`/api/apod`), lue sur l'API REST WordPress de
+  `science.nasa.gov` depuis le 2026-09-30 : NASA a déplacé l'APOD et laissé `apod.nasa.gov` sans
+  certificat valide pour son propre nom. **Sans clé, donc hors quota.** La forme de réponse de la
+  route n'a pas changé — c'est exactement le rôle du proxy. Voir la classe pour le détail, et
+  `docs/agent/decisions.md` du 2026-09-30.
 - `src/Service/JplCadClient.php` — approches JPL CAD (source de référence de `/api/neo`) + liste
   Sentry. `src/Service/EsaNeoccClient.php` — approches et liste de risque ESA NEOCC. Sans clé,
   hors quota.
@@ -70,7 +75,7 @@ formes de réponse, pas ce fichier.
   - `/api/solar-system/orientation?body=` — TTL 40 jours : le pôle et le méridien origine en
     vecteurs unitaires ICRF plus le taux de rotation signé. Accepte les sept planètes **et `moon`**.
     Une table `OBSERVER` de deux lignes, donc ~1 s là où une table de vecteurs coûte 5 à 16 s
-  - `/api/apod` — TTL 24h
+  - `/api/apod` — TTL 24h, désormais sur `science.nasa.gov` et sans clé
   - `/api/usage` — pas de cache, lecture directe du compteur
 - CORS via `nelmio/cors-bundle` (`config/packages/nelmio_cors.yaml`), restreint à
   `localhost`/`127.0.0.1` en dev (`CORS_ALLOW_ORIGIN` dans `.env`).
@@ -83,17 +88,24 @@ formes de réponse, pas ce fichier.
   le bouton "Mettre à jour" (ou l'absence totale de cache, au tout premier lancement). C'est ce qui
   protège le quota NASA pendant qu'on développe/teste.
 - `src/main.js` — scène :
-  - Globe texturé jour/nuit (`public/textures/earth_atmos_2048.jpg` + night, specular et normal
-    maps, three.js examples/mrdoob, imagerie NASA/domaine public ; le jeu Solar System Scope
-    CC BY 4.0 attend en réserve, voir `public/textures/CREDITS.md`). Rotation réelle par le GMST,
-    et son axe *est* le +Y de la scène puisque celle-ci est équatoriale
+  - Globe texturé jour/nuit (`public/textures/2k_earth_daymap.jpg` + night, specular, normal maps
+    et une couche de nuages séparée, jeu Solar System Scope CC BY 4.0, basculé le 2026-10-12 — les
+    quatre cartes three.js correspondantes ne sont plus référencées, voir
+    `public/textures/CREDITS.md`). Nuages enfants de `globeSphere` (dérive vers l'est,
+    `7°/jour`, convention visuelle assumée) et uniforme `sunDirection` partagé par référence avec le
+    shader du globe. Rotation réelle par le GMST, et son axe *est* le +Y de la scène puisque
+    celle-ci est équatoriale
   - Ciel réel (`public/stars.json`, catalogue Hipparcos tronqué à mag ≤ 5 via d3-celestial ;
     couleur dérivée de l'indice B-V, taille dérivée de la magnitude — voir
     `docs/agent/gotchas.md` pour regénérer ce fichier)
   - Marqueur ISS animé (poll seulement sur "Mettre à jour", pas de polling automatique)
   - Points NEO cliquables (raycasting → modal détail ; couleur = dangerosité, sinon type spectral
     quand il est connu ; taille = diamètre mesuré si disponible). Le NEO sélectionné affiche sa
-    trajectoire réelle (Horizons) et un schéma d'orbite SVG (`src/orbit.js`) dans la modal.
+    trajectoire réelle (Horizons) et un schéma d'orbite SVG (`src/orbit.js`) dans la modal. Case
+    « orbites de tous les NEO » (éteinte par défaut, vue héliocentrée seulement — la vue
+    géocentrée tasse tout le système solaire dans 7 unités où 150 ellipses se superposeraient) :
+    `bundleOrbitSamples` (`src/orbit.js`) empile les échantillons de toutes les orbites dans deux
+    `LineSegments` (les PHA à part, plus vifs) au lieu d'une polyligne par objet.
   - `src/scale.js` — modèle d'échelle « lisible → réel » (slider 9 crans), une courbe de
     compression par corps pivot (`docs/echelle-reelle.md`)
   - `src/scene/planets.js` — les sept planètes : tables Horizons (`/api/solar-system/positions`,
@@ -101,9 +113,11 @@ formes de réponse, pas ce fichier.
     texturées et leurs libellés. Placées par le même `placeKm()` que la Lune, donc visibles dans les
     deux vues sans seconde source (`docs/planetes-et-lunes.md`). Le module charge ensuite
     **l'orbite** de chaque planète (`/api/solar-system/orbit`), servie héliocentrique depuis le
-    2026-09-29 : plus rien à soustraire côté client. Orbites tracées **en vue héliocentrée
-    seulement**. La carte de couleur et l'anneau de Saturne ne sont construits **qu'à la prise de
-    pivot** — de loin une planète fait 3,5 px, où le détail ne se voit pas
+    2026-09-29 : plus rien à soustraire côté client. Orbites tracées **depuis n'importe quel
+    pivot** (`OrbitFrame`, 2026-10-12), Terre comprise ; en vue géocentrée elles suivent le fondu
+    des planètes (`planetFade`) et n'apparaissent qu'à 100 % réel. La carte de couleur et l'anneau
+    de Saturne ne sont construits **qu'à la prise de pivot** — de loin une planète fait 3,5 px, où
+    le détail ne se voit pas
   - `src/scene/orientation.js` — comment chaque corps est tourné : `/api/solar-system/orientation`,
     son cache (validé sur l'`epoch`, pas sur un âge) et l'application au quaternion du maillage.
     Un cache de module plutôt qu'une fabrique, parce que deux propriétaires sans lien s'en servent :
@@ -111,9 +125,11 @@ formes de réponse, pas ce fichier.
   - `src/scene/geo.js` — la géométrie partagée, et **la convention de longitude des cartes** : bord
     gauche à 180°, centre à 0, est vers la droite. Mesurée, pas supposée — voir
     `tools/calibration/`
-  - `src/focus.js` — point de vue : quel corps est au centre de la scène (Terre, Soleil ; le pivot
-    est l'origine, tout le reste est placé relativement). En vue héliocentrée, le NEO sélectionné
-    voit son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
+  - `src/focus.js` — point de vue : quel corps est au centre de la scène (les sept planètes, la
+    Terre, le Soleil — neuf pivots, `FOCUSES` ; le pivot est l'origine, tout le reste est placé
+    relativement). Les orbites planétaires et l'orbite terrestre se tracent depuis n'importe lequel
+    de ces pivots (`placeHeliocentricKm`, 2026-10-12). En vue héliocentrée, le NEO sélectionné voit
+    son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
   - `src/neoInfo.js` — textes de comparaison des sources et de la fiche, couleurs par taxonomie
   - Badge de quota (`GET /api/usage`)
 
@@ -145,9 +161,10 @@ scène web à l'identique. Elle consommera le même contrat backend (`backend/AP
 - JPL Horizons : sans clé, hors quota — mais **lent et irrégulier** (5 à 16 s par requête,
   indépendamment du nombre d'échantillons, mesuré le 2026-09-22). C'est ce qui dicte la taille des
   lots côté `/api/neo/positions` et `/api/solar-system/positions`, pas un souci de volume.
-- JPL (CAD, SBDB, Sentry, Horizons), ESA NEOCC et IMCCE SsODNet : sans clé, hors quota, non
-  comptés par `NasaUsageTracker`. NeoWs reste interrogé pour la comparaison — c'est lui (avec
-  APOD) qui consomme le quota. Voir `docs/neo-jpl-ssodnet.md`.
+- JPL (CAD, SBDB, Sentry, Horizons), ESA NEOCC, IMCCE SsODNet **et science.nasa.gov (APOD)** :
+  sans clé, hors quota, non comptés par `NasaUsageTracker`. NeoWs reste interrogé pour la
+  comparaison, et depuis le 2026-09-30 **c'est le seul consommateur du quota** — l'APOD en est
+  sorti avec son changement de source. Voir `docs/neo-jpl-ssodnet.md`.
 - TTLs actuels : ISS 5s · NEO 1h par plage de dates · APOD 24h.
 - Le badge web (`GET /api/usage`) montre les appels réels du jour — c'est la donnée de vérité, pas
   le nombre de clics sur "Mettre à jour" (le cache backend absorbe une partie des clics).

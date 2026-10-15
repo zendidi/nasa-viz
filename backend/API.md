@@ -111,10 +111,11 @@ The union is returned: an object listed by a single source is still in
 
 ## `GET /api/neo/details?designations=2004 MN4,2026 NT2`
 
-Per-object sheet, from JPL SBDB + IMCCE SsODNet ssoCard + JPL Sentry — all
-keyless, none on the NASA quota. 1 to 10 comma-separated designations per call
-(same limit and validation as `/api/neo/positions`). Cached server-side 7 days
-per object (1 day when unknown; not cached while a source is down).
+Per-object sheet, from JPL SBDB + IMCCE SsODNet ssoCard + ESA NEOCC + JPL
+Sentry — all keyless, none on the NASA quota. 1 to 10 comma-separated
+designations per call (same limit and validation as `/api/neo/positions`).
+Cached server-side 7 days per object (1 day when unknown; not cached while
+SBDB, ssoCard or Sentry is down — ESA is excluded from that check, see below).
 
 ```json
 {
@@ -138,9 +139,30 @@ per object (1 day when unknown; not cached while a source is down).
         "peri_deg": 126.6795706895841, "mean_anomaly_deg": 175.3304026592739,
         "period_days": 323.5553366891694, "q_au": 0.746, "ad_au": 1.0987
       },
+      "orbits": {
+        "sbdb": { "epoch_jd": 2461200.5, "a_au": 0.9223592206975018, "e": 0.1911492279663492, "…": "… same 10 fields as orbit" },
+        "esa": {
+          "epoch_jd": 2461200.5, "a_au": 0.9223592223762012, "e": 0.19114922446996477,
+          "i_deg": 3.3409970023876, "node_deg": 203.8936387948748, "peri_deg": 126.67958271092,
+          "mean_anomaly_deg": 175.33040226699205, "period_days": 323.55533757247844,
+          "q_au": 0.7460509723362706, "ad_au": 1.0986674724161318,
+          "moid_earth_au": 0.00010792914778217588, "orbit_type": "Aten", "is_pha": true,
+          "solution": "ke1"
+        },
+        "ssocard": { "epoch_jd": 2461200.5, "a_au": 0.92235922, "e": 0.19114923, "…": "… same 10 fields as orbit" }
+      },
+      "orbit_comparison": {
+        "compared": ["sbdb", "esa", "ssocard"],
+        "same_epoch": true,
+        "spread": {
+          "a_au": 2.38e-9, "e": 5.53e-9, "i_deg": 4.00e-6, "node_deg": 2.24e-5,
+          "peri_deg": 3.33e-5, "period_days": 1.25e-6, "mean_anomaly_deg": 2.27e-5
+        },
+        "worst": { "field": "peri_deg", "relative": 9.25e-8 }
+      },
       "impact_risk": null,
-      "sources": { "sbdb": "ok", "ssocard": "ok", "sentry": "not_found" },
-      "links": { "jpl": "https://…", "ssocard": "https://…" }
+      "sources": { "sbdb": "ok", "ssocard": "ok", "sentry": "not_found", "esa": "ok" },
+      "links": { "jpl": "https://…", "ssocard": "https://…", "esa": "https://…" }
     },
     "2099 ZZ99": null
   }
@@ -150,9 +172,49 @@ per object (1 day when unknown; not cached while a source is down).
 - A `null` object means neither SBDB nor ssoCard knows it. Every other field
   can be `null` too — small NEOs usually have no taxonomy, diameter or albedo.
 - `orbit` holds heliocentric ecliptic J2000 elements at `epoch_jd` (full
-  precision), enough to propagate the orbit (two-body) client-side.
+  precision), enough to propagate the orbit (two-body) client-side. **Unchanged**
+  by the two fields below: SBDB's elements, or ssoCard's as a fallback when
+  SBDB doesn't know the object — exactly as before ESA existed.
+- `orbits` puts all three catalogues' own elements side by side, each `null`
+  when that source has none. `orbits.sbdb` and `orbits.ssocard` are the exact
+  same arrays as `orbit` falls back between — same shape, 10 fields each.
+  `orbits.esa` adds four fields of its own: `moid_earth_au`, `orbit_type`
+  (ESA's own class — `Aten`, `Apollo`, `Amor`…), `is_pha`, and `solution`
+  (`"ke1"` or `"ke0"` — which ESA file actually answered, see below).
+  ESA's download only resolves a **numbered** object by its number, not by a
+  provisional designation (`des=2004 MN4` finds nothing for Apophis, `des=99942`
+  does) — the server retries once with SBDB's own number when the first
+  attempt (whatever designation this route was called with) comes back empty
+  and SBDB has one, so this mostly self-heals; a direct caller still gets a
+  faster answer asking for the number up front, same as SBDB's own `sstr`.
+- ESA publishes elements as two files per object: `.ke1`, propagated to a
+  common epoch (MJD 61200 = JD 2461200.5), and `.ke0`, at whatever epoch ESA
+  last fit the orbit. The server asks for `.ke1` first and only falls back to
+  `.ke0` when `.ke1` has nothing — `.ke1` is usually at (or very near) the
+  same epoch SBDB and ssoCard already sit at, which is what makes
+  `orbit_comparison` meaningful; `.ke0` can be years away.
+- `orbit_comparison` is `null` when fewer than two sources have elements,
+  otherwise `same_epoch` (see below), `spread` (max − min across the sources
+  that publish each field; `null` per field when fewer than two of the
+  *present* sources have it) and `worst` (the field with the largest
+  **relative** deviation — spread ÷ |mean|, spread ÷ 360 for angles, which
+  have no natural zero). Angles are compared **wrapped**: two nodes at
+  0.0005° and 359.9995° are 0.001° apart, not 359.999°.
+- `same_epoch` is `true` only when every compared source's `epoch_jd` agrees
+  to within ~86 s. `mean_anomaly_deg` — the one element that moves day by
+  day — is in `spread` **only** when `same_epoch` is `true`; otherwise it's
+  `null` even if every source happens to publish it, because comparing it
+  across epochs doesn't measure a disagreement, it measures the orbit having
+  moved. Measured on this same Apophis sheet: at the shared epoch (`.ke1`
+  above) every field's spread sits at 1e-6–1e-9 relative; swap in ESA's
+  `.ke0` instead (8 years earlier) and `a_au` alone jumps to a 2e-4 spread
+  (~2e-4 relative) — not a bigger disagreement, just a bigger epoch gap.
 - `impact_risk`, when the object is monitored by Sentry:
   `{probability, palermo_cum, palermo_max, torino_max, n_impacts, range}`.
+- `sources.esa` and `links.esa` follow the same `"ok"`/`"not_found"`/`"unavailable"`
+  convention as the other three, but ESA never counts toward the "don't cache
+  an incomplete sheet" rule above, and never makes this route answer HTTP 502
+  on its own — it's a bonus comparison point the sheet doesn't depend on.
 - HTTP 502 only when both SBDB and ssoCard are unreachable.
 
 ## `GET /api/solar-system/positions?body=mars` (ou `body=sun`)
@@ -437,22 +499,45 @@ the moons of planets a visitor has actually centred on, before anyone asks.
 
 ## `GET /api/apod`
 
-Cached 24h server-side (one NASA call per day regardless of client traffic).
+Cached 24h server-side (one upstream call per day regardless of client traffic).
+
+**Source changed on 2026-09-30, response shape did not.** NASA moved APOD from
+`apod.nasa.gov` to `science.nasa.gov/apod` and left the old hostname serving a
+certificate valid only for `*.go-vip.co`, so every URL the legacy API returned is
+refused by any client that validates certificates. This route now reads
+science.nasa.gov's WordPress REST API through `ApodClient`. Two consequences worth
+knowing:
+
+- **It costs no API key.** APOD no longer spends the shared `DEMO_KEY` budget;
+  NeoWs, inside `/api/neo`, is the only route that still does.
+- **The image host is `assets.science.nasa.gov`**, which resizes on demand — so
+  `url` and `hd_url` are the same photograph at two widths rather than two
+  separate files.
 
 ```json
 {
-  "title": "A Plane Lunar Eclipse",
-  "date": "2026-09-01",
-  "explanation": "…",
+  "title": "Arp 78: Peculiar Galaxy in Aries",
+  "date": "2026-09-30",
+  "explanation": "Peculiar spiral galaxy Arp 78 is found within the boundaries …",
   "media_type": "image",
-  "url": "https://apod.nasa.gov/apod/image/2608/PlaneEclipse_Ferreira_1059.jpg",
-  "hd_url": "https://apod.nasa.gov/apod/image/2608/PlaneEclipse_Ferreira_1059.jpg"
+  "url": "https://assets.science.nasa.gov/dynamicimage/assets/science/cds/apod/apod/2026/october/NGC772_Robert_Eder.jpg?w=960&fit=clip",
+  "hd_url": "https://assets.science.nasa.gov/dynamicimage/assets/science/cds/apod/apod/2026/october/NGC772_Robert_Eder.jpg?w=2400&fit=clip"
 }
 ```
 
-`media_type` can be `"image"` or `"video"` — a video APOD's `url` is a
-YouTube/Vimeo embed link, not a direct media file; `hd_url` is `null` for
-videos.
+- `url` is the panel-sized image (960 px wide, ~59 kB) and `hd_url` the same frame
+  at 2400 px (~242 kB). Both carry `?w=&fit=clip`; ask for another width by
+  changing `w` if a client needs one.
+- `media_type` is **always `"image"`** since 2026-09-30. The new source carries no
+  reliable media type, so on a day whose APOD is a video the `url` is the poster
+  frame rather than an embed link. `hd_url` is therefore never `null`. The legacy
+  API did distinguish videos; that is the one capability lost in the move, and it
+  is in `docs/agent/backlog.md`.
+- `explanation` is the astronomer's text only. The legacy field also carried the
+  site's own banners (912 characters against 762 for 2026-09-29, the difference
+  being submission and migration notices); those are stripped here.
+- HTTP 502 when the upstream is unreachable, its answer is not JSON, or no APOD
+  entry appears among the newest articles.
 
 ## Notes for the Unity client (not built yet)
 
