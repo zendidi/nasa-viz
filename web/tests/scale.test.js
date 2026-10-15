@@ -24,6 +24,11 @@ import {
   lerpLog,
   moonRadius,
   moonSystemCurve,
+  NEO_FLOOR_PX,
+  NEO_FLOOR_SPREAD_PX,
+  NEO_FLOOR_SIZE_SPREAD,
+  neoFloorFactor,
+  neoFloorPx,
   neoRadius,
   neoReadableRadius,
   orbitingCurve,
@@ -303,6 +308,43 @@ describe('neoRadius', () => {
 
   it('coincide avec le rayon reel (diametre / 2 converti) a t = 1', () => {
     expect(neoRadius(0.5, 1)).toBeCloseTo((0.5 / 2) * KM_TO_UNITS, 12)
+  })
+})
+
+describe('neoFloorPx', () => {
+  it('garde le plancher plein tant que le nuage est large a l ecran', () => {
+    expect(neoFloorPx(NEO_FLOOR_SPREAD_PX.wide)).toBeCloseTo(NEO_FLOOR_PX.max, 12)
+    expect(neoFloorPx(5000)).toBeCloseTo(NEO_FLOOR_PX.max, 12)
+  })
+
+  it('descend a un point de 1 px de diametre, jamais en dessous, une fois le nuage serre', () => {
+    expect(NEO_FLOOR_PX.min * 2).toBe(1)
+    expect(neoFloorPx(NEO_FLOOR_SPREAD_PX.tight)).toBeCloseTo(NEO_FLOOR_PX.min, 12)
+    expect(neoFloorPx(1)).toBeCloseTo(NEO_FLOOR_PX.min, 12)
+    expect(neoFloorPx(0)).toBeCloseTo(NEO_FLOOR_PX.min, 12)
+  })
+
+  it('decroit quand on dezoome', () => {
+    const spreads = [400, 200, 100, 50, 20]
+    const floors = spreads.map(neoFloorPx)
+    for (let i = 1; i < floors.length; i++) expect(floors[i]).toBeLessThanOrEqual(floors[i - 1])
+    expect(floors[2]).toBeLessThan(NEO_FLOOR_PX.max)
+    expect(floors[2]).toBeGreaterThan(NEO_FLOOR_PX.min)
+  })
+})
+
+describe('neoFloorFactor', () => {
+  it('va de -25 % pour le plus petit du flux a +25 % pour le plus gros', () => {
+    expect(neoFloorFactor(0.01, 0.01, 1)).toBeCloseTo(1 - NEO_FLOOR_SIZE_SPREAD, 12)
+    expect(neoFloorFactor(1, 0.01, 1)).toBeCloseTo(1 + NEO_FLOOR_SIZE_SPREAD, 12)
+  })
+
+  it('se place en log du diametre : la moyenne geometrique tombe sur la taille actuelle', () => {
+    expect(neoFloorFactor(0.1, 0.01, 1)).toBeCloseTo(1, 12)
+  })
+
+  it('vaut 1 quand le flux n a qu une taille', () => {
+    expect(neoFloorFactor(0.2, 0.2, 0.2)).toBe(1)
   })
 })
 

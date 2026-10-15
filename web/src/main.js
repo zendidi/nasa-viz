@@ -204,6 +204,8 @@ let focusPlanet = null
 
 /** Venus shows its cloud deck by default; ticked, the radar surface under it (planets panel). */
 let venusSurface = false
+// The distance rings, on by default; the view panel's "Cercles" box.
+let ringsEnabled = true
 
 const focusPositionKm = () => {
   if (focusPlanet) return focusPlanet.positionKm
@@ -678,7 +680,7 @@ function applyScale(nowSeconds) {
     )
   }
 
-  distanceRings.group.visible = t > 0.001
+  distanceRings.group.visible = ringsEnabled && t > 0.001
   for (const ring of distanceRings.list) {
     ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t, focusOf().curve))
   }
@@ -707,13 +709,22 @@ const panels = createPanels({
     focus: (id) => setFocus(id),
     recenter: () => recenterCamera(),
     deselect: () => neoScene.select(null),
-    modalClosed: () => {
+    detailClosed: () => {
       modalNeo = null
+    },
+    rings: (enabled) => {
+      ringsEnabled = enabled
     },
     venusSurface: (enabled) => {
       venusSurface = enabled
       planets.setVenusSurface(enabled)
       renderPlanetsPanel()
+    },
+    points: (enabled) => {
+      neoScene.setPoints(enabled)
+      // The sheet describes a point that is no longer on screen.
+      if (!enabled) panels.closeDetail()
+      if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
     },
     allOrbits: (enabled) => {
       neoScene.setAllOrbits(enabled)
@@ -782,7 +793,7 @@ function renderViewPanel() {
   panels.renderView(focusId, planets.focusableIds())
 }
 
-/** The NEO the modal is showing, so it can be re-rendered when its sheet arrives. */
+/** The NEO the detail panel is showing, so it can be re-rendered when its sheet arrives. */
 let modalNeo = null
 
 function showNeoModal(neo) {
@@ -805,7 +816,7 @@ function renderNeoModal() {
     ? `${(details.diameter_km.value * 1000).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} m <span class="muted">(mesuré)</span>`
     : `${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km <span class="muted">(estimé d'après sa luminosité)</span>`
 
-  panels.openModal(
+  panels.openDetail(
     neo.name,
     `
     <p><strong>Désignation</strong> ${escapeHtml(designation)}</p>
@@ -917,7 +928,7 @@ let ringLabels = []
 
 function rebuildRingLabels() {
   for (const label of ringLabels) label.el.remove()
-  ringLabels = distanceRings.list.map((ring) => ({ el: labels.create(ring.label, 'ring'), at: new THREE.Vector3() }))
+  ringLabels = distanceRings.list.map((ring) => ({ el: labels.create(ring.label, ring.absolute ? 'ring absolute' : 'ring'), at: new THREE.Vector3() }))
 }
 
 distanceRings.rebuild(focusOf().rings)

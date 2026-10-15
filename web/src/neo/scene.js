@@ -30,7 +30,7 @@ import {
 } from '../orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
 import { neoEllipsesVisible } from '../focus.js'
-import { neoRadius } from '../scale.js'
+import { NEO_FLOOR_PX, neoFloorFactor, neoFloorPx, neoRadius } from '../scale.js'
 
 // Unit spheres shared by every NEO, scaled per frame in update().
 const neoGeometry = new THREE.SphereGeometry(1, 10, 10)
@@ -42,10 +42,9 @@ const neoMaterials = {
 }
 const neoHitMaterial = new THREE.MeshBasicMaterial({ visible: false })
 
-// Floors on a NEO's on-screen radius, in pixels: at true scale every one of
-// them is sub-pixel, and the invisible hit sphere is wider still so small ones
-// stay clickable without inflating what is drawn.
-const NEO_MIN_RADIUS_PX = 2.5
+// Floor on the invisible hit sphere's on-screen radius, in pixels: wider than
+// the drawn dot (whose own floor shrinks as you zoom out, `neoFloorPx`) so small
+// ones stay clickable without inflating what is drawn.
 const NEO_HIT_MIN_RADIUS_PX = 8
 
 const DESIGNATION_PATTERN = /^[A-Za-z0-9 /-]{1,40}$/
@@ -545,6 +544,11 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   }
 
   let allOrbitsEnabled = false
+  // The panel's "Points dans la scène" box. It commands the orbits box: with
+  // the points hidden there is nothing for an orbit to belong to, so the
+  // bundles, the selected NEO's drawings and picking all go with them — but
+  // the orbits choice itself is kept and comes back with the points.
+  let pointsEnabled = true
   // Raised whenever the elements behind the bundles changed — a new feed, or a
   // batch of sheets landing — and acted on lazily, in update(): rebuilding
   // while the box is unticked would re-sample a hundred ellipses for nothing.
@@ -576,7 +580,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     // geocentric one squeezes the whole solar system into seven scene units
     // (19,1 to 26,2, measured in scene/planets.js). See `neo-ellipse-pivot` in
     // docs/agent/backlog.md.
-    allOrbitsGroup.visible = allOrbitsEnabled && neoEllipsesVisible(focusId(), t)
+    allOrbitsGroup.visible = pointsEnabled && allOrbitsEnabled && neoEllipsesVisible(focusId(), t)
     if (!allOrbitsGroup.visible) return
     if (allOrbitsStale) buildAllOrbits()
     for (const trace of Object.values(allOrbits)) traces.update(trace, t)
@@ -584,19 +588,59 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
 
   // --- per-frame placement -------------------------------------------------
 
+  const earthPlaced = new THREE.Vector3()
+  const ORIGIN_KM = new THREE.Vector3()
+  const spreads = []
+
+  /**
+   * The dots' pixel floor for this frame, from the cloud's spread on screen:
+   * the median placed NEO's distance to the placed Earth, in pixels at the
+   * Earth. Measured on placed positions, so it holds for every pivot and every
+   * scale — NEOs are geocentric whatever the scene is centred on.
+   */
+  function floorPx(t) {
+    placeKm(earthPlaced, ORIGIN_KM, t)
+    spreads.length = 0
+    for (const entry of entries) if (entry.source) spreads.push(entry.group.position.distanceTo(earthPlaced))
+    if (spreads.length === 0) return neoFloorPx(Infinity)
+    spreads.sort((a, b) => a - b)
+    return neoFloorPx(spreads[spreads.length >> 1] / minRadiusAt(earthPlaced, 1))
+  }
+
   /** Places every point at the current instant and scale, then the two drawings. */
   function update(nowSeconds, t) {
     for (const entry of entries) {
       updatePositionKm(entry, nowSeconds)
       entry.group.visible = entry.source !== null
+      if (entry.source) placeKm(entry.group.position, entry.positionKm, t)
+    }
+    const floor = floorPx(t)
+    let minKm = Infinity
+    let maxKm = 0
+    for (const entry of entries) {
       if (!entry.source) continue
-      placeKm(entry.group.position, entry.positionKm, t)
-      const radius = Math.max(neoRadius(entry.diameterKm, t), minRadiusAt(entry.group.position, NEO_MIN_RADIUS_PX))
+      minKm = Math.min(minKm, entry.diameterKm)
+      maxKm = Math.max(maxKm, entry.diameterKm)
+    }
+    for (const entry of entries) {
+      if (!entry.source) continue
+      // Never under the 1 px dot, even for the smallest at the -25 % end.
+      const px = Math.max(NEO_FLOOR_PX.min, floor * neoFloorFactor(entry.diameterKm, minKm, maxKm))
+      const radius = Math.max(neoRadius(entry.diameterKm, t), minRadiusAt(entry.group.position, px))
       entry.mesh.scale.setScalar(radius)
       entry.hit.scale.setScalar(Math.max(radius, minRadiusAt(entry.group.position, NEO_HIT_MIN_RADIUS_PX)))
     }
-    updateTrajectory(nowSeconds, t)
-    updateHeliocentricOrbit(t)
+    group.visible = pointsEnabled
+    if (pointsEnabled) {
+      updateTrajectory(nowSeconds, t)
+      updateHeliocentricOrbit(t)
+    } else {
+      trajectoryLine.visible = false
+      trajectoryArrow.visible = false
+      approachMarker.visible = false
+      heliocentricGroup.visible = false
+      orbitBuiltFrom = null
+    }
     updateAllOrbits(t)
   }
 
@@ -743,8 +787,14 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
      * than from what is drawn: the panel is redrawn the moment the box is
      * ticked, one frame before the bundles exist.
      */
+    /** The NEO points on or off — and with them every NEO drawing (see pointsEnabled). */
+    setPoints(enabled) {
+      pointsEnabled = enabled
+      if (!enabled) select(null)
+    },
     allOrbitsStatus() {
       return {
+        points: pointsEnabled,
         enabled: allOrbitsEnabled,
         available: entries.filter((entry) => ellipseElements(entry.designation)).length,
         total: entries.length,
