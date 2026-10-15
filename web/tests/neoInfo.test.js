@@ -9,6 +9,7 @@ import {
   detailsBlockHtml,
   escapeHtml,
   neoTooltipSuffix,
+  orbitComparisonHtml,
   sourcesBlockHtml,
   sourcesPanelHtml,
   taxonomyKey,
@@ -669,6 +670,142 @@ describe('detailsBlockHtml', () => {
     expect(html).toContain('Palerme -2,15')
     expect(html).toContain('Turin 1')
     expect(html).toContain('2029–2060')
+  })
+})
+
+// Ce bloc n'existe que pour une raison : montrer ce que trois equipes tirent
+// des MEMES observations. Les tests epinglent donc ce que la mise en forme
+// promet -- une colonne par catalogue present, une colonne d'ecart, et aucune
+// anomalie moyenne (les epoques ne coincident pas, la comparer ne mesurerait
+// que les epoques) -- et non les chiffres, qui viennent du backend.
+describe('orbitComparisonHtml', () => {
+  const ELEMENTS = {
+    epoch_jd: 2461200.5,
+    a_au: 0.92256302,
+    e: 0.19146455,
+    i_deg: 3.3368783,
+    node_deg: 204.0561457,
+    peri_deg: 126.6782196,
+    mean_anomaly_deg: 265.087447,
+    period_days: 323.662583,
+  }
+
+  it('rend une chaine vide sans le champ orbits (fiche d avant la comparaison d orbites)', () => {
+    expect(orbitComparisonHtml({ orbits: undefined })).toBe('')
+  })
+
+  it('rend une chaine vide quand aucun catalogue n a d elements', () => {
+    expect(orbitComparisonHtml({ orbits: { sbdb: null, esa: null, ssocard: null } })).toBe('')
+  })
+
+  it('n affiche que les catalogues presents', () => {
+    const html = orbitComparisonHtml({
+      orbits: { sbdb: ELEMENTS, esa: ELEMENTS, ssocard: null },
+      orbit_comparison: { compared: ['sbdb', 'esa'], spread: { a_au: 1.2e-7 }, worst: null },
+    })
+    expect(html).toContain('JPL SBDB')
+    expect(html).toContain('ESA NEOCC')
+    expect(html).not.toContain('IMCCE')
+  })
+
+  it('omet l anomalie moyenne, et dit pourquoi', () => {
+    const html = orbitComparisonHtml({
+      orbits: { sbdb: ELEMENTS, esa: ELEMENTS },
+      orbit_comparison: { compared: ['sbdb', 'esa'], spread: { a_au: 0 }, worst: null },
+    })
+    expect(html).not.toContain('265,087')
+    // Son absence est expliquee, pas silencieuse.
+    expect(html).toMatch(/époques/)
+  })
+
+  // Le fait mesure derriere les deux tests qui suivent (Apophis, 2026-10-12) :
+  // a epoque commune les catalogues s'ecartent de ~1e-7 sur a, alors que la
+  // solution ESA a sa propre epoque (huit ans en arriere) s'en ecarte de ~2e-4.
+  // Ces trois ordres de grandeur ne sont PAS un desaccord, c'est la derive
+  // seculaire de l'orbite entre les deux dates. Le bloc doit donc dire laquelle
+  // des deux choses sa colonne d'ecart mesure, sinon il annonce un faux
+  // desaccord -- et c'est le seul endroit ou le lecteur peut l'apprendre.
+  it('a epoque commune : promet un vrai desaccord, et affiche l anomalie moyenne', () => {
+    const html = orbitComparisonHtml({
+      orbits: { sbdb: ELEMENTS, esa: ELEMENTS },
+      orbit_comparison: {
+        compared: ['sbdb', 'esa'],
+        same_epoch: true,
+        spread: { a_au: 1e-7, mean_anomaly_deg: 3e-5 },
+        worst: null,
+      },
+    })
+    expect(html).toContain('M (°)')
+    expect(html).toContain('265,0874')
+    expect(html).toContain('Les époques coïncident')
+    expect(html).not.toContain('mêle')
+  })
+
+  it('a epoques differentes : previent que l ecart est contamine par la derive', () => {
+    const html = orbitComparisonHtml({
+      orbits: { sbdb: ELEMENTS, esa: { ...ELEMENTS, epoch_jd: 2458368.425 } },
+      orbit_comparison: { compared: ['sbdb', 'esa'], same_epoch: false, spread: { a_au: 2e-4 }, worst: null },
+    })
+    expect(html).toContain('mêle')
+    expect(html).not.toContain('M (°)')
+    // Les deux epoques restent lisibles : c'est la ligne qui justifie l'avertissement.
+    expect(html).toContain('2018-09-06')
+    expect(html).toContain('2026-06-09')
+  })
+
+  it('annonce qu il n y a rien a comparer avec un seul catalogue', () => {
+    const html = orbitComparisonHtml({ orbits: { sbdb: ELEMENTS }, orbit_comparison: null })
+    expect(html).toContain('Un seul catalogue')
+  })
+
+  it('rend l epoque en date lisible plutot qu en jour julien', () => {
+    const html = orbitComparisonHtml({ orbits: { sbdb: ELEMENTS }, orbit_comparison: null })
+    // JD 2461200,5 = 2026-06-09T00:00Z, conversion externe au code teste.
+    expect(html).toContain('2026-06-09')
+    expect(html).not.toContain('2461200')
+  })
+
+  it('ecrit l ecart en notation scientifique, lisible meme a 1e-7', () => {
+    const html = orbitComparisonHtml({
+      orbits: { sbdb: ELEMENTS, esa: ELEMENTS },
+      orbit_comparison: { compared: ['sbdb', 'esa'], spread: { a_au: 1.2e-7, e: 0 }, worst: null },
+    })
+    // Arrondi a 6 decimales, un ecart de 1,2e-7 sur a s'afficherait "0,000000".
+    expect(html).toContain('1,2·10<sup>-7</sup>')
+    expect(html).toContain('<td class="spread">0</td>')
+  })
+
+  it('met un tiret, jamais NaN ni undefined, pour un champ qu une source ne publie pas', () => {
+    const partial = { ...ELEMENTS, period_days: null, epoch_jd: null }
+    const html = orbitComparisonHtml({
+      orbits: { sbdb: ELEMENTS, esa: partial },
+      orbit_comparison: { compared: ['sbdb', 'esa'], spread: { period_days: null }, worst: null },
+    })
+    expect(html).not.toMatch(/NaN/)
+    expect(html).not.toContain('undefined')
+    expect(html).toContain('—')
+  })
+
+  it('est inclus dans la fiche des que le backend envoie des orbites', () => {
+    const details = {
+      orbit_class: null,
+      taxonomy: null,
+      diameter_km: null,
+      albedo: null,
+      absolute_magnitude_h: null,
+      moid_earth_au: null,
+      rotation_period_h: null,
+      mass_kg: null,
+      density_kg_m3: null,
+      impact_risk: null,
+      links: { jpl: 'https://example.test/jpl', ssocard: null, esa: 'https://example.test/esa' },
+      orbits: { sbdb: ELEMENTS, esa: ELEMENTS, ssocard: null },
+      orbit_comparison: { compared: ['sbdb', 'esa'], spread: { a_au: 0 }, worst: null },
+    }
+    const html = detailsBlockHtml(details, { loading: false, error: null })
+    expect(html).toContain('Orbite selon les catalogues')
+    expect(html).toContain('href="https://example.test/esa"')
+    expect(html).not.toContain('undefined')
   })
 })
 

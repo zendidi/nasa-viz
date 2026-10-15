@@ -16,9 +16,13 @@ import { SCALE_PRESETS, SCALE_STEPS } from '../scale.js'
 /**
  * Wording of the "point de vue" panel. The two frames of reference get a line
  * each because each one changes what the scene *draws* of a NEO; a planet gets a
- * generated line, since from a planet the NEO drawings are simply not available
+ * generated line, since from a planet the NEO drawings are still not available
  * — the week-long trajectory is geocentric and the full ellipse heliocentric, so
  * neo/scene.js draws neither (it tests for 'earth' and 'sun' by name).
+ *
+ * What a planet's line *can* now promise, since 2026-10-12, is the orbits: the
+ * planetary orbits are drawn from every pivot, the centred planet's own
+ * included, so that is what its line says instead of nothing.
  */
 const VIEW_DESCRIPTIONS = {
   earth: 'Scène centrée sur la Terre · trajectoire de la semaine du NEO sélectionné',
@@ -26,7 +30,8 @@ const VIEW_DESCRIPTIONS = {
 }
 
 const viewDescription = (id) =>
-  VIEW_DESCRIPTIONS[id] ?? `Scène centrée sur ${FOCUSES[id].label} · distances à l'échelle de son orbite`
+  VIEW_DESCRIPTIONS[id] ??
+  `Scène centrée sur ${FOCUSES[id].label} · son orbite et celles des autres planètes`
 const NEO_HEADING = '<h2>Astéroïdes proches (NEO)</h2>'
 const PLANETS_HEADING = '<h2>Planètes</h2>'
 const ISS_HEADING = '<h2><span class="dot dot-iss"></span>ISS</h2>'
@@ -55,7 +60,8 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  * @param {HTMLElement} options.wheelTarget the canvas — Shift+wheel is only a
  *                                          scale step when it happens over it
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
- *                                          focus, recenter, deselect, modalClosed
+ *                                          focus, recenter, deselect, modalClosed,
+ *                                          allOrbits
  */
 /**
  * The moons line of the planets panel. Only ever shown while a planet is the
@@ -200,6 +206,25 @@ export function createPanels({ app, wheelTarget, on }) {
     #iss-panel h2 .dot { margin-bottom: 2px; }
     .dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
     .legend { font-size: 12px; opacity: 0.8; }
+    /* The one control in a side panel, so it says so by being clickable where
+       everything around it is text: pointer cursor on the whole label, and the
+       box aligned on the baseline of the line it reads with.
+
+       pointer-events: auto is not cosmetic, it is what makes the box clickable
+       at all: #ui above is click-through so the scene can be dragged from behind
+       the panels, so every real control has to opt back in — the buttons do it
+       in their own rule. On the label rather than on the paragraph, so the empty
+       width to the right of the text stays click-through.
+
+       Without it (2026-10-12) the checkbox was completely inert: no toggle, no
+       change event, nothing wrong anywhere downstream to find.
+
+       NB : no backticks anywhere in this stylesheet — it is a JS template
+       literal, and one backtick in a comment ends the string. */
+    .neo-toggle { font-size: 12px; }
+    .neo-toggle label { cursor: pointer; pointer-events: auto; }
+    .neo-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
+    .neo-toggle .muted { margin-left: 4px; }
     /* Seven swatches on one line would push the whole left column out to ~420 px
        and under the APOD thumbnail; only this legend is capped, so the NEO one
        keeps the width it has always had. */
@@ -247,6 +272,17 @@ export function createPanels({ app, wheelTarget, on }) {
     #modal h3 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
     #modal p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
     #modal .muted { opacity: 0.6; }
+    /* Three catalogues plus a spread column, in a 480 px modal: the numbers are
+       tabular-aligned so the eye can see which digit stops matching, and the
+       element names stay left while the figures go right. */
+    .orbit-compare { width: 100%; border-collapse: collapse; margin: 6px 0 2px;
+                     font-size: 12px; font-variant-numeric: tabular-nums; }
+    .orbit-compare th, .orbit-compare td { padding: 2px 4px; text-align: right; }
+    .orbit-compare thead th, .orbit-compare tbody th { font-weight: 600; opacity: 0.7; }
+    .orbit-compare tbody th { text-align: left; white-space: nowrap; }
+    .orbit-compare thead th { border-bottom: 1px solid rgba(79,168,255,.35); }
+    .orbit-compare .spread { color: #9fd2ff; border-left: 1px solid rgba(79,168,255,.25); }
+    .orbit-compare sup { font-size: 9px; }
     #modal .warn { color: #ffbf66; opacity: 1; }
     #modal a { color: #7fe0ff; }
     #modal .credits { margin-top: 14px; font-size: 11px; }
@@ -303,8 +339,32 @@ export function createPanels({ app, wheelTarget, on }) {
     `
   }
 
+  /**
+   * The "toutes les orbites" box. Three things about it:
+   *
+   * - it is **inside** the template, like `#neo-positions-status` and for the
+   *   same reason: `renderNeo` replaces the panel's whole `innerHTML`, so an
+   *   element appended next to it would be wiped on the next feed or sheet
+   *   (docs/agent/gotchas.md);
+   * - which means its `checked` must be re-stated from the scene's own state on
+   *   every render, never read back from the DOM;
+   * - and its listener is delegated from the panel once (see below), because
+   *   the input this markup creates is a new element each time.
+   */
+  function allOrbitsLine({ enabled, available, total } = {}) {
+    if (!total) return ''
+    const count = available === total ? `${total}` : `${available}/${total}`
+    return `
+      <p class="neo-toggle">
+        <label><input type="checkbox" id="neo-all-orbits"${enabled ? ' checked' : ''}>
+        Orbites de tous les NEO (${count})</label>
+        <span class="muted">vue héliocentrée</span>
+      </p>
+    `
+  }
+
   /** @param {{color: string, label: string}[]} legend one swatch per colour in play */
-  function renderNeo(feed, error, fetchedAt, legend = []) {
+  function renderNeo(feed, error, fetchedAt, legend = [], allOrbits = undefined) {
     if (error) {
       neoPanel.innerHTML = `${NEO_HEADING}<p class="error">${error}</p>`
       return
@@ -319,11 +379,18 @@ export function createPanels({ app, wheelTarget, on }) {
       <p>${hazardous} potentiellement dangereux</p>
       ${sourcesPanelHtml(feed)}
       <p id="neo-positions-status" class="muted"></p>
+      ${allOrbitsLine(allOrbits)}
       <p class="legend">${swatches.join(' &nbsp;')}</p>
       ${formatUpdatedAt(fetchedAt, { withDate: true })}
     `
     renderNeoPositions()
   }
+
+  // Delegated, and bound once: the checkbox itself is recreated by every
+  // renderNeo(), so a listener on the input would die with the first redraw.
+  neoPanel.addEventListener('change', (event) => {
+    if (event.target.id === 'neo-all-orbits') on.allOrbits(event.target.checked)
+  })
 
   let neoPositions = { known: 0, total: 0, loading: false }
 

@@ -171,6 +171,115 @@ export function sourcesBlockHtml(neo) {
 const fmt = (value, digits = 2) => value.toLocaleString('fr-FR', { maximumFractionDigits: digits })
 
 /**
+ * The catalogues' orbital elements, side by side (`/api/neo/details`
+ * `orbits` + `orbit_comparison`).
+ *
+ * Transposed on purpose — elements down, catalogues across. One row per source
+ * is the natural layout, but it needs eight columns in a 480 px modal; this way
+ * five suffice, and the comparison the block exists for reads along a row.
+ *
+ * Two things the numbers won't say on their own, so the block says them:
+ *
+ * - **the spread column is the point.** The three catalogues fit their orbits to
+ *   the same Minor Planet Center observations, so the elements agree to several
+ *   decimals and the table reads as identical rows; the spread is the only
+ *   column that moves;
+ * - **whether the epochs coincide decides what the spread even means**, which is
+ *   why `same_epoch` drives the wording and not just a footnote. Measured on
+ *   Apophis: at a common epoch the catalogues disagree by about 1·10⁻⁷ on a,
+ *   while ESA's own-epoch solution (eight years back) differs by 2·10⁻⁴ — three
+ *   orders of magnitude, nearly all of it the orbit's own secular drift between
+ *   the two dates rather than any disagreement. So when the epochs differ, this
+ *   block says the spread is contaminated instead of presenting it as a
+ *   disagreement, and drops the mean anomaly — the element that drift moves
+ *   most, and the one that becomes worth reading the moment the epochs agree.
+ */
+const ORBIT_SOURCE_LABELS = { sbdb: 'JPL SBDB', esa: 'ESA NEOCC', ssocard: 'IMCCE' }
+
+/** Element rows: key, heading, and how many decimals the value is worth. */
+const ORBIT_FIELDS = [
+  ['a_au', 'a (ua)', 6],
+  ['e', 'e', 6],
+  ['i_deg', 'i (°)', 4],
+  ['node_deg', 'Ω (°)', 4],
+  ['peri_deg', 'ω (°)', 4],
+  ['period_days', 'période (j)', 3],
+]
+
+/** JD → calendar date: an epoch written 2 461 200,5 tells a reader nothing. */
+function julianDateLabel(jd) {
+  if (typeof jd !== 'number' || !Number.isFinite(jd)) return '—'
+  return new Date((jd - 2440587.5) * 86_400_000).toISOString().slice(0, 10)
+}
+
+/** A spread, which is always small: 1,2·10⁻⁷ rather than 0,000000. */
+function spreadLabel(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  if (value === 0) return '0'
+  const [mantissa, exponent] = value.toExponential(1).split('e')
+  return `${mantissa.replace('.', ',')}·10<sup>${Number(exponent)}</sup>`
+}
+
+/** What the spread is worth, in words — see the block comment above. */
+function comparisonNote(sources, comparison) {
+  // One catalogue alone is not a comparison. The table is still worth drawing —
+  // it is the only place the elements are written out — but the promise has to
+  // shrink with it.
+  if (sources.length < 2) {
+    return '<p class="muted">Un seul catalogue a publié des éléments pour cet objet : rien à comparer.</p>'
+  }
+  const base = `Éléments héliocentriques, écliptique J2000 — les mêmes observations (Minor Planet
+    Center), ajustées par des équipes différentes.`
+  if (comparison?.same_epoch) {
+    return `<p class="muted">${base} Les époques coïncident, donc la colonne d'écart est bien ce que
+      leurs orbites ont de différent, anomalie moyenne comprise.</p>`
+  }
+  return `<p class="muted">${base} Mais les époques ne coïncident pas (dernière ligne), et un écart
+    de dates fait dériver tous les éléments : la colonne d'écart mêle donc le désaccord des
+    catalogues et l'évolution de l'orbite entre ces deux dates. L'anomalie moyenne est omise — elle
+    ne mesurerait plus que l'écart de dates.</p>`
+}
+
+export function orbitComparisonHtml(details) {
+  const orbits = details.orbits
+  if (!orbits) return ''
+  const sources = Object.keys(ORBIT_SOURCE_LABELS).filter((key) => orbits[key])
+  if (sources.length === 0) return ''
+
+  const comparison = details.orbit_comparison
+  const spread = comparison?.spread ?? {}
+  // The mean anomaly earns a row only at a common epoch, where it stops
+  // measuring the dates and starts measuring the orbits — the same condition
+  // under which the backend fills its spread.
+  const fields = comparison?.same_epoch ? [...ORBIT_FIELDS, ['mean_anomaly_deg', 'M (°)', 4]] : ORBIT_FIELDS
+
+  const head = sources.map((key) => `<th>${ORBIT_SOURCE_LABELS[key]}</th>`).join('')
+  const body = fields
+    .map(([field, label, digits]) => {
+      const cells = sources.map((key) => {
+        const value = orbits[key][field]
+        return `<td>${typeof value === 'number' ? fmt(value, digits) : '—'}</td>`
+      })
+      return `<tr><th>${label}</th>${cells.join('')}<td class="spread">${spreadLabel(spread[field])}</td></tr>`
+    })
+    .join('')
+  const epochs = sources.map((key) => `<td>${julianDateLabel(orbits[key].epoch_jd)}</td>`).join('')
+  const note = comparisonNote(sources, comparison)
+
+  return `
+    <h3>Orbite selon les catalogues</h3>
+    <table class="orbit-compare">
+      <thead><tr><th></th>${head}<th class="spread">écart</th></tr></thead>
+      <tbody>
+        ${body}
+        <tr><th>époque</th>${epochs}<td class="spread">—</td></tr>
+      </tbody>
+    </table>
+    ${note}
+  `
+}
+
+/**
  * "Fiche" block from /api/neo/details.
  *
  * @param {object|null|undefined} details undefined = not loaded yet, null = unknown to the catalogues
@@ -220,6 +329,7 @@ export function detailsBlockHtml(details, { loading, error }) {
   const links = [
     `<a href="${escapeHtml(details.links.jpl)}" target="_blank" rel="noopener">JPL</a>`,
     details.links.ssocard ? `<a href="${escapeHtml(details.links.ssocard)}" target="_blank" rel="noopener">SsODNet</a>` : null,
+    details.links.esa ? `<a href="${escapeHtml(details.links.esa)}" target="_blank" rel="noopener">ESA NEOCC</a>` : null,
   ].filter(Boolean)
 
   return `
@@ -227,6 +337,7 @@ export function detailsBlockHtml(details, { loading, error }) {
     ${rows.join('')}
     ${unknownPhysics ? '<p class="muted">Ni taxonomie ni diamètre mesuré : fréquent pour les petits NEO.</p>' : ''}
     <p class="muted">${links.join(' · ')}</p>
+    ${orbitComparisonHtml(details)}
   `
 }
 

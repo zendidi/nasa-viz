@@ -19,7 +19,15 @@ import * as THREE from 'three'
 import { fetchNeoDetails, fetchNeoPositions } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { NEO_DEFAULT_COLOR, NEO_HAZARD_COLOR, TAXONOMY, taxonomyKey } from '../neoInfo.js'
-import { sampleOrbit, sampleOrbitBetween, orbitApsides, orbitNodes, orbitPosition, julianDate } from '../orbit.js'
+import {
+  sampleOrbit,
+  sampleOrbitBetween,
+  bundleOrbitSamples,
+  orbitApsides,
+  orbitNodes,
+  orbitPosition,
+  julianDate,
+} from '../orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
 import { neoRadius } from '../scale.js'
 
@@ -54,6 +62,29 @@ const ORBIT_ARC_SAMPLES = 120
 const ORBIT_COLOR = 0x7fe0ff
 const ORBIT_DASH_STRIDE = 2 // below the ecliptic: one segment drawn out of this many
 const ORBIT_MARKER_PX = 4
+
+/**
+ * The whole feed's orbits at once — off by default, the user's call
+ * (2026-10-12), because a hundred-odd ellipses is the one drawing here that can
+ * bury everything else.
+ *
+ * Two settings carry the readability, and both are deliberate:
+ *
+ * - **72 samples per orbit, not the selected one's 360.** These lines are
+ *   re-projected every frame like every other trace, and `traces.update` places
+ *   *two* vertices per segment (LineSegments, not a strip), so a 150-object
+ *   feed costs 2 x 72 x 150 ≈ 21 600 placements a frame — already the heaviest
+ *   thing in the loop, and five times that at 360. The figure is counted, not
+ *   measured on screen: there is no browser test on this project, so if the
+ *   scene drags with the box ticked, this constant is the lever;
+ * - **hazardous ones drawn apart, and brighter.** Same reason the planets each
+ *   wear their own colour rather than sharing the NEO cyan: a hundred identical
+ *   lines say nothing about which is which, and PHA is the one distinction this
+ *   view is really about.
+ */
+const ALL_ORBITS_SAMPLES = 72
+const ALL_ORBITS_OPACITY = 0.12
+const ALL_ORBITS_HAZARD_OPACITY = 0.3
 
 /** `neo.designation` from the backend; parsed from the name for feeds cached before that field existed. */
 export function designationOf(neo) {
@@ -334,9 +365,10 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   heliocentricGroup.visible = false
   scene.add(heliocentricGroup)
 
-  const orbitAbove = traces.make(ORBIT_COLOR, 0.8, { parent: heliocentricGroup })
-  const orbitBelow = traces.make(ORBIT_COLOR, 0.55, { parent: heliocentricGroup })
-  const orbitArc = traces.make(0xffffff, 1, { parent: heliocentricGroup }) // recoloured with the NEO
+  const orbitFrame = { parent: heliocentricGroup, frame: 'heliocentric' }
+  const orbitAbove = traces.make(ORBIT_COLOR, 0.8, orbitFrame)
+  const orbitBelow = traces.make(ORBIT_COLOR, 0.55, orbitFrame)
+  const orbitArc = traces.make(0xffffff, 1, orbitFrame) // recoloured with the NEO
 
   function makeOrbitMarker(color, filled) {
     const mesh = new THREE.Mesh(
@@ -360,10 +392,19 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   let orbitBuiltFrom = null
   let orbitApproachKm = null // the approach point, km, scene axes — null if unknown
 
+  /**
+   * Elements of one object, or null when there is no ellipse to sample: the
+   * sheet hasn't landed, or the solution is parabolic/hyperbolic and has no
+   * revolution at all. The single admissibility test for every drawing here.
+   */
+  function ellipseElements(designation) {
+    const orbit = details[designation]?.data?.orbit
+    return orbit && orbit.e >= 0 && orbit.e < 1 && orbit.a_au > 0 ? orbit : null
+  }
+
   /** Elements of the selected NEO, or null while its sheet is missing. */
   function selectedOrbitElements() {
-    const orbit = selected ? details[selected.designation]?.data?.orbit : null
-    return orbit && orbit.e >= 0 && orbit.e < 1 && orbit.a_au > 0 ? orbit : null
+    return selected ? ellipseElements(selected.designation) : null
   }
 
   function buildHeliocentricOrbit(orbit) {
@@ -432,6 +473,63 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     trait plein au-dessus de l'écliptique, pointillé en dessous, arc vif = ±${ORBIT_ARC_DAYS} jours autour de l'approche.</p>`
   }
 
+  // --- the whole feed's orbits at once (opt-in, Sun-centred view only) -------
+  //
+  // Same elements, same compression, same frame as the selected NEO's ellipse —
+  // the only new thing is that all of them share two polylines instead of
+  // getting one each (`bundleOrbitSamples` in orbit.js). Two, not one, because
+  // the hazardous ones are drawn brighter and in their own colour.
+  //
+  // Costs no request: /api/neo/details is already fetched for every object of
+  // the feed, for the point colours and the modal, so the elements are in
+  // localStorage before this is ever switched on.
+
+  const allOrbitsGroup = new THREE.Group()
+  allOrbitsGroup.visible = false
+  scene.add(allOrbitsGroup)
+
+  const allOrbits = {
+    default: traces.make(NEO_DEFAULT_COLOR, ALL_ORBITS_OPACITY, { parent: allOrbitsGroup, frame: 'heliocentric' }),
+    hazard: traces.make(NEO_HAZARD_COLOR, ALL_ORBITS_HAZARD_OPACITY, { parent: allOrbitsGroup, frame: 'heliocentric' }),
+  }
+
+  let allOrbitsEnabled = false
+  // Raised whenever the elements behind the bundles changed — a new feed, or a
+  // batch of sheets landing — and acted on lazily, in update(): rebuilding
+  // while the box is unticked would re-sample a hundred ellipses for nothing.
+  let allOrbitsStale = true
+
+  /** Drawable elements of every object of the feed, split by hazard. */
+  function allOrbitElements() {
+    const split = { default: [], hazard: [] }
+    for (const entry of entries) {
+      const orbit = ellipseElements(entry.designation)
+      if (orbit) split[entry.neo.is_potentially_hazardous ? 'hazard' : 'default'].push(orbit)
+    }
+    return split
+  }
+
+  function buildAllOrbits() {
+    for (const [key, orbits] of Object.entries(allOrbitElements())) {
+      const { points, keepSegment } = bundleOrbitSamples(orbits, ALL_ORBITS_SAMPLES)
+      traces.setAu(allOrbits[key], points, keepSegment)
+    }
+    allOrbitsStale = false
+  }
+
+  function updateAllOrbits(t) {
+    // Heliocentric view only, like the selected NEO's ellipse. Not because
+    // the frame forbids it — since 2026-10-12 it would draw correctly from any
+    // pivot — but because the geocentric view's curve squeezes the whole solar
+    // system into seven scene units (19,1 to 26,2, measured in
+    // scene/planets.js): a hundred ellipses would land on top of each other
+    // there. See `neo-ellipse-pivot` in docs/agent/backlog.md.
+    allOrbitsGroup.visible = allOrbitsEnabled && focusId() === 'sun'
+    if (!allOrbitsGroup.visible) return
+    if (allOrbitsStale) buildAllOrbits()
+    for (const trace of Object.values(allOrbits)) traces.update(trace, t)
+  }
+
   // --- per-frame placement -------------------------------------------------
 
   /** Places every point at the current instant and scale, then the two drawings. */
@@ -447,6 +545,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     }
     updateTrajectory(nowSeconds, t)
     updateHeliocentricOrbit(t)
+    updateAllOrbits(t)
   }
 
   // --- loading -------------------------------------------------------------
@@ -487,6 +586,8 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
 
   /** Re-colours and re-sizes the points once their sheets are known. */
   function applyDetails() {
+    // Elements just landed for a batch, so the bundled orbits are a batch short.
+    allOrbitsStale = true
     for (const entry of entries) {
       entry.mesh.material = materialFor(entry.neo, entry.designation)
       entry.diameterKm = diameterKmOf(entry.neo, entry.designation)
@@ -538,6 +639,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   function showFeed(feed, fetchedAt) {
     currentFeed = feed
     currentFetchedAt = fetchedAt
+    allOrbitsStale = true
     select(null)
     addPoints(feed.objects)
   }
@@ -579,6 +681,22 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     /** Forces the drawn orbit to be rebuilt — the pivot changed under it. */
     invalidateOrbit() {
       orbitBuiltFrom = null
+    },
+    /** The whole feed's orbits, on or off (off by default — see ALL_ORBITS_SAMPLES). */
+    setAllOrbits(enabled) {
+      allOrbitsEnabled = enabled
+    },
+    /**
+     * For the panel's checkbox. `available` is counted from the sheets rather
+     * than from what is drawn: the panel is redrawn the moment the box is
+     * ticked, one frame before the bundles exist.
+     */
+    allOrbitsStatus() {
+      return {
+        enabled: allOrbitsEnabled,
+        available: entries.filter((entry) => ellipseElements(entry.designation)).length,
+        total: entries.length,
+      }
     },
     update,
     /** What the sheet for one designation currently holds, for the modal. */

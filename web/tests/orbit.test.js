@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   EARTH_ORBIT,
+  bundleOrbitSamples,
   julianDate,
   orbitApsides,
   orbitNodes,
@@ -100,6 +101,53 @@ describe('sampleOrbit', () => {
     for (const p of points) {
       expect(Math.hypot(p.x, p.y, p.z)).toBeCloseTo(circular.a_au, 9)
     }
+  })
+})
+
+// La convention épinglée ici n'est pas une formule, c'est un découpage :
+// `bundleOrbitSamples` empile N orbites dans un seul tableau de points, et le
+// seul segment qui ne doit JAMAIS être tracé est celui qui relie la dernière
+// boucle d'un objet à la première du suivant — il traverserait tout le système
+// solaire en ligne droite. À l'œil, dans une scène à 150 ellipses, ce trait-là
+// passe inaperçu parmi les autres : c'est exactement pourquoi il est testé ici.
+describe('bundleOrbitSamples', () => {
+  const OTHER_ORBIT = { ...SAMPLE_ORBIT, a_au: 2.5, e: 0.1, node_deg: 200 }
+
+  it('empile count + 1 points par orbite', () => {
+    expect(bundleOrbitSamples([SAMPLE_ORBIT, OTHER_ORBIT], 12).points.length).toBe(2 * 13)
+  })
+
+  it('refuse exactement un segment par jointure entre deux orbites', () => {
+    const { points, keepSegment } = bundleOrbitSamples([SAMPLE_ORBIT, OTHER_ORBIT, SAMPLE_ORBIT], 12)
+    const refused = []
+    for (let i = 0; i + 1 < points.length; i++) {
+      if (!keepSegment(i)) refused.push(i)
+    }
+    // Deux jointures pour trois orbites, juste avant chaque départ d'orbite.
+    expect(refused).toEqual([12, 25])
+  })
+
+  it('ne refuse aucun segment pour une seule orbite : elle reste une boucle fermée', () => {
+    const { points, keepSegment } = bundleOrbitSamples([SAMPLE_ORBIT], 12)
+    let kept = 0
+    for (let i = 0; i + 1 < points.length; i++) {
+      if (keepSegment(i)) kept++
+    }
+    expect(kept).toBe(12)
+  })
+
+  it('garde chaque orbite intacte : aucun segment conservé ne saute d’un objet à l’autre', () => {
+    const count = 12
+    const { points, keepSegment } = bundleOrbitSamples([SAMPLE_ORBIT, OTHER_ORBIT], count)
+    // L'orbite à laquelle appartient le point d'indice i.
+    const owner = (i) => Math.floor(i / (count + 1))
+    for (let i = 0; i + 1 < points.length; i++) {
+      if (keepSegment(i)) expect(owner(i)).toBe(owner(i + 1))
+    }
+  })
+
+  it('rend un tableau vide sans orbite', () => {
+    expect(bundleOrbitSamples([], 12).points).toEqual([])
   })
 })
 

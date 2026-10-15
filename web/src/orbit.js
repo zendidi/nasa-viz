@@ -76,6 +76,30 @@ export function sampleOrbit(orbit, count = 180) {
   return Array.from({ length: count + 1 }, (_, i) => positionAtEccentricAnomaly(orbit, (i / count) * 2 * Math.PI))
 }
 
+/**
+ * Many orbits as **one** sample array, plus the predicate that cuts it back
+ * apart — what lets a hundred-odd NEO ellipses share a single polyline instead
+ * of being a hundred of them.
+ *
+ * `setKm` in scene/orbitTrace.js already decides segment by segment what to
+ * draw, so the scene side needs nothing new. The only segment that must never
+ * be drawn is the one joining an object's last sample to the next object's
+ * first: that would be a straight line clear across the solar system. There is
+ * exactly one such index per orbit, and refusing them is all this does.
+ *
+ * Each orbit contributes `count + 1` samples (the loop closes on itself), so
+ * the segment to drop starts at the sample just before each orbit's first.
+ */
+export function bundleOrbitSamples(orbits, count = 180) {
+  const points = []
+  const boundaries = new Set()
+  for (const orbit of orbits) {
+    if (points.length > 0) boundaries.add(points.length - 1)
+    for (const point of sampleOrbit(orbit, count)) points.push(point)
+  }
+  return { points, keepSegment: (i) => !boundaries.has(i) }
+}
+
 /** The same orbit over a window of dates, evenly in time. Heliocentric ecliptic au. */
 export function sampleOrbitBetween(orbit, jdFrom, jdTo, count = 120) {
   return Array.from({ length: count + 1 }, (_, i) => orbitPosition(orbit, jdFrom + ((jdTo - jdFrom) * i) / count))
