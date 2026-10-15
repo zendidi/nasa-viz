@@ -63,7 +63,14 @@ jobs:
         working-directory: backend
         # Niveau 5 sur src/ et tests/, zéro erreur et zéro baseline : un échec ici
         # est une régression réelle, pas du bruit. Voir backend/phpstan.dist.neon.
-        run: php vendor/bin/phpstan analyse --no-progress
+        #
+        # --memory-limit : mesuré le 2026-10-12, l'analyse à froid franchit les
+        # 128 M du php.ini par défaut (37 fichiers ; elle passait à 34). Le
+        # symptôme n'est PAS un "out of memory" lisible mais « Result is
+        # incomplete because of severe errors » AVEC un code de sortie 0 — donc
+        # une analyse muette qui a l'air de passer. Le drapeau est un plafond,
+        # pas une réservation : 512 M ne coûte rien et donne de la marge.
+        run: php vendor/bin/phpstan analyse --no-progress --memory-limit=512M
 
   web:
     name: Web — build Vite

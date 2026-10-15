@@ -11,8 +11,13 @@ cd backend && php bin/phpunit
 ```
 
 ```bash
-cd backend && php vendor/bin/phpstan analyse --no-progress
+cd backend && php vendor/bin/phpstan analyse --no-progress --memory-limit=512M
 ```
+
+`--memory-limit` n'est pas décoratif, ne le retire pas : à froid l'analyse dépasse les 128 M du
+`php.ini` par défaut, et PHPStan annonce alors « Result is incomplete because of severe errors »
+**en sortant avec le code 0** — une analyse tronquée qui ressemble à un succès (mesuré le
+2026-10-12 ; voir `CLAUDE.md` et `docs/agent/gotchas.md`).
 
 ```bash
 cd web && npm test
