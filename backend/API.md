@@ -217,6 +217,50 @@ SBDB, ssoCard or Sentry is down — ESA is excluded from that check, see below).
   on its own — it's a bonus comparison point the sheet doesn't depend on.
 - HTTP 502 only when both SBDB and ssoCard are unreachable.
 
+## `GET /api/neo/positions?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&designations=2026 RB39,2021 LC`
+
+Real geocentric positions of NEOs over the feed's date range, from JPL
+Horizons — keyless, **not on the NASA quota** (the path starts with `/api/neo`,
+so `.claude/hooks/quota-guard.sh` still blocks it from the shell; that is the
+guard being broad, not this route spending quota). The web scene uses it to
+place each NEO of the feed on its real path rather than on a schematic one.
+
+- `start_date`, `end_date`: required, `YYYY-MM-DD`, `end_date` within 7 days
+  after `start_date` — the same window as `/api/neo`. Otherwise a 400.
+- `designations`: 1 to 10 comma-separated catalogue designations, each
+  `[A-Za-z0-9 /-]{1,40}`, deduplicated. Otherwise a 400. Passed to Horizons as
+  `COMMAND='DES=…;'`.
+
+```json
+{
+  "frame": "ICRF geocentric",
+  "units": "km",
+  "step_seconds": 3600,
+  "objects": {
+    "2026 RB39": {
+      "start": 1789171200,
+      "positions": [[-1234567, 2345678, -345678], [-1230000, 2350000, -346000]]
+    },
+    "2021 LC": null
+  }
+}
+```
+
+- `objects` is a dictionary keyed by the designation **as sent**, one entry
+  per requested designation.
+- `positions` is a table of `[x, y, z]` in km, ICRF equatorial, Earth-centred
+  — the same frame as `/api/solar-system/positions`. Sample *n* is at
+  `start + n * step_seconds` (Unix seconds, TDB ≈ UTC + 69 s). Hourly step, from
+  `start_date` 00:00 to the day **after** `end_date`, so the last day of the
+  feed is fully covered. Interpolate linearly between the two samples around
+  the moment shown.
+- An entry is `null` when Horizons returned no vector table for that
+  designation — no match (typically an object too recent for JPL's database)
+  or several. Cached server-side 1 day per
+  object and date range; a `null` only 1 hour, in case JPL catches up.
+- HTTP 502 when Horizons itself can't be reached — nothing is known about any
+  object then.
+
 ## `GET /api/solar-system/positions?body=mars` (ou `body=sun`)
 
 One planet's real geocentric positions, from JPL Horizons — keyless, not on

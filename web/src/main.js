@@ -630,6 +630,13 @@ function earthWorldRadius() {
 /** Places and sizes every scale-dependent object for scaleT and the current camera. */
 function applyScale(nowSeconds) {
   const t = scaleT
+  // The Sun's *position* is refreshed every frame, not with updateAstronomy()'s
+  // minute: every heliocentric orbit line hangs off it (placeHeliocentricKm)
+  // while the planets move every frame, and the geocentric Sun runs at ~30 km/s
+  // — a minute-old Sun put Mercury up to ~1 800 km (0,7 of its radius) off its
+  // own line at true scale, snapping back each minute (seen 2026-10-15). The
+  // lighting derived from it stays on the minute: 0,0007° of drift.
+  sunTable.positionKmAt(new Date(nowSeconds * 1000), sunPositionKm)
   const isEarthFocus = focusId === 'earth'
   // Shrinking the globe *group* (not just the sphere) takes the ISS with it,
   // so low orbit stays low orbit when the Earth is only a marker.

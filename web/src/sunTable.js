@@ -20,10 +20,14 @@
 import * as THREE from 'three'
 import { fetchSolarSystemBody } from './api.js'
 import { loadCached, saveCached } from './cache.js'
+import { sampleCatmullRom, subdivideTable } from './interpolate.js'
 import { getSunEquatorial } from './astronomy.js'
 import { icrfToScene, latLngToVector3 } from './scene/geo.js'
 
 /** Refetched once "now" comes within this of the table's end — same rule as the planets'. */
+/** Curve points per daily sample in the Earth's orbit line — same factor as the planets' orbits. */
+const ORBIT_SMOOTHING = 8
+
 const TABLE_MARGIN_MS = 30 * 86_400_000
 
 function covers(record, marginMs = 0) {
@@ -43,8 +47,7 @@ export function createSunTable({ on }) {
   let table = covers(stored, TABLE_MARGIN_MS) ? stored : null
   let loading = false
 
-  const interpA = new THREE.Vector3()
-  const interpB = new THREE.Vector3()
+  const interpKm = [0, 0, 0]
 
   /**
    * Geocentric Sun in km, scene axes, at `date`.
@@ -54,17 +57,18 @@ export function createSunTable({ on }) {
    * formality: the scene draws its first frame long before any fetch returns,
    * and a Sun at the origin would put the terminator through the Earth's centre.
    * Callers that care about the difference watch `known`.
+   *
+   * Catmull-Rom on the daily samples, in ICRF km, then one change of axes. The
+   * Sun is subtracted to build the heliocentric view, so its interpolation error
+   * lands on every planet's drawn position: linear was up to 5 750 km off over a
+   * year (measured 2026-10-15), more than twice Mercury's 2 440 km radius.
    */
   function positionKmAt(date, out) {
     if (table) {
       const f = (date.getTime() / 1000 - table.start) / table.stepSeconds
       if (f >= 0 && f <= table.positions.length - 1) {
-        const i = THREE.MathUtils.clamp(Math.floor(f), 0, table.positions.length - 2)
-        const a = table.positions[i]
-        const b = table.positions[i + 1]
-        icrfToScene(a[0], a[1], a[2], interpA)
-        icrfToScene(b[0], b[1], b[2], interpB)
-        return out.lerpVectors(interpA, interpB, THREE.MathUtils.clamp(f - i, 0, 1))
+        sampleCatmullRom(table.positions, f, interpKm)
+        return icrfToScene(interpKm[0], interpKm[1], interpKm[2], out)
       }
     }
     const { ra, dec, distanceKm } = getSunEquatorial(date)
@@ -76,16 +80,19 @@ export function createSunTable({ on }) {
    * the Sun *is* the Sun seen from the Earth, reversed.
    *
    * Taken from the table rather than sampled over a year from "now", and that is
-   * what makes the Earth sit on its own line: "now" always falls between two of
-   * these very samples, so the interpolated position the globe is placed from is
-   * a point of the polyline by construction. Sampling a year forward from now
-   * would also run off the end of a table that starts on the 1st of the month.
+   * what makes the Earth sit on its own line: the line is the table redrawn by
+   * `subdivideTable` — the very Catmull-Rom curve `positionKmAt` places the
+   * globe on — so the globe is a point of it by construction. Straight chords
+   * between the daily samples no longer were once placement went cubic
+   * (2026-10-15): up to ~5 700 km off, nearly an Earth radius. Sampling a year
+   * forward from now would also run off the end of a table that starts on the
+   * 1st of the month.
    *
    * @returns {THREE.Vector3[] | null} null while only the fallback series is available
    */
   function earthOrbitSamplesKm() {
     if (!table) return null
-    return table.positions.map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()).negate())
+    return subdivideTable(table.positions, ORBIT_SMOOTHING).map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()).negate())
   }
 
   /**
