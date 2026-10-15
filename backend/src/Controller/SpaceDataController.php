@@ -2,12 +2,13 @@
 
 namespace App\Controller;
 
+use App\Service\ApodClient;
 use App\Service\HorizonsClient;
 use App\Service\IssPositionClient;
 use App\Service\MoonClient;
-use App\Service\NasaApiClient;
 use App\Service\NasaUsageTracker;
 use App\Service\NeoFeedBuilder;
+use App\Service\NeoOrbitComparisonLog;
 use App\Service\PlanetOrientationClient;
 use App\Service\SmallBodyDetailsClient;
 use App\Service\SolarSystemClient;
@@ -31,6 +32,9 @@ final class SpaceDataController
 {
     /** Designations per call — the web client batches, so each request stays short on the single-threaded dev server. */
     private const MAX_DESIGNATIONS_PER_CALL = 10;
+
+    /** Sources a /api/neo/details sheet actually depends on — see isCacheable(). */
+    private const NEO_DETAILS_LOAD_BEARING_SOURCES = ['sbdb', 'ssocard', 'sentry'];
 
     public function __construct(
         #[Autowire(service: 'cache.app')]
@@ -423,6 +427,7 @@ final class SpaceDataController
     public function neoDetails(
         Request $request,
         SmallBodyDetailsClient $client,
+        NeoOrbitComparisonLog $orbitLog,
         #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
     ): JsonResponse {
         $designations = $this->parseDesignations($request);
@@ -449,8 +454,19 @@ final class SpaceDataController
             }
             foreach ($fetched as $designation => $details) {
                 $objects[$designation] = $details;
-                // A sheet built while a source was down is served, not kept.
-                if ($details !== null && in_array('unavailable', $details['sources'], true)) {
+                if ($details !== null && $details['orbit_comparison'] !== null) {
+                    // Only while the sheet was actually fetched, not when served
+                    // from cache — the orbits didn't change in between, so
+                    // re-journaling them would just restate the same line (the
+                    // fingerprint in NeoOrbitComparisonLog::record() would skip it
+                    // anyway, but there is no reason to even try on every cache hit).
+                    $orbitLog->record($designation, [
+                        'sources' => $details['sources'],
+                        'orbits' => $details['orbits'],
+                        'comparison' => $details['orbit_comparison'],
+                    ]);
+                }
+                if ($details !== null && !self::isCacheable($details)) {
                     continue;
                 }
                 // Catalogues change weekly at most; an unknown object may be added sooner.
@@ -464,7 +480,7 @@ final class SpaceDataController
     }
 
     #[Route('/api/apod', name: 'api_apod', methods: ['GET'])]
-    public function apod(NasaApiClient $client): JsonResponse
+    public function apod(ApodClient $client): JsonResponse
     {
         $today = (new \DateTimeImmutable('today'))->format('Y-m-d');
 
@@ -509,6 +525,24 @@ final class SpaceDataController
         }
 
         return $designations;
+    }
+
+    /**
+     * A sheet built while SBDB, ssoCard or Sentry was down shouldn't be kept
+     * — those three are what the sheet is made of. ESA is deliberately NOT
+     * one of these: it is a bonus comparison point the sheet doesn't depend
+     * on, and caching around an ESA outage would otherwise refetch the whole
+     * sheet (JPL included) on every single call for as long as ESA stays
+     * down. Pure and public so this one decision is unit-testable without a
+     * cache pool, an HTTP client, or a route.
+     *
+     * @param array<string, mixed> $details a non-null entry from SmallBodyDetailsClient::getDetails()
+     */
+    public static function isCacheable(array $details): bool
+    {
+        $loadBearingStatuses = array_intersect_key($details['sources'], array_flip(self::NEO_DETAILS_LOAD_BEARING_SOURCES));
+
+        return !in_array('unavailable', $loadBearingStatuses, true);
     }
 
     private function upstreamError(string $route, ExceptionInterface $e): JsonResponse

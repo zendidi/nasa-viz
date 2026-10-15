@@ -8,8 +8,12 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
- * Wraps the public NASA API (NeoWs + APOD), returning normalized shapes so
- * clients (web, Unity) never depend on NASA's raw response format.
+ * Wraps the public NASA API, returning normalized shapes so clients (web, Unity)
+ * never depend on NASA's raw response format.
+ *
+ * NeoWs only, and so the only thing left in the project that spends the shared
+ * `DEMO_KEY` budget. APOD left on 2026-09-30 for ApodClient, which reads
+ * science.nasa.gov without a key -- see that class for why NASA's move forced it.
  */
 final class NasaApiClient
 {
@@ -83,33 +87,6 @@ final class NasaApiClient
             'diameter_max_km' => (float) $neo['estimated_diameter']['kilometers']['estimated_diameter_max'],
             'is_pha' => (bool) $neo['is_potentially_hazardous_asteroid'],
             'is_sentry' => (bool) ($neo['is_sentry_object'] ?? false),
-        ];
-    }
-
-    /**
-     * @return array{title: string, date: string, explanation: string, media_type: string, url: string, hd_url: ?string}
-     *
-     * @throws ExceptionInterface
-     */
-    public function getApod(): array
-    {
-        try {
-            $this->usageTracker->recordCall();
-            $response = $this->httpClient->request('GET', $this->baseUrl.'/planetary/apod', [
-                'query' => ['api_key' => $this->apiKey],
-            ]);
-            $data = $response->toArray();
-        } catch (ExceptionInterface $e) {
-            throw new TransportException('Unable to fetch APOD: '.$e->getMessage(), previous: $e);
-        }
-
-        return [
-            'title' => $data['title'],
-            'date' => $data['date'],
-            'explanation' => $data['explanation'],
-            'media_type' => $data['media_type'],
-            'url' => $data['url'],
-            'hd_url' => $data['hdurl'] ?? null,
         ];
     }
 }
