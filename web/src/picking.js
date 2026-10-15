@@ -46,7 +46,9 @@ export function createPicking({ canvas, camera, neoGroup, starfield, panels, occ
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1
     raycaster.setFromCamera(pointer, camera)
-    // Raycaster ignores `visible`, so NEOs without any position yet are filtered out by hand.
+    // Raycaster ignores `visible`, so NEOs without any position yet — or all of
+    // them, when the panel hides the points — are filtered out by hand.
+    if (!neoGroup.visible) return null
     const hit = raycaster.intersectObjects(neoGroup.children, true).find((i) => i.object.parent.visible)
     return hit ? hit.object.userData.neo : null
   }

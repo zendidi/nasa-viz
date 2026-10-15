@@ -1,6 +1,6 @@
 /**
  * The HTML overlay: the side panels (ISS, NEO, APOD), the bottom bar (scale and
- * point of view), the modal and the two tooltips. Markup, wording and DOM
+ * point of view), the NEO detail panel, the modal and the two tooltips. Markup, wording and DOM
  * events — **no Three.js, no scene state**.
  *
  * Everything shown arrives as an argument, everything the user does leaves
@@ -61,7 +61,7 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  *                                          scale step when it happens over it
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed,
- *                                          allOrbits, venusSurface
+ *                                          allOrbits, points, venusSurface, rings
  */
 /**
  * The moons line of the planets panel. Only ever shown while a planet is the
@@ -92,19 +92,23 @@ export function createPanels({ app, wheelTarget, on }) {
       <h1>NASA Viz</h1>
       <button id="update-btn">Mettre à jour</button>
       <span id="usage-badge" class="muted" title="Requêtes envoyées à api.nasa.gov (NeoWs + APOD) depuis minuit UTC — les autres sources (JPL, ESA, IMCCE, ISS) sont sans quota">…</span>
+      <button id="ui-style-btn" class="header-toggle" title="Panneau encadré, ou texte brut posé sur la scène">Panneau</button>
+      <button id="apod-btn" class="header-toggle" aria-pressed="true" title="Afficher ou masquer l'image du jour, pour dégager la vue">APOD</button>
     </div>
-    <section id="iss-panel">
-      ${ISS_HEADING}
-      <p class="muted">chargement…</p>
-    </section>
-    <section id="neo-panel">
-      ${NEO_HEADING}
-      <p class="muted">chargement…</p>
-    </section>
-    <section id="planets-panel">
-      ${PLANETS_HEADING}
-      <p class="muted">chargement…</p>
-    </section>
+    <div id="info-panel">
+      <section id="iss-panel">
+        ${ISS_HEADING}
+        <p class="muted">chargement…</p>
+      </section>
+      <section id="neo-panel">
+        ${NEO_HEADING}
+        <p class="muted">chargement…</p>
+      </section>
+      <section id="planets-panel">
+        ${PLANETS_HEADING}
+        <p class="muted">chargement…</p>
+      </section>
+    </div>
     <section id="apod-panel">
       ${APOD_HEADING}
       <p class="muted">chargement…</p>
@@ -150,6 +154,7 @@ export function createPanels({ app, wheelTarget, on }) {
     </div>
     <div class="scale-row">
       <button id="recenter-btn">Recentrer</button>
+      <label class="rings-toggle"><input type="checkbox" id="rings-toggle" checked>Cercles</label>
     </div>
     <p id="view-label"></p>
     <p class="muted scale-hint">Touche R : recentrer</p>
@@ -164,13 +169,31 @@ export function createPanels({ app, wheelTarget, on }) {
   modal.id = 'modal-backdrop'
   modal.className = 'hidden'
   modal.innerHTML = `
-    <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <button id="modal-close" aria-label="Fermer">×</button>
+    <div id="modal" class="sheet" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button id="modal-close" class="sheet-close" aria-label="Fermer">×</button>
       <h2 id="modal-title"></h2>
       <div id="modal-body"></div>
     </div>
   `
   document.body.appendChild(modal)
+
+  // The selected NEO's sheet. Docked bottom-left rather than a centred modal so
+  // the scene stays visible around the selection; no backdrop, so the canvas
+  // keeps its clicks, and it only goes away through its own close button (or
+  // Escape) — clicking another NEO just replaces its content.
+  const detailPanel = document.createElement('div')
+  detailPanel.id = 'detail-panel'
+  detailPanel.className = 'sheet hidden'
+  detailPanel.setAttribute('role', 'region')
+  detailPanel.setAttribute('aria-labelledby', 'detail-title')
+  detailPanel.innerHTML = `
+    <button id="detail-close" class="sheet-close" aria-label="Fermer">×</button>
+    <div id="detail-scroll">
+      <h2 id="detail-title"></h2>
+      <div id="detail-body"></div>
+    </div>
+  `
+  document.body.appendChild(detailPanel)
 
   const starTooltip = document.createElement('div')
   starTooltip.id = 'star-tooltip'
@@ -201,6 +224,22 @@ export function createPanels({ app, wheelTarget, on }) {
     #update-btn:hover, .scale-preset:hover, .focus-btn:hover, #recenter-btn:hover { background: #24608f; }
     #update-btn:disabled { opacity: 0.5; cursor: default; }
     #usage-badge { font-size: 12px; cursor: help; }
+    .header-toggle { pointer-events: auto; background: none; color: #eaf4ff; border: 1px solid #1c4d7a; border-radius: 4px;
+                     padding: 3px 10px; font-size: 11px; cursor: pointer; text-shadow: none; opacity: 0.75; }
+    .header-toggle:hover { opacity: 1; border-color: #4fa8ff; }
+    .header-toggle[aria-pressed="true"] { background: #1c4d7a; border-color: #4fa8ff; opacity: 1; }
+
+    /* The left column, "panneau" style (2026-10-15): the same card as the two
+       bottom panels, one section per kind of object with a rule between them.
+       Without the class it is the original raw text on the sky, which the
+       header button brings back. Still click-through as a whole — only its
+       controls opt back in, as everywhere in #ui. */
+    #info-panel.card { margin-top: 12px; padding: 2px 16px 10px; max-width: 400px; box-sizing: border-box;
+                       background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px; text-shadow: none; }
+    #info-panel.card section + section { margin-top: 10px; border-top: 1px solid rgba(79,168,255,.25); }
+    #info-panel.card h2 { margin: 10px 0 6px; letter-spacing: 0.05em; color: #9fd2ff; opacity: 0.9; }
+    #info-panel.card .neo-toggle { margin-top: 6px; }
+    #info-panel.card #planets-panel .legend { max-width: none; }
 
     .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
     #iss-panel h2 .dot { margin-bottom: 2px; }
@@ -225,6 +264,9 @@ export function createPanels({ app, wheelTarget, on }) {
     .neo-toggle label { cursor: pointer; pointer-events: auto; }
     .neo-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
     .neo-toggle .muted { margin-left: 4px; }
+    /* The orbits box hangs under the points box that commands it. */
+    .neo-toggle.sub { margin-left: 20px; }
+    .neo-toggle label:has(input:disabled) { opacity: 0.5; cursor: default; }
     /* Seven swatches on one line would push the whole left column out to ~420 px
        and under the APOD thumbnail; only this legend is capped, so the NEO one
        keeps the width it has always had. */
@@ -232,7 +274,16 @@ export function createPanels({ app, wheelTarget, on }) {
 
     #apod-panel { position: fixed; top: 16px; right: 20px; pointer-events: auto; cursor: pointer;
                   max-width: 220px; text-align: right; }
-    #apod-panel img { display: block; width: 100%; border-radius: 4px; margin-top: 4px; }
+    /* The right edge is shared (2026-10-15): APOD keeps the top half at most,
+       the NEO detail panel docks in the bottom half. A tall picture shrinks to
+       fit rather than running down into the detail panel — contained, so it
+       keeps its proportions, and pinned right to stay flush with the title. */
+    #apod-panel { display: flex; flex-direction: column; align-items: flex-end; box-sizing: border-box;
+                  max-height: calc(50vh - 24px); }
+    #apod-panel.hidden { display: none; }
+    #apod-panel > * { flex: none; }
+    #apod-panel img { display: block; flex: 0 1 auto; min-height: 0; max-width: 100%; object-fit: contain;
+                      object-position: right top; border-radius: 4px; margin-top: 4px; }
     #apod-panel .apod-title { font-weight: 600; }
 
     #bottom-bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2;
@@ -249,6 +300,8 @@ export function createPanels({ app, wheelTarget, on }) {
     .scale-preset.active, .focus-btn.active { background: #4fa8ff; color: #0e2233; }
     /* Seven planets don't fit one line next to the scale panel, and the row must
        not push #bottom-bar wider than the viewport. */
+    #view-panel .rings-toggle { cursor: pointer; pointer-events: auto; margin: 0 0 0 4px; }
+    #view-panel .rings-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
     #view-panel .focus-planets { flex-wrap: wrap; max-width: 260px; }
     #view-panel .focus-planets .focus-btn { font-size: 11px; padding: 2px 6px; }
     .focus-btn:disabled { opacity: 0.35; cursor: default; }
@@ -260,7 +313,8 @@ export function createPanels({ app, wheelTarget, on }) {
                     font-family: system-ui, sans-serif; }
     .scene-label { position: absolute; left: 0; top: 0; font-size: 11px; color: #cfe6ff; white-space: nowrap;
                    text-shadow: 0 1px 3px rgba(0,0,0,.9); }
-    .scene-label.ring { color: #4fa8ff; opacity: 0.75; font-size: 10px; }
+    .scene-label.ring { color: #c8ccd4; opacity: 0.75; font-size: 10px; }
+    .scene-label.ring.absolute { color: #ffbf66; }
 
     #modal-backdrop { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.6); display: flex;
                        align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
@@ -268,10 +322,10 @@ export function createPanels({ app, wheelTarget, on }) {
     #modal { position: relative; background: #0e2233; color: #eaf4ff; border: 1px solid #4fa8ff;
              border-radius: 8px; padding: 20px 24px; max-width: 480px; width: 90%;
              max-height: 80vh; overflow-y: auto; }
-    #modal h2 { margin: 0 0 12px; font-size: 17px; }
-    #modal h3 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
-    #modal p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
-    #modal .muted { opacity: 0.6; }
+    .sheet h2 { margin: 0 0 12px; font-size: 17px; }
+    .sheet h3 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
+    .sheet p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
+    .sheet .muted { opacity: 0.6; }
     /* Three catalogues plus a spread column, in a 480 px modal: the numbers are
        tabular-aligned so the eye can see which digit stops matching, and the
        element names stay left while the figures go right. */
@@ -283,19 +337,35 @@ export function createPanels({ app, wheelTarget, on }) {
     .orbit-compare thead th { border-bottom: 1px solid rgba(79,168,255,.35); }
     .orbit-compare .spread { color: #9fd2ff; border-left: 1px solid rgba(79,168,255,.25); }
     .orbit-compare sup { font-size: 9px; }
-    #modal .warn { color: #ffbf66; opacity: 1; }
-    #modal a { color: #7fe0ff; }
-    #modal .credits { margin-top: 14px; font-size: 11px; }
+    .sheet .warn { color: #ffbf66; opacity: 1; }
+    .sheet a { color: #7fe0ff; }
+    .sheet .credits { margin-top: 14px; font-size: 11px; }
     .neo-sources { margin: 4px 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
     .neo-sources li { margin: 2px 0; }
     .orbit-schematic { margin: 10px 0 0; }
     .orbit-schematic svg { display: block; width: 100%; max-width: 300px; margin: 0 auto; }
     .orbit-schematic text { font: 10px system-ui, sans-serif; }
     .orbit-schematic figcaption { margin-top: 4px; font-size: 11px; line-height: 1.5; opacity: 0.75; text-align: center; }
-    #modal img, #modal iframe { display: block; width: 100%; border-radius: 4px; margin-bottom: 10px; border: none; }
-    #modal iframe { aspect-ratio: 16 / 9; }
-    #modal-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
+    .sheet img, .sheet iframe { display: block; width: 100%; border-radius: 4px; margin-bottom: 10px; border: none; }
+    .sheet iframe { aspect-ratio: 16 / 9; }
+    .sheet-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
                    color: #eaf4ff; font-size: 20px; cursor: pointer; line-height: 1; }
+
+    /* Same look and same scroll as the modal, docked bottom-right, under APOD
+       (2026-10-15 — bottom-left, it ran into the left-hand column): 480 px +
+       20 px gutter stops short of #bottom-bar on a 1900 px screen, and the
+       height is capped to the bottom half the right edge leaves it. z-index above
+       #bottom-bar so a narrow window overlaps rather than hides it. The scroll
+       lives in an inner box, not on the panel itself, so the close button —
+       absolute on the panel — stays pinned top-right whatever the scroll. */
+    #detail-panel { position: fixed; right: 20px; bottom: 16px; z-index: 3; box-sizing: border-box;
+                    background: #0e2233; color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 8px;
+                    width: 480px; max-width: calc(100vw - 40px); font-family: system-ui, sans-serif; }
+    #detail-scroll { box-sizing: border-box; padding: 20px 24px; max-height: calc(50vh - 24px); overflow-y: auto; }
+    /* Shifted left of the inner scrollbar, which runs along the right edge. */
+    #detail-panel .sheet-close { z-index: 1; right: 22px; }
+    #detail-panel.hidden { display: none; }
+    #detail-panel h2 { padding-right: 20px; }
 
     #star-tooltip { position: fixed; pointer-events: none; z-index: 5; background: rgba(10,22,34,.92);
                     color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px; padding: 3px 9px;
@@ -312,6 +382,36 @@ export function createPanels({ app, wheelTarget, on }) {
   document.head.appendChild(style)
 
 
+  // Card or raw text: a per-viewer preference, so localStorage — read and
+  // written under try/catch, since private windows can refuse it outright.
+  const infoPanel = ui.querySelector('#info-panel')
+  const styleBtn = ui.querySelector('#ui-style-btn')
+  function setInfoStyle(card) {
+    infoPanel.classList.toggle('card', card)
+    styleBtn.setAttribute('aria-pressed', String(card))
+    try {
+      localStorage.setItem('ui-style', card ? 'card' : 'raw')
+    } catch {
+      // not remembered, still applied
+    }
+  }
+  let savedStyle = null
+  try {
+    savedStyle = localStorage.getItem('ui-style')
+  } catch {
+    // default below
+  }
+  setInfoStyle(savedStyle !== 'raw')
+  styleBtn.addEventListener('click', () => setInfoStyle(!infoPanel.classList.contains('card')))
+
+  // APOD is shown at every start — not remembered — and can be put away for a
+  // wider view of the scene.
+  const apodBtn = ui.querySelector('#apod-btn')
+  apodBtn.addEventListener('click', () => {
+    const shown = ui.querySelector('#apod-panel').classList.toggle('hidden') === false
+    apodBtn.setAttribute('aria-pressed', String(shown))
+  })
+
   const issPanel = ui.querySelector('#iss-panel')
   const neoPanel = ui.querySelector('#neo-panel')
   const planetsPanel = ui.querySelector('#planets-panel')
@@ -323,6 +423,9 @@ export function createPanels({ app, wheelTarget, on }) {
   const viewLabel = viewPanel.querySelector('#view-label')
   const modalTitle = modal.querySelector('#modal-title')
   const modalBody = modal.querySelector('#modal-body')
+  const detailTitle = detailPanel.querySelector('#detail-title')
+  const detailBody = detailPanel.querySelector('#detail-body')
+  const detailScroll = detailPanel.querySelector('#detail-scroll')
 
   // --- panels ------------------------------------------------------------
 
@@ -351,17 +454,26 @@ export function createPanels({ app, wheelTarget, on }) {
    * - and its listener is delegated from the panel once (see below), because
    *   the input this markup creates is a new element each time.
    */
-  function allOrbitsLine({ enabled, available, total, scaleLocked } = {}) {
+  function allOrbitsLine({ points = true, enabled, available, total, scaleLocked } = {}) {
     if (!total) return ''
     const count = available === total ? `${total}` : `${available}/${total}`
-    // Disabled, not unticked: the user's choice is kept and comes back at 100 % réel.
+    // Disabled, not unticked: the user's choice is kept and comes back with
+    // the points, or at 100 % réel.
+    const locked = !points || scaleLocked
+    const hint = !points
+      ? 'masquées avec les points'
+      : scaleLocked
+        ? 'Orbites visibles en échelle réelle (Maj + molette)'
+        : 'vue héliocentrée, échelle réelle'
     return `
       <p class="neo-toggle">
-        <label><input type="checkbox" id="neo-all-orbits"${enabled ? ' checked' : ''}${scaleLocked ? ' disabled' : ''}>
+        <label><input type="checkbox" id="neo-points"${points ? ' checked' : ''}>
+        Points dans la scène</label>
+      </p>
+      <p class="neo-toggle sub">
+        <label><input type="checkbox" id="neo-all-orbits"${enabled ? ' checked' : ''}${locked ? ' disabled' : ''}>
         Orbites de tous les NEO (${count})</label>
-        <span class="muted">${
-          scaleLocked ? 'Orbites visibles en échelle réelle (Maj + molette)' : 'vue héliocentrée, échelle réelle'
-        }</span>
+        <span class="muted">${hint}</span>
       </p>
     `
   }
@@ -393,6 +505,7 @@ export function createPanels({ app, wheelTarget, on }) {
   // renderNeo(), so a listener on the input would die with the first redraw.
   neoPanel.addEventListener('change', (event) => {
     if (event.target.id === 'neo-all-orbits') on.allOrbits(event.target.checked)
+    if (event.target.id === 'neo-points') on.points(event.target.checked)
   })
 
   // Same delegation for the Venus box, which lives inside renderPlanets' template.
@@ -532,7 +645,21 @@ export function createPanels({ app, wheelTarget, on }) {
 
   function closeModal() {
     modal.classList.add('hidden')
-    on.modalClosed()
+  }
+
+  // --- NEO detail panel --------------------------------------------------
+
+  /** Opens the panel, or refreshes it in place — scroll kept — when already open. */
+  function openDetail(title, bodyHtml) {
+    if (detailTitle.textContent !== title) detailScroll.scrollTop = 0
+    detailTitle.textContent = title
+    detailBody.innerHTML = bodyHtml
+    detailPanel.classList.remove('hidden')
+  }
+
+  function closeDetail() {
+    detailPanel.classList.add('hidden')
+    on.detailClosed()
   }
 
   function showApodModal(apod) {
@@ -552,13 +679,15 @@ export function createPanels({ app, wheelTarget, on }) {
   }
 
   modal.querySelector('#modal-close').addEventListener('click', closeModal)
+  detailPanel.querySelector('#detail-close').addEventListener('click', closeDetail)
   modal.addEventListener('click', (event) => {
     if (event.target === modal) closeModal()
   })
   window.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
-    // First Escape closes the modal, a second one drops the selected NEO's trajectory.
+    // Innermost first: the modal, then the NEO panel, then the selected NEO's trajectory.
     if (!modal.classList.contains('hidden')) closeModal()
+    else if (!detailPanel.classList.contains('hidden')) closeDetail()
     else on.deselect()
   })
 
@@ -614,6 +743,8 @@ export function createPanels({ app, wheelTarget, on }) {
     button.addEventListener('click', () => on.focus(button.dataset.focus))
   }
   viewPanel.querySelector('#recenter-btn').addEventListener('click', () => on.recenter())
+  // Static markup, never re-rendered: a direct listener is enough here.
+  viewPanel.querySelector('#rings-toggle').addEventListener('change', (event) => on.rings(event.target.checked))
 
   window.addEventListener('keydown', (event) => {
     if (event.key === 'r' || event.key === 'R') on.recenter()
@@ -672,6 +803,8 @@ export function createPanels({ app, wheelTarget, on }) {
     renderView,
     setUsage,
     openModal,
+    openDetail,
+    closeDetail,
     requestUpdate,
   }
 }

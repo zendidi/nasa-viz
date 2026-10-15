@@ -400,19 +400,37 @@ export function makeMoon() {
  * Hidden in the readable layout, where distances aren't proportional anyway;
  * each is a unit circle scaled to its scene distance per frame, so the 1 px
  * line stays crisp at any scale.
+ *
+ * Drawn as a **graduated dial** in white, so a yardstick can never be
+ * read as an orbit (2026-10-15): orbits are plain lines in their body's colour,
+ * and dashes already mean "below the ecliptic" on a NEO's ellipse, so neither
+ * colour nor a dash pattern was free. Ticks stick *out* of the circle instead of
+ * cutting it, every 10°, a longer one every 90°. Being part of the unit geometry
+ * they scale with the ring and keep the same proportion at every radius.
  */
+const RING_SEGMENTS = 256
+const RING_TICK_DEG = 10
+const RING_TICK = 0.025 // half-length, in ring radii
+const RING_TICK_MAJOR = 0.05
 const ringGeometry = (() => {
   const points = []
-  for (let i = 0; i < 256; i++) {
-    const a = (i / 256) * Math.PI * 2
-    points.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)))
+  const circle = (i) => {
+    const a = (i / RING_SEGMENTS) * Math.PI * 2
+    return new THREE.Vector3(Math.cos(a), 0, Math.sin(a))
+  }
+  for (let i = 0; i < RING_SEGMENTS; i++) points.push(circle(i), circle(i + 1))
+  for (let deg = 0; deg < 360; deg += RING_TICK_DEG) {
+    const a = THREE.MathUtils.degToRad(deg)
+    const half = deg % 90 === 0 ? RING_TICK_MAJOR : RING_TICK
+    const dir = new THREE.Vector3(Math.cos(a), 0, Math.sin(a))
+    points.push(dir.clone().multiplyScalar(1 - half), dir.clone().multiplyScalar(1 + half))
   }
   return new THREE.BufferGeometry().setFromPoints(points)
 })()
-const ringMaterial = new THREE.LineBasicMaterial({ color: 0x4fa8ff, transparent: true, opacity: 0.3, depthWrite: false })
+const ringMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false })
 
 /**
- * Warm circle for a ring at an **absolute** distance, against the blue of the
+ * Warm circle for a ring at an **absolute** distance, against the white of the
  * ones scaled to the pivot. The two say different things and must not be read as
  * one family: a scaled ring always lands at the same place on screen whichever
  * pivot you pick (that is what makes it legible), so it cannot show you that one
@@ -613,7 +631,7 @@ export function createDistanceRings(scene) {
   group.rotation.x = OBLIQUITY_RAD
   scene.add(group)
 
-  /** @type {{line: THREE.LineLoop, distanceKm: number, label: string}[]} */
+  /** @type {{line: THREE.LineSegments, distanceKm: number, label: string, absolute: boolean}[]} */
   let list = []
 
   return {
@@ -630,9 +648,9 @@ export function createDistanceRings(scene) {
     rebuild(specs) {
       group.clear()
       list = specs.map(({ km, label, absolute = false }) => {
-        const line = new THREE.LineLoop(ringGeometry, absolute ? absoluteRingMaterial : ringMaterial)
+        const line = new THREE.LineSegments(ringGeometry, absolute ? absoluteRingMaterial : ringMaterial)
         group.add(line)
-        return { line, distanceKm: km, label }
+        return { line, distanceKm: km, label, absolute }
       })
     },
   }

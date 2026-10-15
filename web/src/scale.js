@@ -185,6 +185,40 @@ export function neoRadius(diameterKm, t) {
   return lerpLog(neoReadableRadius(diameterKm), (diameterKm / 2) * KM_TO_UNITS, t)
 }
 
+/**
+ * Pixel floor on a NEO's drawn radius, from how spread the cloud is on screen
+ * (`spreadPx`: the median NEO's distance to the Earth, in pixels). A fixed
+ * floor turned the cloud into a mush of overlapping dots once zoomed out
+ * (2026-10-15): a hundred-odd 5 px discs inside a few dozen pixels. So it
+ * shrinks, log-linearly, from NEO_FLOOR_PX.max while the cloud is wide down to
+ * a 1 px dot (radius 0,5) once it is tight — losing a few at that size is
+ * fine, the user's call. Never below: a smaller floor buys nothing on screen.
+ */
+export const NEO_FLOOR_PX = { max: 2.5, min: 0.5 }
+export const NEO_FLOOR_SPREAD_PX = { wide: 250, tight: 25 }
+
+export function neoFloorPx(spreadPx) {
+  const { wide, tight } = NEO_FLOOR_SPREAD_PX
+  const u = Math.min(1, Math.max(0, Math.log(wide / spreadPx) / Math.log(wide / tight)))
+  return lerpLog(NEO_FLOOR_PX.max, NEO_FLOOR_PX.min, Number.isFinite(u) ? u : 1)
+}
+
+/**
+ * Factor on that pixel floor, so the biggest NEOs still stand out where the
+ * floor is what is drawn — zoomed in at true scale, every one of them is
+ * sub-pixel and would otherwise be the same dot (2026-10-15). The floor is the
+ * mean size, ±NEO_FLOOR_SIZE_SPREAD from the feed's smallest to its largest.
+ * Placed in log of the diameter, not linearly: a feed spans tens of metres to
+ * kilometres, and linearly all but the one giant would sit at the bottom.
+ */
+export const NEO_FLOOR_SIZE_SPREAD = 0.25
+
+export function neoFloorFactor(diameterKm, minKm, maxKm) {
+  if (!(maxKm > minKm) || !(minKm > 0)) return 1
+  const u = Math.min(1, Math.max(0, Math.log(diameterKm / minKm) / Math.log(maxKm / minKm)))
+  return 1 + NEO_FLOOR_SIZE_SPREAD * (2 * u - 1)
+}
+
 /** A marker seen from the Earth; the scene's anchor when the Sun is the pivot. */
 export function sunRadius(t, isFocus = false) {
   return lerpLog(isFocus ? FOCUS_READABLE_RADIUS : SUN_READABLE_RADIUS, SUN_RADIUS_KM * KM_TO_UNITS, t)
