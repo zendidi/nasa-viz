@@ -18,6 +18,7 @@ import { fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { icrfToScene } from './geo.js'
+import { sampleCatmullRom, subdivideClosedLoop } from '../interpolate.js'
 import { orientBody } from './orientation.js'
 import { pivotRadius, planetRadius } from '../scale.js'
 
@@ -216,6 +217,9 @@ function orbitCovers(record) {
   return nowMs >= record.start * 1000 && nowMs <= record.stop * 1000
 }
 
+/** Catmull-Rom points per orbit segment: 360 -> 2 880 segments. */
+const ORBIT_SMOOTHING = 8
+
 /**
  * Turns a stored orbit table into the polyline the scene draws. Since
  * 2026-09-29 that is a change of axes and nothing else: the backend serves these
@@ -237,7 +241,11 @@ function orbitCovers(record) {
  * Neptune, where a Sun table covers one.
  */
 function orbitSamplesKm(record) {
-  return record.positions.map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()))
+  // Smoothed for drawing only: 360 chords left Mercury up to ~4 400 km off its
+  // line at perihelion (sagitta ~3 900 km, Mercury's radius is 2 440 km).
+  // Nothing indexes these points by time — traces draw every consecutive pair —
+  // and bodies are placed from their own daily tables, not from this polyline.
+  return subdivideClosedLoop(record.positions, ORBIT_SMOOTHING).map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()))
 }
 
 /**
@@ -439,26 +447,23 @@ export function createPlanets({
 
   // --- position ------------------------------------------------------------
 
-  const interpA = new THREE.Vector3()
-  const interpB = new THREE.Vector3()
+  const interpIcrf = [0, 0, 0]
 
   /**
-   * Linear interpolation in the daily table. Measured on Mars
-   * (docs/planetes-et-lunes.md §3c): at most 5 645 km, 0,002 % of its
-   * distance — well under a scene unit at every readable setting. No clamping
-   * branch like the NEO's: a table that no longer brackets "now" is refetched
-   * rather than read past its end (`covers`).
+   * Cubic Catmull-Rom in the daily table (interpolate.js), in ICRF km, then one
+   * conversion to scene axes. Max error vs hourly Horizons, 2026-10-01 ->
+   * 2027-10-01 (measured 2026-10-15): Mercury 848 km (linear: 63 258 km, worst
+   * near superior conjunction at 1.29 au), Venus 52 (16 106), Mars 15 (6 839),
+   * Jupiter 36 (5 729). Quintic only helps Mercury (1.8 km) — not worth it.
+   * Edge intervals use the quadratic through the three nearest samples. A table that no longer brackets "now"
+   * is refetched rather than read past its end (`covers`).
    */
   function updatePositionKm(body, nowSeconds) {
     const table = tables[body.id]
     if (!table) return
     const f = (nowSeconds - table.start) / table.stepSeconds
-    const i = THREE.MathUtils.clamp(Math.floor(f), 0, table.positions.length - 2)
-    const a = table.positions[i]
-    const b = table.positions[i + 1]
-    icrfToScene(a[0], a[1], a[2], interpA)
-    icrfToScene(b[0], b[1], b[2], interpB)
-    body.positionKm.lerpVectors(interpA, interpB, THREE.MathUtils.clamp(f - i, 0, 1))
+    sampleCatmullRom(table.positions, f, interpIcrf)
+    icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], body.positionKm)
     body.known = true
   }
 

@@ -263,6 +263,33 @@ function pathCoordinates(svg, pathIndex) {
 const OPTIONS = { now: new Date('2026-01-15T00:00:00Z'), approachAt: null, hazardous: false }
 
 describe('orbitSchematicSvg', () => {
+  // Contrat : tous les champs de /api/neo/details peuvent être null. Un élément
+  // absent serait contraint à 0 et dessinerait une figure fausse (ou lèverait
+  // dans la légende pour i_deg) : pas de schéma plutôt qu'un schéma faux.
+  describe.each(['i_deg', 'node_deg', 'peri_deg', 'mean_anomaly_deg', 'epoch_jd'])('élément %s', (key) => {
+    it('null -> chaîne vide, sans lever', () => {
+      expect(orbitSchematicSvg({ ...SAMPLE_ORBIT, [key]: null }, OPTIONS)).toBe('')
+    })
+
+    it('clé absente -> chaîne vide', () => {
+      const { [key]: _omitted, ...rest } = SAMPLE_ORBIT
+      expect(orbitSchematicSvg(rest, OPTIONS)).toBe('')
+    })
+
+    it('NaN ou Infinity -> chaîne vide', () => {
+      expect(orbitSchematicSvg({ ...SAMPLE_ORBIT, [key]: NaN }, OPTIONS)).toBe('')
+      expect(orbitSchematicSvg({ ...SAMPLE_ORBIT, [key]: Infinity }, OPTIONS)).toBe('')
+    })
+  })
+
+  it('une orbite complète et valide se dessine toujours', () => {
+    expect(orbitSchematicSvg(SAMPLE_ORBIT, OPTIONS)).toContain('<svg')
+  })
+
+  it('0 est une valeur valide (inclinaison nulle), pas une valeur absente', () => {
+    expect(orbitSchematicSvg({ ...SAMPLE_ORBIT, i_deg: 0, node_deg: 0 }, OPTIONS)).toContain('<svg')
+  })
+
   it('produit un SVG bien formé pour une orbite valide', () => {
     const svg = orbitSchematicSvg(SAMPLE_ORBIT, OPTIONS)
     expect(svg).toContain('<svg')

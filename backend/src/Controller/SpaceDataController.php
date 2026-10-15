@@ -2,12 +2,11 @@
 
 namespace App\Controller;
 
-use App\Service\ApodClient;
+use App\Service\CachedFeeds;
 use App\Service\HorizonsClient;
 use App\Service\IssPositionClient;
 use App\Service\MoonClient;
 use App\Service\NasaUsageTracker;
-use App\Service\NeoFeedBuilder;
 use App\Service\NeoOrbitComparisonLog;
 use App\Service\PlanetOrientationClient;
 use App\Service\SmallBodyDetailsClient;
@@ -60,11 +59,11 @@ final class SpaceDataController
     }
 
     #[Route('/api/neo', name: 'api_neo', methods: ['GET'])]
-    public function neo(Request $request, NeoFeedBuilder $builder): JsonResponse
+    public function neo(Request $request, CachedFeeds $feeds): JsonResponse
     {
-        $today = new \DateTimeImmutable('today');
-        $startDate = (string) $request->query->get('start_date', $today->format('Y-m-d'));
-        $endDate = (string) $request->query->get('end_date', $today->modify('+1 day')->format('Y-m-d'));
+        [$defaultStart, $defaultEnd] = CachedFeeds::defaultNeoRange();
+        $startDate = (string) $request->query->get('start_date', $defaultStart);
+        $endDate = (string) $request->query->get('end_date', $defaultEnd);
 
         $start = \DateTimeImmutable::createFromFormat('!Y-m-d', $startDate);
         $end = \DateTimeImmutable::createFromFormat('!Y-m-d', $endDate);
@@ -79,17 +78,9 @@ final class SpaceDataController
             return new JsonResponse(['error' => 'the date range is limited to 7 days'], 400);
         }
 
-        // Key changed with the multi-source feed shape, so no old NeoWs-only entry is served.
-        $cacheKey = 'neo_feed_'.$startDate.'_'.$endDate;
-
+        // Key, TTL and computation live in CachedFeeds, shared with app:cache:warm.
         try {
-            $feed = $this->cache->get($cacheKey, function (ItemInterface $item) use ($builder, $startDate, $endDate) {
-                $feed = $builder->build($startDate, $endDate);
-                // A degraded feed (a source down, e.g. NeoWs quota spent) is retried sooner.
-                $item->expiresAfter(in_array('unavailable', $feed['sources'], true) ? 600 : 3600);
-
-                return $feed;
-            });
+            $feed = $feeds->neoFeed($startDate, $endDate);
         } catch (ExceptionInterface $e) {
             return $this->upstreamError('neo', $e);
         }
@@ -480,16 +471,10 @@ final class SpaceDataController
     }
 
     #[Route('/api/apod', name: 'api_apod', methods: ['GET'])]
-    public function apod(ApodClient $client): JsonResponse
+    public function apod(CachedFeeds $feeds): JsonResponse
     {
-        $today = (new \DateTimeImmutable('today'))->format('Y-m-d');
-
         try {
-            $apod = $this->cache->get('apod_'.$today, function (ItemInterface $item) use ($client) {
-                $item->expiresAfter(86400);
-
-                return $client->getApod();
-            });
+            $apod = $feeds->apod();
         } catch (ExceptionInterface $e) {
             return $this->upstreamError('apod', $e);
         }

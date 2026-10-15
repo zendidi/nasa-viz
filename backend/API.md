@@ -100,7 +100,8 @@ The union is returned: an object listed by a single source is still in
   `datetime` is `null` when only ESA listed it (its lists carry no time of day).
   Times are TDB (≈ UTC + 69 s).
 - Per-source `status`: `found`, `missing` (with a `reason`: `date_boundary`,
-  `distance_boundary`, `unknown`), `not_covered` (outside that source's
+  `distance_boundary`, `catalogue_cutoff` — NeoWs only, object designated after
+  2019, where its catalogue stops — or `unknown`), `not_covered` (outside that source's
   distance cap — 0.5 au for JPL/NeoWs, 0.05 au for ESA — or its date range),
   `unavailable`.
 - `mismatches` lists fields two sources disagree on, as
@@ -216,6 +217,50 @@ SBDB, ssoCard or Sentry is down — ESA is excluded from that check, see below).
   an incomplete sheet" rule above, and never makes this route answer HTTP 502
   on its own — it's a bonus comparison point the sheet doesn't depend on.
 - HTTP 502 only when both SBDB and ssoCard are unreachable.
+
+## `GET /api/neo/positions?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&designations=2026 RB39,2021 LC`
+
+Real geocentric positions of NEOs over the feed's date range, from JPL
+Horizons — keyless, **not on the NASA quota** (the path starts with `/api/neo`,
+so `.claude/hooks/quota-guard.sh` still blocks it from the shell; that is the
+guard being broad, not this route spending quota). The web scene uses it to
+place each NEO of the feed on its real path rather than on a schematic one.
+
+- `start_date`, `end_date`: required, `YYYY-MM-DD`, `end_date` within 7 days
+  after `start_date` — the same window as `/api/neo`. Otherwise a 400.
+- `designations`: 1 to 10 comma-separated catalogue designations, each
+  `[A-Za-z0-9 /-]{1,40}`, deduplicated. Otherwise a 400. Passed to Horizons as
+  `COMMAND='DES=…;'`.
+
+```json
+{
+  "frame": "ICRF geocentric",
+  "units": "km",
+  "step_seconds": 3600,
+  "objects": {
+    "2026 RB39": {
+      "start": 1789171200,
+      "positions": [[-1234567, 2345678, -345678], [-1230000, 2350000, -346000]]
+    },
+    "2021 LC": null
+  }
+}
+```
+
+- `objects` is a dictionary keyed by the designation **as sent**, one entry
+  per requested designation.
+- `positions` is a table of `[x, y, z]` in km, ICRF equatorial, Earth-centred
+  — the same frame as `/api/solar-system/positions`. Sample *n* is at
+  `start + n * step_seconds` (Unix seconds, TDB ≈ UTC + 69 s). Hourly step, from
+  `start_date` 00:00 to the day **after** `end_date`, so the last day of the
+  feed is fully covered. Interpolate linearly between the two samples around
+  the moment shown.
+- An entry is `null` when Horizons returned no vector table for that
+  designation — no match (typically an object too recent for JPL's database)
+  or several. Cached server-side 1 day per
+  object and date range; a `null` only 1 hour, in case JPL catches up.
+- HTTP 502 when Horizons itself can't be reached — nothing is known about any
+  object then.
 
 ## `GET /api/solar-system/positions?body=mars` (ou `body=sun`)
 
@@ -496,6 +541,19 @@ the moons of planets a visitor has actually centred on, before anyone asks.
   in 7 s.
 - Always exits 0: an upstream failure is transient, the next run picks it up, and
   the routes still fall back to fetching on demand.
+
+### `php bin/console app:cache:warm`
+
+Cron companion to `/api/apod` and, optionally, `/api/neo`. Recomputes the cached
+feed *before* it expires (shared `App\Service\CachedFeeds`, same keys and TTLs as
+the routes), so no visitor pays the post-expiry latency.
+
+- APOD is refreshed on every run (keyless, no NASA quota spent).
+- `--neo` also refreshes the NEO feed for the default range. **Spends one NeoWs call
+  per run** — 24 of `DEMO_KEY`'s 50/day on an hourly cron — so use it only with a
+  real `NASA_API_KEY`.
+- `--dry-run` lists what would be refreshed and calls nothing.
+- A failed recompute keeps the previous cache entry. Always exits 0.
 
 ## `GET /api/apod`
 

@@ -25,6 +25,24 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 final class SmallBodyDetailsClient
 {
+    /**
+     * The first wave -- SBDB, ssoCard, Sentry and ESA's `.ke1`, for every
+     * object -- is sent before anything is read, so it costs at most this once.
+     * The inherited `default_socket_timeout` (60 s) would be longer than PHP's
+     * 30 s wall -- see ApodClient.
+     */
+    private const TIMEOUT_SECONDS = 8;
+    private const MAX_DURATION_SECONDS = 15;
+
+    /**
+     * What is NOT concurrent: ESA's `.ke0` fallback and the retry by number
+     * both wait on an earlier answer, and they repeat per object. They share
+     * this one deadline, counted from the start of getDetails(), instead of a
+     * budget each -- 22 s leaves 8 s of the 30 s wall for normalising ten
+     * sheets and writing the cache.
+     */
+    private const ROUTE_BUDGET_SECONDS = 22;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         #[Autowire(env: 'JPL_SSD_API_BASE_URL')]
@@ -52,16 +70,17 @@ final class SmallBodyDetailsClient
      */
     public function getDetails(array $designations): array
     {
+        $deadline = microtime(true) + self::ROUTE_BUDGET_SECONDS;
         $responses = [];
         foreach ($designations as $designation) {
             $responses[$designation] = [
-                'sbdb' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sbdb.api', ['query' => ['sstr' => $designation, 'phys-par' => '1', 'full-prec' => '1']]),
-                'ssocard' => $this->httpClient->request('GET', $this->ssodnetBaseUrl.'/ssocard.php', ['query' => ['q' => str_replace(' ', '_', $designation)]]),
-                'sentry' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sentry.api', ['query' => ['des' => $designation]]),
+                'sbdb' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sbdb.api', ['query' => ['sstr' => $designation, 'phys-par' => '1', 'full-prec' => '1'], 'timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS]),
+                'ssocard' => $this->httpClient->request('GET', $this->ssodnetBaseUrl.'/ssocard.php', ['query' => ['q' => str_replace(' ', '_', $designation)], 'timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS]),
+                'sentry' => $this->httpClient->request('GET', $this->jplBaseUrl.'/sentry.api', ['query' => ['des' => $designation], 'timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS]),
                 // Sent immediately, like the other three, so the four requests
                 // of an object race together — requestOrbit() only returns the
                 // parsing closure, called from collectEsa() below.
-                'esa' => $this->esaClient->requestOrbit($designation),
+                'esa' => $this->esaClient->requestOrbit($designation, $deadline),
             ];
         }
 
@@ -100,7 +119,7 @@ final class SmallBodyDetailsClient
                 // matters most for. Not parallel with the other three requests:
                 // the number only exists once SBDB has already answered.
                 if (is_string($number) && ctype_digit($number) && $number !== str_replace(' ', '', $designation)) {
-                    [$esaStatus, $esaOrbit] = $this->collectEsa($this->esaClient->requestOrbit($number));
+                    [$esaStatus, $esaOrbit] = $this->collectEsa(fn () => $this->esaClient->requestOrbit($number, $deadline)());
                 }
             }
 

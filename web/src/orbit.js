@@ -129,16 +129,23 @@ export function orbitNodes(orbit) {
 
 const fmt = (value, digits) => value.toLocaleString('fr-FR', { maximumFractionDigits: digits })
 
+const REQUIRED_ELEMENTS = ['i_deg', 'node_deg', 'peri_deg', 'mean_anomaly_deg', 'epoch_jd']
+
 /**
  * Top-down (ecliptic north up) schematic: Sun, Earth orbit, NEO orbit — solid
  * where it runs above the ecliptic, dashed below — and both bodies now plus
- * the NEO at its close approach. Returns '' for orbits it can't draw.
+ * the NEO at its close approach. Returns '' for orbits it can't draw: a or e
+ * out of range, or any of i, node, peri, mean anomaly, epoch null, missing or
+ * not finite.
  *
  * @param {{a_au:number, e:number, i_deg:number, node_deg:number, peri_deg:number, mean_anomaly_deg:number, epoch_jd:number, period_days:?number}} orbit
  * @param {{now: Date, approachAt: ?Date, hazardous: boolean}} options
  */
 export function orbitSchematicSvg(orbit, { now, approachAt, hazardous }) {
   if (!orbit || !(orbit.e >= 0 && orbit.e < 1) || !(orbit.a_au > 0)) return ''
+  // Every field of /api/neo/details may be null: a missing element would coerce
+  // to 0 and draw a false figure, so no schematic at all rather than a wrong one.
+  if (!REQUIRED_ELEMENTS.every((key) => typeof orbit[key] === 'number' && Number.isFinite(orbit[key]))) return ''
 
   const neoPoints = sampleOrbit(orbit)
   const extent = Math.max(1.1, ...neoPoints.map((p) => Math.max(Math.abs(p.x), Math.abs(p.y)))) * 1.12
