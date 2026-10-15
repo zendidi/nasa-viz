@@ -1,0 +1,127 @@
+# Intégration continue — backend et web.
+#
+# Ce workflow a DORMI du 2026-09-30 au 2026-10-15, faute de push. Son tout
+# premier run a trouvé deux choses que la machine de dev ne peut pas voir :
+# un lock dérivé vers Symfony 8 (donc PHP >= 8.4.1, cassant le job 8.3), et
+# l'absence de `.env` — gitignoré, donc jamais présent sur un clone vierge.
+# Les deux sont corrigés ; voir docs/agent/gotchas.md. C'est exactement ce
+# qu'on attend d'une CI : échouer là où le poste de travail ne peut pas.
+#
+# Il n'appelle AUCUNE API externe : PHPUnit travaille sur les fixtures de
+# backend/tests/Fixtures/, et le build Vite est hors-ligne. Le quota NASA
+# (DEMO_KEY, 30 req/h partagées) n'est donc jamais touché, et aucun secret n'est
+# nécessaire.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend — PHPUnit + PHPStan (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 8.3 est le plancher déclaré dans backend/composer.json ; 8.4 est ce qui
+        # tourne en développement. Les deux, pour qu'aucun des deux ne dérive.
+        php: ['8.3', '8.4']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ctype, iconv, intl
+          coverage: none
+
+      - name: Cache des dépendances Composer
+        uses: actions/cache@v4
+        with:
+          path: backend/vendor
+          key: composer-${{ matrix.php }}-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: composer-${{ matrix.php }}-
+
+      # `backend/.env` est gitignoré : il n'existe donc jamais sur un clone
+      # vierge, et `tests/bootstrap.php` appelle `Dotenv::bootEnv()`, qui lève
+      # une PathException sans lui. On reproduit ici l'étape d'installation
+      # documentée dans CLAUDE.md (`cp .env.example .env`), avant Composer,
+      # dont les auto-scripts peuvent déjà vouloir booter le conteneur.
+      - name: Préparer l'environnement
+        working-directory: backend
+        run: cp .env.example .env
+
+      - name: Installer les dépendances
+        working-directory: backend
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      # Garde-fou sur la complétude de `.env.example` lui-même : les variables
+      # d'env se résolvent paresseusement, donc ni PHPUnit (aucun test ne boote
+      # le noyau) ni `lint:container` ne remarquent qu'il en manque une. Un vrai
+      # warmup, si — c'est comme ça que l'absence de DEFAULT_URI, référencée par
+      # config/packages/routing.yaml, a été trouvée le 2026-10-15.
+      - name: Le conteneur se construit depuis .env.example seul
+        working-directory: backend
+        run: php bin/console cache:warmup
+
+      - name: Tests unitaires
+        working-directory: backend
+        run: php bin/phpunit
+
+      - name: Analyse statique
+        working-directory: backend
+        # Niveau 5 sur src/ et tests/, zéro erreur et zéro baseline : un échec ici
+        # est une régression réelle, pas du bruit. Voir backend/phpstan.dist.neon.
+        #
+        # --memory-limit : mesuré le 2026-10-12, l'analyse à froid franchit les
+        # 128 M du php.ini par défaut (37 fichiers ; elle passait à 34). Le
+        # symptôme n'est PAS un "out of memory" lisible mais « Result is
+        # incomplete because of severe errors » AVEC un code de sortie 0 — donc
+        # une analyse muette qui a l'air de passer. Le drapeau est un plafond,
+        # pas une réservation : 512 M ne coûte rien et donne de la marge.
+        run: php vendor/bin/phpstan analyse --no-progress --memory-limit=512M
+
+  web:
+    name: Web — build Vite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Installer les dépendances
+        working-directory: web
+        run: npm ci
+
+      - name: Tests unitaires
+        working-directory: web
+        # Vitest, en Node. Il couvre les modules de calcul purs -- échelle,
+        # astronomie, orbites, pivots, mise en forme -- qui n'ont aucune
+        # dépendance au DOM. Aucun navigateur n'est lancé, ici pas plus
+        # qu'en local.
+        run: npm test
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+      # Aucun test de navigateur ici, et ce n'est pas un oubli : l'utilisateur les
+      # a explicitement refusés sur tous ses projets. Le rendu de la scène 3D se
+      # valide à l'œil, par une checklist. Ces deux étapes vérifient les calculs
+      # et la compilation, ce qui est tout ce qu'elles prétendent.

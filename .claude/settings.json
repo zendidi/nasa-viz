@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Bash(cd *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(sed -n *)",
+      "Bash(wc *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(diff *)",
+      "Bash(php -v)",
+      "Bash(php bin/phpunit*)",
+      "Bash(php bin/console *)",
+      "Bash(php vendor/bin/phpstan*)",
+      "Bash(vendor/bin/phpstan*)",
+      "Bash(php vendor/bin/phpunit*)",
+      "Bash(vendor/bin/phpunit*)",
+      "Bash(backend/vendor/bin/phpunit*)",
+      "Bash(php composer.phar *)",
+      "Bash(composer install*)",
+      "Bash(composer dump-autoload*)",
+      "Bash(composer show*)",
+      "Bash(composer validate*)",
+      "Bash(npm ci*)",
+      "Bash(npm run *)",
+      "Bash(npx vitest*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git blame*)",
+      "Bash(git ls-files*)",
+      "Bash(git rev-parse*)",
+      "Bash(git branch)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/quota-guard.sh\"",
+            "timeout": 10,
+            "statusMessage": "Verification du quota NASA"
+          }
+        ]
+      }
+    ]
+  }
+}

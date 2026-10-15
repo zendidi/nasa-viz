@@ -1,0 +1,7 @@
+Last Update: 2026-09-17 14:17 UTC
+           Object             |            |   Miss Distance             |     Diameter     |  H   | Max bright | Rel. vel | CAI index  |
+Num/des.           Name       | Date       |    km   |    au    |   LD   |   m    |  *=Yes  | mag  |   mag      | km/s     |            |
+AAAAAAAAAAAA AAAAAAAAAAAAAAAA | YYYY-MM-DD | DDDDDDD | D.DDDDDD | DD.DDD | NNNN   |   A     | DD.D |   DDD.D    | DD.D     | DDD.DDD    |
+2026RA4                       | 2026-09-16 | 1287327 | 0.008605 |  3.349 |   20   |   *     | 26.2 |    18.5    | 11.7     |   2.241    |
+2023SZ3                       | 2026-09-16 | 2574246 | 0.017208 |  6.697 |   50   |   *     | 24.1 |    16.0    | 10.3     |   1.367    |
+2026RM39                      | 2026-09-16 | 1628963 | 0.010889 |  4.238 |   10   |   *     | 27.7 |    18.6    |  9.8     |   3.341    |

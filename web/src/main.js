@@ -2,37 +2,93 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
-import { getSunEquatorial, getMoonEclipticLongitude, getGreenwichSiderealTime } from './astronomy.js'
+import { getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
+import { createSunTable } from './sunTable.js'
+import { orbitSchematicSvg } from './orbit.js'
+import { FOCUSES } from './focus.js'
+import { createPanels } from './ui/panels.js'
+import { createStarfield } from './scene/starfield.js'
+import { createPicking } from './picking.js'
+import { createOrbitTraces } from './scene/orbitTrace.js'
+import { createNeoScene, designationOf } from './neo/scene.js'
+import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
+import { latLngToVector3 } from './scene/geo.js'
+import {
+  MOON_RADIUS,
+  makeGlobe,
+  makeIssMarker,
+  makeSunMarker,
+  makeMoon,
+  createDistanceRings,
+  cloudDriftAt,
+} from './scene/bodies.js'
+import { createPlanets } from './scene/planets.js'
+import { createMoons } from './scene/moons.js'
+import { loadOrientationFor, orientBody } from './scene/orientation.js'
+import {
+  NEO_DEFAULT_COLOR,
+  NEO_HAZARD_COLOR,
+  NEO_CREDITS,
+  TAXONOMY,
+  taxonomyKey,
+  cssColor,
+  escapeHtml,
+  sourcesBlockHtml,
+  detailsBlockHtml,
+} from './neoInfo.js'
+import {
+  AU_KM,
+  EARTH_RADIUS,
+  LUNAR_DISTANCE_KM,
+  ISS_READABLE_RADIUS,
+  SUN_READABLE_RADIUS,
+  SCALE_STEPS,
+  lerpLog,
+  sceneDistance,
+  sceneDistanceToKm,
+  earthSystemScale,
+  issOrbitRadius,
+  issRadius,
+  sunRadius,
+  pivotRadius,
+  worldPerPixel,
+  describeScale,
+  remapCameraDistance,
+} from './scale.js'
 
-const EARTH_RADIUS = 2
-// Real ISS altitude is ~0.06x Earth's radius (barely off the surface visually).
-// Exaggerated here so the marker reads clearly against the globe.
-const ISS_ALTITUDE_EXAGGERATION = 8
-const EARTH_RADIUS_KM = 6371
-
-// Real Sun/Moon distances would put both far outside the star shell (or make
-// the Moon invisibly small) — distances below are exaggerated for visibility,
-// same spirit as ISS_ALTITUDE_EXAGGERATION, not a claim of real scale.
+// Distances and sizes of everything but the Earth depend on the "réalisme"
+// scale (scaleT, see scale.js and docs/echelle-reelle.md): readable at 0,
+// true proportions at 1. The light only needs a direction.
 const SUN_LIGHT_DISTANCE = 30
-const SUN_MARKER_DISTANCE = 30
-const MOON_ORBIT_RADIUS = EARTH_RADIUS * 6
-const MOON_RADIUS = EARTH_RADIUS * 0.27 // real Moon/Earth radius ratio
+
+// Floor on each body's on-screen radius, in pixels — at true scale almost
+// everything is sub-pixel (the whole Earth–Moon system is ~5 px when framing a
+// NEO at 0.5 au), so without these nothing would show at all.
+//
+// The Sun's sits above `PLANET_MIN_RADIUS_PX` (3,5, scene/planets.js) on
+// purpose: past the point where every body is on its floor, these numbers are
+// the only thing the scene still says about size, and the Sun must not end up
+// smaller than Jupiter when it is really ten times its radius.
+const MIN_RADIUS_PX = { earth: 2, moon: 1.5, iss: 2.5, sun: 4.5 }
 
 const app = document.getElementById('app')
 
 // --- scene setup ---------------------------------------------------------
 
 const scene = new THREE.Scene()
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000)
+// Far plane covers the Sun at true scale (~47 000 units); the logarithmic
+// depth buffer keeps that range from z-fighting close to the Earth.
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 1e6)
 camera.position.set(0, 3, 8)
 
-const renderer = new THREE.WebGLRenderer({ antialias: true })
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 app.appendChild(renderer.domElement)
 
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.enableDamping = true
+// min/max distance and zoom speed follow the scale — see updateCameraLimits().
 controls.minDistance = 3.5
 controls.maxDistance = 20
 
@@ -45,49 +101,17 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.15))
 const sunLight = new THREE.DirectionalLight(0xffffff, 1.2)
 scene.add(sunLight)
 
-let globeMaterial = null
-let starPoints = null
-let starNames = []
-let starConstellations = []
-let starBaseSizes = null
-let starBaseColors = null
-loadRealStarfield()
-  .then(({ points, names, constellations, baseSizes, baseColors }) => {
-    starPoints = points
-    starNames = names
-    starConstellations = constellations
-    starBaseSizes = baseSizes
-    starBaseColors = baseColors
-    scene.add(points)
-  })
-  .catch(() => scene.add(makeFallbackStarfield()))
+// The sky loads itself in the background and never blocks the scene (scene/starfield.js).
+const starfield = createStarfield(scene)
 
-// { code: "Orion" } (French common names — falls back to the international/Latin
-// name in the source data where no French one exists). Fetched separately from
-// the line geometry since it's tiny and only needed for the hover tooltip.
-let constellationNames = {}
-fetch('/constellation-names.json')
-  .then((res) => (res.ok ? res.json() : {}))
-  .then((data) => {
-    constellationNames = data
-  })
-  .catch(() => {})
-
-let constellationGroups = new Map()
-loadConstellationLines()
-  .then(({ parent, groups }) => {
-    constellationGroups = groups
-    scene.add(parent)
-  })
-  .catch(() => {})
-
-const globe = makeGlobe()
+const { group: globe, material: globeMaterial, sphere: globeSphere, clouds: globeClouds } = makeGlobe()
 scene.add(globe)
 
 // Child of globe (not scene) so it turns with the real Earth rotation set in
 // animate() — its position is computed in the globe's own unrotated
 // lat/lng frame, same as the texture, so it always sits over the right spot.
 const issMarker = makeIssMarker()
+issMarker.visible = false // until a position is known
 globe.add(issMarker)
 
 const sunMarker = makeSunMarker()
@@ -96,8 +120,7 @@ scene.add(sunMarker)
 const moon = makeMoon()
 scene.add(moon)
 
-const neoGroup = new THREE.Group()
-scene.add(neoGroup)
+const distanceRings = createDistanceRings(scene)
 
 // --- astronomy (real Sun/Moon positions) --------------------------------------
 
@@ -112,814 +135,849 @@ scene.add(neoGroup)
  * no extra per-frame JS work needed.
  */
 const sunDirWorld = new THREE.Vector3()
+const moonDirWorld = new THREE.Vector3()
+let moonDistanceKm = LUNAR_DISTANCE_KM
+let sunDistanceKm = AU_KM
+
+// Geocentric positions in km, scene axes — the common frame every placement
+// goes through, whichever body the scene is centred on (see placeKm()).
+const sunPositionKm = new THREE.Vector3()
+const moonPositionKm = new THREE.Vector3()
+const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)
+
+// The Sun comes from JPL Horizons, with `astronomy.js`'s series standing in
+// until the table lands. Declared here because updateAstronomy() below runs on
+// the very first frame, long before any fetch returns.
+const sunTable = createSunTable({
+  on: {
+    // Everything derived from the Sun has to be redone when the real one
+    // arrives: the scene's positions, and the Earth's own drawn orbit.
+    changed: () => {
+      updateAstronomy()
+      rebuildBodyOrbits()
+    },
+  },
+})
 
 function updateAstronomy() {
   const now = new Date()
 
-  const { ra, dec } = getSunEquatorial(now)
-  sunDirWorld.copy(latLngToVector3(dec, ra, 1))
+  sunTable.positionKmAt(now, sunPositionKm)
+  sunDistanceKm = sunPositionKm.length()
+  sunDirWorld.copy(sunPositionKm).divideScalar(sunDistanceKm)
   sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
-  sunMarker.position.copy(sunDirWorld).multiplyScalar(SUN_MARKER_DISTANCE)
   // The globe shader reads sunDirection in world space and does its own
   // modelMatrix transform per-fragment, so the globe's real rotation (set
   // from GMST in animate()) sweeps the terminator across the texture with
   // no extra per-frame work here.
   globeMaterial.uniforms.sunDirection.value.copy(sunDirWorld)
 
-  const moonLng = getMoonEclipticLongitude(now)
-  moon.position.copy(latLngToVector3(0, moonLng, MOON_ORBIT_RADIUS))
+  // Real direction and distance only — where that lands in the scene depends
+  // on the current scale, applied per frame in applyScale().
+  const moonPos = getMoonEquatorial(now)
+  moonDirWorld.copy(latLngToVector3(moonPos.dec, moonPos.ra, 1))
+  moonDistanceKm = moonPos.distanceKm
+  moonPositionKm.copy(moonDirWorld).multiplyScalar(moonDistanceKm)
+}
+
+// --- point de vue (le corps au centre de la scène) ----------------------------
+//
+// The pivot IS the scene's origin: nothing is drawn at an absolute position,
+// everything goes through placeKm() below. Switching pivot therefore only
+// changes two things — which position is subtracted, and which readable curve
+// compresses what's left (docs/points-de-vue.md).
+
+let focusId = 'earth'
+const focusOf = () => FOCUSES[focusId]
+
+/**
+ * The planet's own record when a planet is the pivot, null otherwise. Resolved
+ * once on the switch rather than looked up per placement: `placeKm` runs for
+ * every NEO and every body, dozens of times a frame.
+ *
+ * It is also the guard. `setFocus` only assigns it once the planet's Horizons
+ * table has landed, so anything reading it can trust `positionKm`.
+ *
+ * @type {{id: string, radiusKm: number, positionKm: THREE.Vector3} | null}
+ */
+let focusPlanet = null
+
+const focusPositionKm = () => {
+  if (focusPlanet) return focusPlanet.positionKm
+  return focusId === 'sun' ? sunPositionKm : EARTH_POSITION_KM
+}
+
+/**
+ * The pivot's own radius in scene units — what the camera must not enter.
+ * `pivotRadius` covers all three cases by construction (see scale.js); the Earth
+ * branch stays written out because EARTH_RADIUS is the anchor the others are
+ * defined against, and reading it as a constant here is the clearer statement.
+ */
+const focusRadius = (t) => {
+  if (focusPlanet) return pivotRadius(focusPlanet.radiusKm, t)
+  return focusId === 'sun' ? sunRadius(t, true) : EARTH_RADIUS
+}
+
+const placeRelative = new THREE.Vector3()
+
+/** Scene position of a body known by its geocentric km vector, at scale t. */
+function placeKm(out, geocentricKm, t) {
+  placeRelative.subVectors(geocentricKm, focusPositionKm())
+  const distanceKm = placeRelative.length()
+  if (distanceKm < 1e-6) return out.set(0, 0, 0)
+  return out.copy(placeRelative).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
+}
+
+/** Same, for a sample already expressed relative to the pivot (orbit traces). */
+function placeRelativeKm(out, relativeKm, t) {
+  const distanceKm = relativeKm.length()
+  if (distanceKm < 1e-6) return out.set(0, 0, 0)
+  return out.copy(relativeKm).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
+}
+
+const placeHeliocentric = new THREE.Vector3()
+
+/**
+ * Same, for a sample expressed relative to the **Sun** — orbital elements and
+ * the backend's orbit tables both come that way.
+ *
+ * It is `placeKm` with one addition, and that is the whole trick: adding the
+ * live geocentric Sun turns a heliocentric sample into a geocentric one, which
+ * is the frame every body position in this scene already speaks. The pivot's
+ * own subtraction then happens once, inside `placeKm`, instead of being
+ * re-derived per caller.
+ *
+ * What it buys: a heliocentric orbit used to be readable only from the Sun,
+ * where "relative to the pivot" and "relative to the Sun" are the same vector.
+ * Drawn from the Earth it ringed the Earth, from Mars it ringed Mars — which is
+ * why the planets' orbits were simply hidden anywhere but the Sun
+ * (docs/agent/backlog.md, `orbite-planete-centree-pivot`). Now they are right
+ * from every pivot.
+ *
+ * Note what is *not* subtracted: the pivot's position at each sample's own
+ * date. Taking the current one translates the whole orbit rigidly, which is the
+ * intended picture — where that orbit lies relative to us now. Subtracting a
+ * moving pivot would draw the relative motion instead, i.e. the retrograde
+ * rosettes that the 2026-09-29 cache bug accidentally put on screen.
+ */
+function placeHeliocentricKm(out, heliocentricKm, t) {
+  placeHeliocentric.addVectors(heliocentricKm, sunPositionKm)
+  return placeKm(out, placeHeliocentric, t)
 }
 
 updateAstronomy()
-// Real drift is slow (~1°/day for the Sun) — no need to recompute every frame.
-setInterval(updateAstronomy, 60_000)
+// Real drift is slow (~1°/day for the Sun, ~0.5°/h for the Moon) — no need to
+// recompute every frame. The drawn orbits are re-sampled with it so their first
+// sample stays the body's current position (rebuildBodyOrbits()).
+setInterval(() => {
+  updateAstronomy()
+  rebuildBodyOrbits()
+}, 60_000)
 
-// --- geo helpers -----------------------------------------------------------
+// --- NEOs ----------------------------------------------------------------------
 
-function latLngToVector3(lat, lng, radius) {
-  const phi = (90 - lat) * (Math.PI / 180)
-  const theta = (lng + 180) * (Math.PI / 180)
-  return new THREE.Vector3(
-    -radius * Math.sin(phi) * Math.cos(theta),
-    radius * Math.cos(phi),
-    radius * Math.sin(phi) * Math.sin(theta),
-  )
-}
+// Orbit traces are shared: the NEO's ellipse and the Moon's and Earth's own
+// orbits are the same kind of line, re-projected every frame.
+const traces = createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricKm })
 
-/** Deterministic pseudo-random unit vector, stable per NEO id across refreshes. */
-function hashToDirection(id) {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (Math.imul(31, h) + id.charCodeAt(i)) | 0
-  const rand = (seed) => {
-    const x = Math.sin(seed) * 43758.5453
-    return x - Math.floor(x)
-  }
-  const theta = rand(h) * Math.PI * 2
-  const phi = Math.acos(rand(h + 1) * 2 - 1)
-  return new THREE.Vector3(Math.sin(phi) * Math.cos(theta), Math.cos(phi), Math.sin(phi) * Math.sin(theta))
-}
-
-// --- scene objects -----------------------------------------------------------
-
-/**
- * Day/night terminator: a hand-rolled shader rather than MeshPhongMaterial,
- * blending the day map against a city-lights night map (mrdoob/three.js
- * examples, same source as the other Earth textures) by how much each
- * fragment's world-space normal faces the real Sun direction
- * (`sunDirection`, updated in updateAstronomy() from real RA/dec — see the
- * "astronomy" section above). Everything here works in world space, so the
- * globe's real rotation (animate()'s `globe.rotation.y = ...GMST...`)
- * naturally sweeps the terminator across the texture via the standard
- * `modelMatrix` transform — no extra per-frame bookkeeping needed. Normal
- * mapping (for the subtle terrain relief the old MeshPhongMaterial had) is
- * done without a
- * precomputed tangent attribute, via Schüler's screen-space-derivative method.
- */
-function makeGlobe() {
-  const group = new THREE.Group()
-  const textureLoader = new THREE.TextureLoader()
-
-  const dayMap = textureLoader.load('/textures/earth_atmos_2048.jpg')
-  dayMap.colorSpace = THREE.SRGBColorSpace
-  const nightMap = textureLoader.load('/textures/earth_lights_2048.png')
-  nightMap.colorSpace = THREE.SRGBColorSpace
-
-  globeMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      dayTexture: { value: dayMap },
-      nightTexture: { value: nightMap },
-      specularTexture: { value: textureLoader.load('/textures/earth_specular_2048.jpg') },
-      normalTexture: { value: textureLoader.load('/textures/earth_normal_2048.jpg') },
-      normalScale: { value: 0.6 },
-      sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      shininess: { value: 35.0 },
+// The NEO points, the sheets that colour them, their real positions, and the
+// two drawings of the selected one all live together (neo/scene.js) — they
+// share a selection, a colour and an approach ring.
+const neoScene = createNeoScene({
+  scene,
+  camera,
+  traces,
+  placeKm,
+  placeRelativeKm,
+  minRadiusAt,
+  focusId: () => focusId,
+  on: {
+    // A sheet arriving changes what the modal can show, then what the legend
+    // and the scale label know about diameters.
+    detailsProgress: () => {
+      if (modalNeo) renderNeoModal()
     },
-    vertexShader: `
-      varying vec2 vUv;
-      varying vec3 vWorldNormal;
-      varying vec3 vWorldPosition;
-      void main() {
-        vUv = uv;
-        vWorldNormal = normalize(mat3(modelMatrix) * normal);
-        vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform sampler2D dayTexture;
-      uniform sampler2D nightTexture;
-      uniform sampler2D specularTexture;
-      uniform sampler2D normalTexture;
-      uniform float normalScale;
-      uniform vec3 sunDirection;
-      uniform float shininess;
-      varying vec2 vUv;
-      varying vec3 vWorldNormal;
-      varying vec3 vWorldPosition;
+    detailsApplied: () => {
+      if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
+      renderScalePanel()
+    },
+    positionsChanged: (settled) => {
+      renderNeoPositionsStatus()
+      if (settled) renderScalePanel()
+    },
+  },
+})
 
-      // Normal mapping without precomputed tangents (Schüler's screen-space
-      // derivative method) — avoids reconstructing Three's full TBN pipeline
-      // for a single hand-rolled material.
-      vec3 perturbNormal(vec3 worldPos, vec3 worldNormal, vec2 uv, vec3 mapN) {
-        vec3 q0 = dFdx(worldPos);
-        vec3 q1 = dFdy(worldPos);
-        vec2 st0 = dFdx(uv);
-        vec2 st1 = dFdy(uv);
-        vec3 N = normalize(worldNormal);
-        vec3 T = normalize(q0 * st1.t - q1 * st0.t);
-        vec3 B = normalize(cross(N, T));
-        mat3 tsn = mat3(T, B, N);
-        return normalize(tsn * mapN);
-      }
+// --- orbits of the bodies the scene places itself (Moon, Earth) -----------------
+//
+// Drawn from the very series that places the body, never from a neighbouring
+// model: a line that doesn't pass through its own body is worse than no line.
+// The fixed 384 400 km reference circle used to miss the Moon by 1 scene unit
+// (it ignores both the 5 % apogee/perigee swing and the orbit's 5° tilt to the
+// ecliptic), and the Earth's Kepler ellipse misses the globe by ~945 000 km.
+// Sampling starts at "now", so sample 0 *is* the body — the trace goes through
+// it by construction, at every scale and in both views.
 
-      void main() {
-        vec3 dayColor = texture2D(dayTexture, vUv).rgb;
-        vec3 nightColor = texture2D(nightTexture, vUv).rgb;
-        float specMask = texture2D(specularTexture, vUv).r;
+const MOON_ORBIT_DAYS = 27.321582 // sidereal month
+const MOON_ORBIT_SAMPLES = 96
+const EARTH_ORBIT_DAYS = 365.256
+const EARTH_ORBIT_SAMPLES = 180
+const DAY_MS = 86_400_000
 
-        vec3 mapN = texture2D(normalTexture, vUv).xyz * 2.0 - 1.0;
-        mapN.xy *= normalScale;
-        vec3 normal = perturbNormal(vWorldPosition, vWorldNormal, vUv, mapN);
+// Straight in the scene, not in a group: the Earth's orbit is the heliocentric
+// view's own yardstick (and its 1 au circle), worth drawing even with nothing
+// selected. Each declares its own frame — the Earth's samples are heliocentric
+// (the Sun table, negated), the Moon's are geocentric like every body position.
+const earthOrbitTrace = traces.make(0x4fa8ff, 0.5, { parent: scene, frame: 'heliocentric' })
+const moonOrbitTrace = traces.make(0x8ea3b8, 0.5, { parent: scene, frame: 'geocentric' })
 
-        vec3 sunDir = normalize(sunDirection);
-        float sunFacing = dot(normal, sunDir);
-        // Soft terminator band rather than a hard day/night edge.
-        float dayMix = smoothstep(-0.15, 0.15, sunFacing);
-
-        vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-        vec3 reflectDir = reflect(-sunDir, normal);
-        float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess) * specMask * dayMix * 0.4;
-
-        vec3 litDay = dayColor * (0.5 + 0.5 * max(sunFacing, 0.0)) + vec3(spec);
-        vec3 color = mix(nightColor, litDay, dayMix);
-
-        gl_FragColor = vec4(color, 1.0);
-        // Custom ShaderMaterial fragment shaders don't get the automatic
-        // linear->output colorspace encode that built-in materials do —
-        // without it, colors are displayed as if already sRGB, which
-        // oversaturates warm tones (desert looked lava-orange) and crushes
-        // shadows (ground looked too dark).
-        #include <colorspace_fragment>
-      }
-    `,
-  })
-
-  const sphere = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 64, 64), globeMaterial)
-  group.add(sphere)
-
-  return group
+function sampleBodyOrbit(count, days, positionAt) {
+  return Array.from({ length: count + 1 }, (_, i) =>
+    positionAt(new Date(Date.now() + (i / count) * days * DAY_MS)),
+  )
 }
 
-function makeIssMarker() {
-  const group = new THREE.Group()
-  const body = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xffcc33 }),
+function rebuildBodyOrbits() {
+  traces.setKm(
+    moonOrbitTrace,
+    sampleBodyOrbit(MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) => {
+      const { ra, dec, distanceKm } = getMoonEquatorial(date)
+      return latLngToVector3(dec, ra, distanceKm)
+    }),
+    () => true,
   )
-  group.add(body)
-
-  const glow = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xffcc33, transparent: true, opacity: 0.25 }),
+  // Straight from the Sun table when there is one — the Earth seen from the Sun
+  // is the Sun seen from the Earth, negated. Those are the very samples the
+  // globe's own position is interpolated from, so the Earth lands on its line by
+  // construction. Only while the fallback series is standing in is the curve
+  // sampled a year forward from now instead.
+  traces.setKm(
+    earthOrbitTrace,
+    sunTable.earthOrbitSamplesKm() ??
+      sampleBodyOrbit(EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) =>
+        sunTable.positionKmAt(date, new THREE.Vector3()).negate(),
+      ),
+    () => true,
   )
-  group.add(glow)
-
-  return group
 }
 
-/** The Sun itself is self-lit (MeshBasicMaterial), not shaded by sunLight. */
-function makeSunMarker() {
-  const group = new THREE.Group()
-  const body = new THREE.Mesh(
-    new THREE.SphereGeometry(0.6, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xfff2cc }),
-  )
-  group.add(body)
-
-  const glow = new THREE.Mesh(
-    new THREE.SphereGeometry(1.0, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.25 }),
-  )
-  group.add(glow)
-
-  return group
-}
+rebuildBodyOrbits()
 
 /**
- * Textured (mrdoob/three.js examples) and lit by the same sunLight as the
- * globe — its visible phase (crescent/gibbous) falls out of that real
- * directional lighting automatically, no separate phase calculation needed.
+ * The Moon's orbit is geocentric, so it collapses onto the Earth from anywhere
+ * else: Earth's view only.
+ *
+ * The Earth's is heliocentric, and since 2026-10-12 that means it draws from
+ * every pivot — through the globe itself when the Earth is the pivot, exactly
+ * as Mars's orbit does from Mars. It follows the planets' own fade so that the
+ * heliocentric orbits come and go as one set: in the geocentric view, where a
+ * planet is only drawn at 100 % réel, an orbit left on screen with no planet on
+ * it would be the one line in the scene with nothing to point at.
  */
-function makeMoon() {
-  const textureLoader = new THREE.TextureLoader()
-  const moonMap = textureLoader.load('/textures/moon_1024.jpg')
-  moonMap.colorSpace = THREE.SRGBColorSpace
+function updateBodyOrbits(t) {
+  if (focusId === 'earth') traces.update(moonOrbitTrace, t)
+  else moonOrbitTrace.line.visible = false
 
-  return new THREE.Mesh(
-    new THREE.SphereGeometry(MOON_RADIUS, 32, 32),
-    new THREE.MeshPhongMaterial({ map: moonMap, shininess: 0 }),
-  )
+  if (planets.drawnAt(t)) traces.update(earthOrbitTrace, t)
+  else earthOrbitTrace.line.visible = false
 }
 
-const STAR_SHELL_RADIUS = 80
+// --- ISS -------------------------------------------------------------------------
 
-/**
- * Real star positions (right ascension/declination) and colors from a
- * Hipparcos-derived catalog (d3-celestial, BSD-3), trimmed to naked-eye
- * stars (mag <= 5, ~1600 stars) and bundled at web/public/stars.json.
- * Point size and color follow physically-motivated formulas from magnitude
- * and B-V color index — this is a real sky, not decoration. A 5th element
- * per star carries its traditional/IAU proper name where one exists
- * (~450 of ~1600 — most naked-eye stars have no common name), empty string
- * otherwise, used to power the hover tooltip. A 6th carries its IAU
- * constellation code (e.g. "Ori"), used to draw that constellation's lines
- * on hover — see loadConstellationLines().
- */
-async function loadRealStarfield() {
-  const res = await fetch('/stars.json')
-  if (!res.ok) throw new Error(`stars.json: ${res.status}`)
-  /** @type {Array<[number, number, number, number, string, string]>} */
-  const stars = await res.json()
-
-  const positions = new Float32Array(stars.length * 3)
-  const colors = new Float32Array(stars.length * 3)
-  const sizes = new Float32Array(stars.length)
-  const names = new Array(stars.length)
-  const constellations = new Array(stars.length)
-
-  stars.forEach(([ra, dec, mag, bv, name, con], i) => {
-    const p = latLngToVector3(dec, ra, STAR_SHELL_RADIUS)
-    positions[i * 3] = p.x
-    positions[i * 3 + 1] = p.y
-    positions[i * 3 + 2] = p.z
-
-    const color = bvToColor(bv)
-    colors[i * 3] = color.r
-    colors[i * 3 + 1] = color.g
-    colors[i * 3 + 2] = color.b
-
-    // Flux ~ 10^(-0.4*mag), apparent radius ~ sqrt(flux) ~ 10^(-0.2*mag).
-    sizes[i] = THREE.MathUtils.clamp(3 * Math.pow(10, -0.2 * mag), 0.6, 5)
-    names[i] = name || ''
-    constellations[i] = con || ''
-  })
-
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-  geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1))
-
-  const material = new THREE.ShaderMaterial({
-    uniforms: {},
-    vertexShader: `
-      attribute float size;
-      attribute vec3 color;
-      varying vec3 vColor;
-      void main() {
-        vColor = color;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = size * (300.0 / -mvPosition.z);
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vColor;
-      void main() {
-        float d = length(gl_PointCoord - vec2(0.5));
-        float alpha = smoothstep(0.5, 0.0, d);
-        gl_FragColor = vec4(vColor, alpha);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-  })
-
-  // Clones: the "size"/"color" BufferAttributes above wrap these same typed
-  // arrays, so hover highlighting (which mutates them in place) needs an
-  // untouched copy to restore from.
-  return {
-    points: new THREE.Points(geometry, material),
-    names,
-    constellations,
-    baseSizes: sizes.slice(),
-    baseColors: colors.slice(),
-  }
-}
-
-/**
- * Constellation stick-figure lines (d3-celestial, BSD-3, same source as the
- * star catalog — ra/dec already share its -180..180 convention, so no
- * reprojection needed). web/public/constellations.json maps each IAU code to
- * its polylines: `{ code: [[[ra, dec], [ra, dec], ...], ...] }`. Built as one
- * hidden THREE.LineSegments per constellation so hovering a star can toggle
- * just that constellation's figure on.
- */
-async function loadConstellationLines() {
-  const res = await fetch('/constellations.json')
-  if (!res.ok) throw new Error(`constellations.json: ${res.status}`)
-  /** @type {Record<string, Array<Array<[number, number]>>>} */
-  const lines = await res.json()
-
-  const parent = new THREE.Group()
-  const material = new THREE.LineBasicMaterial({ color: 0x6fb7ff, transparent: true, opacity: 0.55, depthWrite: false })
-  const groups = new Map()
-
-  for (const [code, polylines] of Object.entries(lines)) {
-    const segmentPoints = []
-    for (const polyline of polylines) {
-      for (let i = 0; i < polyline.length - 1; i++) {
-        const [ra1, dec1] = polyline[i]
-        const [ra2, dec2] = polyline[i + 1]
-        segmentPoints.push(latLngToVector3(dec1, ra1, STAR_SHELL_RADIUS))
-        segmentPoints.push(latLngToVector3(dec2, ra2, STAR_SHELL_RADIUS))
-      }
-    }
-    const geometry = new THREE.BufferGeometry().setFromPoints(segmentPoints)
-    const segments = new THREE.LineSegments(geometry, material)
-    segments.visible = false
-    groups.set(code, segments)
-    parent.add(segments)
-  }
-
-  return { parent, groups }
-}
-
-/** Ballesteros' B-V → Kelvin, then the Tanner Helland blackbody → RGB approximation. */
-function bvToColor(bv) {
-  const kelvin = 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62))
-  const t = kelvin / 100
-  const clamp01 = (x) => THREE.MathUtils.clamp(x, 0, 255) / 255
-
-  const r = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592)
-  const g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492)
-  const b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307
-
-  return new THREE.Color(clamp01(r), clamp01(g), clamp01(b))
-}
-
-/** Used only if stars.json fails to load — a placeholder, not a real sky. */
-function makeFallbackStarfield() {
-  const count = 2000
-  const positions = new Float32Array(count * 3)
-  for (let i = 0; i < count; i++) {
-    const theta = Math.random() * Math.PI * 2
-    const phi = Math.acos(Math.random() * 2 - 1)
-    positions[i * 3] = STAR_SHELL_RADIUS * Math.sin(phi) * Math.cos(theta)
-    positions[i * 3 + 1] = STAR_SHELL_RADIUS * Math.cos(phi)
-    positions[i * 3 + 2] = STAR_SHELL_RADIUS * Math.sin(phi) * Math.sin(theta)
-  }
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  return new THREE.Points(geometry, new THREE.PointsMaterial({ color: 0xffffff, size: 0.08 }))
-}
-
-function addNeoPoints(objects) {
-  neoGroup.clear()
-  const shellRadius = EARTH_RADIUS * 3.5
-
-  for (const neo of objects) {
-    const avgDiameter = (neo.estimated_diameter_km.min + neo.estimated_diameter_km.max) / 2
-    const size = THREE.MathUtils.clamp(avgDiameter * 0.15, 0.03, 0.2)
-    const color = neo.is_potentially_hazardous ? 0xff4d4d : 0x7fe0ff
-
-    // Slightly oversized invisible hit-sphere layered under the visible mesh
-    // makes small NEOs easier to click without inflating what's rendered.
-    const hitTarget = new THREE.Mesh(
-      new THREE.SphereGeometry(Math.max(size, 0.12), 8, 8),
-      new THREE.MeshBasicMaterial({ visible: false }),
-    )
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(size, 10, 10),
-      new THREE.MeshBasicMaterial({ color }),
-    )
-    const position = hashToDirection(neo.id).multiplyScalar(shellRadius)
-    mesh.position.copy(position)
-    hitTarget.position.copy(position)
-    mesh.userData.neo = neo
-    hitTarget.userData.neo = neo
-    neoGroup.add(mesh)
-    neoGroup.add(hitTarget)
-  }
-}
+let issPosition = null
 
 function applyIssPosition(position) {
-  const orbitRadius = EARTH_RADIUS * (1 + (position.altitude_km / EARTH_RADIUS_KM) * ISS_ALTITUDE_EXAGGERATION)
-  issMarker.position.copy(latLngToVector3(position.latitude, position.longitude, orbitRadius))
+  issPosition = position
+  issMarker.visible = true
+}
+
+// --- scale ("réalisme") ------------------------------------------------------------
+
+let scaleStep = 0 // slider position, 0..SCALE_STEPS
+let scaleT = 0 // current value, animated toward scaleStep / SCALE_STEPS
+let scaleTransition = null // { from, to, startMs }
+const SCALE_TRANSITION_MS = 1500
+
+function setScaleStep(step) {
+  const next = THREE.MathUtils.clamp(Math.round(step), 0, SCALE_STEPS)
+  if (next === scaleStep && !scaleTransition) return
+  scaleStep = next
+  scaleTransition = { from: scaleT, to: next / SCALE_STEPS, startMs: performance.now() }
+  renderScalePanel()
+  renderPlanetsPanel() // the cran decides whether the geocentric view shows planets
+}
+
+/** NEO distances from the current pivot — what the scale label and the camera anchors quote. */
+function neoDistancesKm() {
+  neoScene.refreshPositions(Date.now() / 1000)
+  return neoScene.entries.filter((e) => e.source).map((e) => e.positionKm.distanceTo(focusPositionKm()))
+}
+
+/** The pivot's yardsticks, at their real current distance. */
+function focusReferences() {
+  // Around a planet the Sun is the only yardstick the scene can quote today;
+  // its moons will be the second one (lot 4).
+  if (focusPlanet) return [{ label: 'Soleil', km: focusPlanet.positionKm.distanceTo(sunPositionKm) }]
+  return focusId === 'sun' ? [{ label: 'Terre', km: sunDistanceKm }] : [{ label: 'Lune', km: moonDistanceKm }]
+}
+
+function medianOf(values) {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[sorted.length >> 1]
+}
+
+/**
+ * Camera distances that should "stay put" relative to the scene when t
+ * changes: close to the surface (unchanged), the Moon, the median NEO.
+ * Filtered to stay strictly increasing at both t values.
+ */
+function cameraAnchors(tFrom, tTo, neoMedianKm) {
+  const from = [controls.minDistance]
+  const to = [controls.minDistance]
+  const curve = focusOf().curve
+  const candidates = focusReferences().map((reference) => reference.km)
+  if (neoMedianKm !== null) candidates.push(neoMedianKm)
+  for (const km of candidates) {
+    const a = sceneDistance(km, tFrom, curve)
+    const b = sceneDistance(km, tTo, curve)
+    if (a > from[from.length - 1] && b > to[to.length - 1]) {
+      from.push(a)
+      to.push(b)
+    }
+  }
+  return { from, to }
+}
+
+const cameraOffset = new THREE.Vector3()
+
+function stepScaleTransition(nowMs) {
+  if (!scaleTransition) return
+  const u = Math.min(1, (nowMs - scaleTransition.startMs) / SCALE_TRANSITION_MS)
+  const eased = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2
+  const next = THREE.MathUtils.lerp(scaleTransition.from, scaleTransition.to, eased)
+
+  const { from, to } = cameraAnchors(scaleT, next, medianOf(neoDistancesKm()))
+  cameraOffset.subVectors(camera.position, controls.target)
+  cameraOffset.setLength(remapCameraDistance(cameraOffset.length(), from, to))
+  camera.position.copy(controls.target).add(cameraOffset)
+
+  scaleT = next
+  if (u === 1) scaleTransition = null
+}
+
+/** Zoom range follows how far the scene extends at the current scale. */
+function updateCameraLimits() {
+  const curve = focusOf().curve
+  let farthest = 0
+  for (const reference of focusReferences()) {
+    farthest = Math.max(farthest, sceneDistance(reference.km, scaleT, curve))
+  }
+  for (const entry of neoScene.entries) {
+    if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+  }
+  // Neptune sits further out than any NEO in both views — without this the
+  // zoom would stop short of the planet it is drawing. Only while the planets
+  // are actually drawn: the geocentric view hides them below 100 % réel, and an
+  // invisible Neptune must not be what lets the camera pull back 26 units.
+  if (planets.drawnAt(scaleT)) {
+    for (const body of planets.bodies) {
+      if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+    }
+  }
+  // A moon can be the furthest thing in the scene at the readable end —
+  // Pasiphae orbits 24 million km out, well past where Jupiter's own curve puts
+  // the inner planets.
+  for (const distanceKm of moons.distancesKm()) {
+    farthest = Math.max(farthest, sceneDistance(distanceKm, scaleT, curve))
+  }
+  // The drawn orbit is part of the scene's extent: you must be able to pull
+  // back far enough to see the whole ellipse, aphelion included.
+  if (neoScene.heliocentricGroup.visible) {
+    farthest = Math.max(farthest, neoScene.orbitMarkers.aphelion.position.length())
+  }
+  // The pivot is the anchor: never let the camera dive inside it (the Sun at
+  // true scale is 218 units across, where the Earth is 2).
+  controls.minDistance = focusRadius(scaleT) * lerpLog(1.75, 1.3, scaleT)
+  controls.maxDistance = Math.max(20, farthest * 2.5)
+  // OrbitControls' dolly is multiplicative (×0.95 per wheel notch at speed 1):
+  // spanning 2.6 → ~60 000 would take ~190 notches without this.
+  controls.zoomSpeed = Math.max(1, Math.log(controls.maxDistance / controls.minDistance) / 3)
+
+  // The far plane has to follow the scene, and it is measured *from the camera*,
+  // not from the pivot. The fixed 1e6 it was built with is smaller than the
+  // scene itself at 100 % réel: Neptune sits 1,41 million units out, so it was
+  // clipped away outright — and pulled back far enough to frame it, every outer
+  // planet went with it. That is precisely the view that now has to show them.
+  // Widening it is free because of `logarithmicDepthBuffer`; `near` is what sets
+  // the precision, and it is untouched. Re-derived with a factor-4 hysteresis so
+  // an orbiting camera isn't rebuilding the projection matrix every frame.
+  const neededFar = Math.max(1e4, (camera.position.length() + farthest) * 2)
+  if (neededFar > camera.far || neededFar < camera.far / 4) {
+    camera.far = neededFar
+    camera.updateProjectionMatrix()
+  }
+}
+
+// --- changer de point de vue ------------------------------------------------------
+
+const focusOffset = new THREE.Vector3()
+
+/**
+ * Switching pivot re-places the whole scene at once — interpolating between two
+ * different compressions would mean nothing visually — but the camera keeps its
+ * direction and the same *physical* framing: its distance is read back as a real
+ * distance through the old curve, then re-compressed with the new one.
+ */
+function setFocus(nextId) {
+  const next = FOCUSES[nextId]
+  if (nextId === focusId || !next) return
+
+  // A planet only becomes the pivot once its Horizons table has landed. Without
+  // a position there is no origin to subtract, so every body in the scene would
+  // silently be placed relative to (0,0,0) — that is, relative to the Earth,
+  // while the panel claimed another pivot. The button is disabled meanwhile
+  // (panels.renderView), this is the guard behind it.
+  const nextPlanet = next.group === 'planet' ? planets.focusBody(nextId, Date.now() / 1000) : null
+  if (next.group === 'planet' && !nextPlanet) return
+
+  focusOffset.subVectors(camera.position, controls.target)
+  const framedKm = sceneDistanceToKm(focusOffset.length(), scaleT, focusOf().curve)
+
+  focusId = nextId
+  focusPlanet = nextPlanet
+  recenterTween = null
+  distanceRings.rebuild(focusOf().rings)
+  rebuildRingLabels()
+  neoScene.invalidateOrbit()
+
+  controls.target.set(0, 0, 0)
+  updateCameraLimits()
+  // Same physical distance — but bounded so the switch always lands on
+  // something worth looking at: hugging the Earth at 130 000 km is *inside*
+  // the Sun (radius 696 000 km), and framing the NEO cloud from the Earth is
+  // a pinhole around the Sun.
+  const reference = focusReferences()[0]
+  const framed = sceneDistance(framedKm, scaleT, focusOf().curve)
+  const closest = Math.max(controls.minDistance, focusRadius(scaleT) * 3)
+  const furthest = Math.min(controls.maxDistance, sceneDistance(reference.km, scaleT, focusOf().curve) * 1.8)
+  camera.position.copy(focusOffset.setLength(THREE.MathUtils.clamp(framed, closest, Math.max(closest, furthest))))
+
+  renderScalePanel()
+  renderViewPanel()
+  renderPlanetsPanel() // so does the pivot
+  if (modalNeo) renderNeoModal()
+
+  // The one place moons are ever fetched, and the one place a planet's colour
+  // map and its orientation are: centring on a planet is the whole trigger.
+  // Nothing is loaded for a planet nobody looks at — the moons and the
+  // orientation cost Horizons requests, the map costs bandwidth, and none of it
+  // buys anything at the few pixels a planet occupies from anywhere else.
+  if (focusPlanet) {
+    moons.loadFor(focusPlanet.id)
+    planets.loadTextureFor(focusPlanet.id)
+    loadOrientationFor(focusPlanet.id)
+  }
+  if (focusId === 'sun') sunMarker.userData.loadTexture()
+}
+
+// Dragging with the right button wanders off the pivot; this brings it back to
+// the centre of the view without touching the zoom or the viewing angle.
+const RECENTER_MS = 600
+let recenterTween = null
+
+function recenterCamera() {
+  if (controls.target.lengthSq() > 1e-12) recenterTween = { from: controls.target.clone(), startMs: performance.now() }
+}
+
+const recenterTarget = new THREE.Vector3()
+
+function stepRecenter(nowMs) {
+  if (!recenterTween) return
+  const u = Math.min(1, (nowMs - recenterTween.startMs) / RECENTER_MS)
+  const eased = 1 - Math.pow(1 - u, 3)
+  recenterTarget.copy(recenterTween.from).multiplyScalar(1 - eased)
+  camera.position.add(recenterTarget).sub(controls.target)
+  controls.target.copy(recenterTarget)
+  if (u === 1) recenterTween = null
+}
+
+const tmpWorldPos = new THREE.Vector3()
+
+/** Scene radius needed for `px` pixels at a world position, given the current camera. */
+function minRadiusAt(worldPos, px) {
+  const distance = camera.position.distanceTo(worldPos)
+  return px * worldPerPixel(distance, camera.fov, renderer.domElement.clientHeight)
+}
+
+/** The Earth's drawn radius in world units — system scale and pixel floor included. */
+function earthWorldRadius() {
+  return EARTH_RADIUS * globe.scale.x * globeSphere.scale.x
+}
+
+/** Places and sizes every scale-dependent object for scaleT and the current camera. */
+function applyScale(nowSeconds) {
+  const t = scaleT
+  const isEarthFocus = focusId === 'earth'
+  // Shrinking the globe *group* (not just the sphere) takes the ISS with it,
+  // so low orbit stays low orbit when the Earth is only a marker.
+  const earthScale = earthSystemScale(t, isEarthFocus)
+
+  placeKm(globe.position, EARTH_POSITION_KM, t)
+  globe.scale.setScalar(earthScale)
+  const earthRadius = Math.max(EARTH_RADIUS * earthScale, minRadiusAt(globe.position, MIN_RADIUS_PX.earth))
+  globeSphere.scale.setScalar(earthRadius / (EARTH_RADIUS * earthScale))
+
+  placeKm(moon.position, moonPositionKm, t)
+  const moonRadius = MOON_RADIUS * earthScale
+  moon.scale.setScalar(Math.max(moonRadius, minRadiusAt(moon.position, MIN_RADIUS_PX.moon)) / MOON_RADIUS)
+  // Tidally locked, which is exactly why this cannot be skipped: with no
+  // rotation applied the Moon's near side points at a fixed direction in space,
+  // so the far side turns towards the viewer over a month. The orientation
+  // route says where the Moon's pole and prime meridian are, and the sub-Earth
+  // libration falls out of it on its own — the near side stays facing the
+  // Earth because that is what the real rotation does, not because anything
+  // here aims it.
+  orientBody(moon.quaternion, 'moon', nowSeconds)
+
+  placeKm(sunMarker.position, sunPositionKm, t)
+  sunMarker.scale.setScalar(
+    Math.max(sunRadius(t, focusId === 'sun'), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
+  )
+
+  // Low orbit is invisible from any other pivot (the Moon is already back on
+  // top of the Earth there), and an ISS dot pinned at the Earth's pixel would
+  // only add noise.
+  issMarker.visible = issPosition !== null && isEarthFocus
+  if (issPosition && isEarthFocus) {
+    issMarker.position.copy(
+      latLngToVector3(issPosition.latitude, issPosition.longitude, issOrbitRadius(issPosition.altitude_km, t)),
+    )
+    issMarker.getWorldPosition(tmpWorldPos)
+    issMarker.scale.setScalar(
+      Math.max(issRadius(t), minRadiusAt(tmpWorldPos, MIN_RADIUS_PX.iss)) / ISS_READABLE_RADIUS,
+    )
+  }
+
+  distanceRings.group.visible = t > 0.001
+  for (const ring of distanceRings.list) {
+    ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t, focusOf().curve))
+  }
+
+  updateBodyOrbits(t)
+  planets.update(nowSeconds, t)
+  moons.update(nowSeconds, t)
+  neoScene.update(nowSeconds, t)
 }
 
 // --- UI overlay --------------------------------------------------------------
 
-const ui = document.createElement('div')
-ui.id = 'ui'
-ui.innerHTML = `
-  <div id="ui-header">
-    <h1>NASA Viz</h1>
-    <button id="update-btn">Mettre à jour</button>
-    <span id="usage-badge" class="muted" title="Requêtes envoyées à api.nasa.gov (NEO + APOD) depuis minuit UTC — hors ISS, non limitée">…</span>
-  </div>
-  <section id="iss-panel">
-    <h2><span class="dot dot-iss"></span>ISS</h2>
-    <p class="muted">chargement…</p>
-  </section>
-  <section id="neo-panel">
-    <h2>Astéroïdes proches (NEO)</h2>
-    <p class="muted">chargement…</p>
-  </section>
-  <section id="apod-panel">
-    <h2>Image du jour (APOD)</h2>
-    <p class="muted">chargement…</p>
-  </section>
-`
-app.appendChild(ui)
+// The overlay owns its markup, its wording and its DOM events (ui/panels.js);
+// the scene keeps its state and hands it over already computed. What comes back
+// are the render entry points and the three containers drawn into below.
+const panels = createPanels({
+  app,
+  wheelTarget: renderer.domElement,
+  on: {
+    update: async () => {
+      await Promise.all([refreshIss(), refreshNeo(), refreshApod()])
+      await refreshUsage()
+    },
+    scaleStep: (step) => setScaleStep(step),
+    scaleStepBy: (direction) => setScaleStep(scaleStep + direction),
+    focus: (id) => setFocus(id),
+    recenter: () => recenterCamera(),
+    deselect: () => neoScene.select(null),
+    modalClosed: () => {
+      modalNeo = null
+    },
+    allOrbits: (enabled) => {
+      neoScene.setAllOrbits(enabled)
+      // Redrawn so the box keeps the state the scene actually holds, rather
+      // than whatever the DOM was left in — same rule as every other panel.
+      if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
+    },
+  },
+})
+const { sceneLabels } = panels
 
-const modal = document.createElement('div')
-modal.id = 'modal-backdrop'
-modal.className = 'hidden'
-modal.innerHTML = `
-  <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <button id="modal-close" aria-label="Fermer">×</button>
-    <h2 id="modal-title"></h2>
-    <div id="modal-body"></div>
-  </div>
-`
-document.body.appendChild(modal)
-
-const starTooltip = document.createElement('div')
-starTooltip.id = 'star-tooltip'
-starTooltip.className = 'hidden'
-document.body.appendChild(starTooltip)
-
-const constellationTooltip = document.createElement('div')
-constellationTooltip.id = 'constellation-tooltip'
-constellationTooltip.className = 'hidden'
-document.body.appendChild(constellationTooltip)
-
-const style = document.createElement('style')
-style.textContent = `
-  #ui { position: fixed; top: 0; left: 0; padding: 16px 20px; color: #eaf4ff;
-        font-family: system-ui, sans-serif; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
-  #ui-header { display: flex; align-items: center; gap: 12px; pointer-events: auto; }
-  #ui h1 { margin: 0; font-size: 20px; letter-spacing: 0.04em; }
-  #ui h2 { margin: 12px 0 4px; font-size: 13px; text-transform: uppercase; opacity: 0.7; }
-  #ui p { margin: 2px 0; font-size: 13px; }
-  #ui .muted { opacity: 0.6; }
-  #ui .error { color: #ff8080; }
-  #update-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
-                border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; text-shadow: none; }
-  #update-btn:hover { background: #24608f; }
-  #update-btn:disabled { opacity: 0.5; cursor: default; }
-  #usage-badge { font-size: 12px; cursor: help; }
-
-  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
-  #iss-panel h2 .dot { margin-bottom: 2px; }
-  .dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
-  .dot-neo { background: #7fe0ff; }
-  .dot-neo-hazard { background: #ff4d4d; }
-  .legend { font-size: 12px; opacity: 0.8; }
-
-  #apod-panel { position: fixed; top: 16px; right: 20px; pointer-events: auto; cursor: pointer;
-                max-width: 220px; text-align: right; }
-  #apod-panel img { display: block; width: 100%; border-radius: 4px; margin-top: 4px; }
-  #apod-panel .apod-title { font-weight: 600; }
-
-  #modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
-                     align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
-  #modal-backdrop.hidden { display: none; }
-  #modal { position: relative; background: #0e2233; color: #eaf4ff; border: 1px solid #4fa8ff;
-           border-radius: 8px; padding: 20px 24px; max-width: 480px; width: 90%;
-           max-height: 80vh; overflow-y: auto; }
-  #modal h2 { margin: 0 0 12px; font-size: 17px; }
-  #modal p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
-  #modal .muted { opacity: 0.6; }
-  #modal img, #modal iframe { display: block; width: 100%; border-radius: 4px; margin-bottom: 10px; border: none; }
-  #modal iframe { aspect-ratio: 16 / 9; }
-  #modal-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
-                 color: #eaf4ff; font-size: 20px; cursor: pointer; line-height: 1; }
-
-  #star-tooltip { position: fixed; pointer-events: none; z-index: 5; background: rgba(10,22,34,.92);
-                  color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px; padding: 3px 9px;
-                  font-family: system-ui, sans-serif; font-size: 12px; white-space: nowrap;
-                  transform: translate(14px, -50%); }
-  #star-tooltip.hidden { display: none; }
-
-  #constellation-tooltip { position: fixed; pointer-events: none; z-index: 4; background: rgba(10,22,34,.85);
-                  color: #9fd2ff; border: 1px solid #6fb7ff; border-radius: 4px; padding: 2px 9px;
-                  font-family: system-ui, sans-serif; font-size: 11px; letter-spacing: 0.03em;
-                  text-transform: uppercase; white-space: nowrap; transform: translate(14px, -50%); }
-  #constellation-tooltip.hidden { display: none; }
-`
-document.head.appendChild(style)
-
-function formatUpdatedAt(fetchedAt) {
-  if (!fetchedAt) return ''
-  return `<p class="muted">maj ${new Date(fetchedAt).toLocaleTimeString('fr-FR')}</p>`
-}
-
-function renderIssPanel(position, error, fetchedAt) {
-  const el = document.querySelector('#iss-panel')
-  const heading = '<h2><span class="dot dot-iss"></span>ISS</h2>'
-  if (error) {
-    el.innerHTML = `${heading}<p class="error">${error}</p>`
-    return
+/** Legend swatches: the two constant colours, plus every spectral complex actually loaded. */
+function neoLegend() {
+  const present = new Set()
+  for (const entry of neoScene.entries) {
+    if (entry.neo.is_potentially_hazardous) continue
+    const key = taxonomyKey(neoScene.sheet(entry.designation).data?.taxonomy?.complex)
+    if (key) present.add(key)
   }
-  el.innerHTML = `
-    ${heading}
-    <p>lat ${position.latitude.toFixed(2)}° · lng ${position.longitude.toFixed(2)}°</p>
-    <p>altitude ${position.altitude_km.toFixed(0)} km · vitesse ${position.velocity_kmh.toFixed(0)} km/h</p>
-    ${formatUpdatedAt(fetchedAt)}
-  `
+  return [
+    { color: cssColor(NEO_DEFAULT_COLOR), label: 'standard' },
+    { color: cssColor(NEO_HAZARD_COLOR), label: 'dangereux' },
+    ...[...present].map((key) => ({ color: cssColor(TAXONOMY[key].color), label: TAXONOMY[key].label })),
+  ]
 }
 
 function renderNeoPanel(feed, error, fetchedAt) {
-  const el = document.querySelector('#neo-panel')
-  if (error) {
-    el.innerHTML = `<h2>Astéroïdes proches (NEO)</h2><p class="error">${error}</p>`
-    return
-  }
-  const hazardous = feed.objects.filter((o) => o.is_potentially_hazardous).length
-  el.innerHTML = `
-    <h2>Astéroïdes proches (NEO)</h2>
-    <p>${feed.count} objets (${feed.start_date} → ${feed.end_date}) · clic sur un point pour le détail</p>
-    <p>${hazardous} potentiellement dangereux</p>
-    <p class="legend"><span class="dot dot-neo"></span>standard &nbsp;<span class="dot dot-neo-hazard"></span>dangereux</p>
-    ${formatUpdatedAt(fetchedAt)}
-  `
+  panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend(), neoScene.allOrbitsStatus())
 }
 
-function openModal(title, bodyHtml) {
-  document.getElementById('modal-title').textContent = title
-  document.getElementById('modal-body').innerHTML = bodyHtml
-  modal.classList.remove('hidden')
+function renderNeoPositionsStatus() {
+  panels.renderNeoPositions(neoScene.positionsStatus())
 }
 
-function hideModal() {
-  modal.classList.add('hidden')
+function renderPlanetsPanel() {
+  // `scaleStep`, not `scaleT`: the panel describes the cran the slider is on,
+  // not where a running transition happens to be — same choice as the scale label.
+  panels.renderPlanets(planets.status(), planets.legend(), planets.drawnAt(scaleStep / SCALE_STEPS), moons.status())
 }
 
-let currentApod = null
-
-function renderApodPanel(apod, error, fetchedAt) {
-  const el = document.querySelector('#apod-panel')
-  currentApod = error ? null : apod
-  if (error) {
-    el.innerHTML = `<h2>Image du jour (APOD)</h2><p class="error">${error}</p>`
-    return
-  }
-  const preview =
-    apod.media_type === 'video'
-      ? '<p>🎥 Vidéo du jour</p>'
-      : `<img src="${apod.url}" alt="${apod.title}">`
-  el.innerHTML = `
-    <h2>Image du jour (APOD)</h2>
-    <p class="apod-title">${apod.title}</p>
-    ${preview}
-    ${formatUpdatedAt(fetchedAt)}
-  `
+function renderScalePanel() {
+  const focus = focusOf()
+  panels.renderScale({
+    step: scaleStep,
+    frame: focus.frame,
+    description: describeScale(scaleStep / SCALE_STEPS, {
+      curve: focus.curve,
+      references: focusReferences(),
+      neoDistancesKm: neoDistancesKm(),
+      neoDiametersKm: neoScene.entries.filter((e) => e.source).map((e) => e.diameterKm),
+    }),
+  })
 }
+
+function renderViewPanel() {
+  panels.renderView(focusId, planets.focusableIds())
+}
+
+/** The NEO the modal is showing, so it can be re-rendered when its sheet arrives. */
+let modalNeo = null
 
 function showNeoModal(neo) {
+  modalNeo = neo
+  const entry = neoScene.entryOf(neo)
+  if (entry) neoScene.select(entry)
+  renderNeoModal()
+  neoScene.loadDetails([entry ? entry.designation : designationOf(neo)])
+}
+
+function renderNeoModal() {
+  const neo = modalNeo
+  if (!neo) return
   const approach = neo.close_approach
-  openModal(
+  const entry = neoScene.entryOf(neo)
+  const designation = entry ? entry.designation : designationOf(neo)
+  const sheet = neoScene.sheet(designation)
+  const details = sheet.data
+  const diameter = details?.diameter_km
+    ? `${(details.diameter_km.value * 1000).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} m <span class="muted">(mesuré)</span>`
+    : `${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km <span class="muted">(estimé d'après sa luminosité)</span>`
+
+  panels.openModal(
     neo.name,
     `
-    <p><strong>ID</strong> ${neo.id}</p>
-    <p><strong>Diamètre estimé</strong> ${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km</p>
+    <p><strong>Désignation</strong> ${escapeHtml(designation)}</p>
+    <p><strong>Diamètre</strong> ${diameter}</p>
     <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
+    ${entry ? neoScene.describePosition(entry) : ''}
     ${
       approach
         ? `
-      <p><strong>Approche la plus proche</strong> ${approach.date}</p>
+      <p><strong>Approche la plus proche</strong> ${approach.datetime ? new Date(approach.datetime).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : approach.date}</p>
       <p><strong>Distance</strong> ${Math.round(approach.miss_distance_km).toLocaleString('fr-FR')} km</p>
       <p><strong>Vitesse relative</strong> ${Math.round(approach.relative_velocity_kmh).toLocaleString('fr-FR')} km/h</p>
     `
         : '<p class="muted">Pas de données d\'approche disponibles</p>'
     }
+    ${entry ? neoScene.describeTrajectory(entry) : ''}
+    ${entry ? neoScene.describeOrbit(entry) : ''}
+    ${sourcesBlockHtml(neo)}
+    ${detailsBlockHtml(details, {
+      loading: sheet.loading,
+      error: sheet.error,
+    })}
+    ${
+      details?.orbit
+        ? orbitSchematicSvg(details.orbit, {
+            now: new Date(),
+            approachAt: approach ? new Date(approach.datetime ?? `${approach.date}T12:00Z`) : null,
+            hazardous: neo.is_potentially_hazardous,
+          })
+        : ''
+    }
+    <p class="muted credits">${NEO_CREDITS}</p>
   `,
   )
 }
 
-function showApodModal(apod) {
-  const media =
-    apod.media_type === 'video'
-      ? `<iframe src="${apod.url}" allowfullscreen></iframe>`
-      : `<img src="${apod.url}" alt="${apod.title}">`
-  openModal(
-    apod.title,
-    `
-    ${media}
-    <p class="muted">${apod.date}</p>
-    <p>${apod.explanation}</p>
-    ${apod.hd_url ? `<p><a href="${apod.hd_url}" target="_blank" rel="noopener" style="color:#7fe0ff">Voir en haute résolution</a></p>` : ''}
-  `,
-  )
+// --- scene labels ------------------------------------------------------------------
+
+// The module places labels and keeps them from overlapping; what follows only
+// decides which of them the scene currently deserves.
+const labels = createSceneLabels({
+  layer: sceneLabels,
+  camera,
+  canvas: renderer.domElement,
+  // A label hides behind the Earth, whose radius follows the scale cursor.
+  occluder: () => ({ center: globe.position, radius: earthWorldRadius() }),
+})
+
+const bodyLabels = {
+  earth: labels.create('Terre'),
+  moon: labels.create('Lune'),
+  iss: labels.create('ISS'),
+  sun: labels.create('Soleil'),
+}
+const moonOrbitLabel = labels.create('orbite lunaire', 'ring')
+const orbitMarkerLabels = {
+  perihelion: labels.create('périhélie', 'ring'),
+  aphelion: labels.create('aphélie', 'ring'),
+  ascending: labels.create('nœud ascendant', 'ring'),
+  descending: labels.create('nœud descendant', 'ring'),
 }
 
-document.getElementById('modal-close').addEventListener('click', hideModal)
-modal.addEventListener('click', (event) => {
-  if (event.target === modal) hideModal()
+// --- planets -------------------------------------------------------------------
+//
+// Geocentric km like every other body, so the same placeKm() puts them in both
+// views — no second data source for the heliocentric one. In the Earth-centred
+// view they do bunch up (19 to 26 units for Venus through Neptune): the readable
+// curve being honest about a scene centred on the Earth, not a bug.
+//
+// Built here, after the label factory, because the module names its own planets:
+// a parallel array of labels indexed against `bodies` is a coupling worth not
+// having. Where those names *rank* against the other labels stays below.
+
+const planets = createPlanets({
+  scene,
+  labels,
+  traces,
+  placeKm,
+  minRadiusAt,
+  // Only the Earth's view hides them: from Mars the planets are the subject.
+  hidesPlanets: () => focusId === 'earth',
+  focusPlanetId: () => (focusPlanet ? focusPlanet.id : null),
+  // Passed by reference, not by value: `updateAstronomy()` copies into this same
+  // vector every minute, so the planets' lighting follows the Sun on its own.
+  sunPositionKm,
+  on: { changed: () => { renderPlanetsPanel(); renderViewPanel() } },
 })
-window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') hideModal()
+
+// The moons of the centred planet only — created after the planets because the
+// pivot they hang off is resolved there. Their samples are already relative to
+// that planet, so they never touch placeKm.
+const moons = createMoons({
+  scene,
+  labels,
+  traces,
+  placeRelativeKm,
+  minRadiusAt,
+  focusPlanet: () => focusPlanet,
+  sunPositionKm,
+  on: { changed: () => renderPlanetsPanel() },
 })
+
+// Rings (and their labels) belong to the current point of view, so both are
+// rebuilt on every switch — see setFocus(). Each carries its own vector: the
+// entry list is built whole before it is placed, so no two entries may share
+// one scratch.
+/** @type {{el: HTMLElement, at: THREE.Vector3}[]} */
+let ringLabels = []
+
+function rebuildRingLabels() {
+  for (const label of ringLabels) label.el.remove()
+  ringLabels = distanceRings.list.map((ring) => ({ el: labels.create(ring.label, 'ring'), at: new THREE.Vector3() }))
+}
+
+distanceRings.rebuild(focusOf().rings)
+rebuildRingLabels()
+
+const issLabelPos = new THREE.Vector3()
+const moonOrbitLabelPos = new THREE.Vector3()
+
+/** Names bodies once they've shrunk to dots, and labels the rings and orbits. */
+function updateSceneLabels() {
+  // Named once too small to read as themselves — the Sun except when the scene
+  // is centred on it, the ISS only once the scale makes it a speck.
+  const bodies = [
+    { el: bodyLabels.earth, worldPos: globe.position, radius: earthWorldRadius(), occludable: false, show: true },
+    { el: bodyLabels.moon, worldPos: moon.position, radius: MOON_RADIUS * moon.scale.x, occludable: true, show: true },
+    {
+      el: bodyLabels.sun,
+      worldPos: sunMarker.position,
+      radius: SUN_READABLE_RADIUS * sunMarker.scale.x,
+      occludable: true,
+      show: focusId !== 'sun',
+    },
+    {
+      el: bodyLabels.iss,
+      worldPos: issPosition ? issMarker.getWorldPosition(issLabelPos) : null,
+      radius: issRadius(scaleT),
+      occludable: true,
+      show: issMarker.visible && scaleT > 0.001,
+    },
+  ].map((body) => ({
+    ...body,
+    show:
+      body.show &&
+      body.worldPos !== null &&
+      labels.projectedRadiusPx(body.worldPos, body.radius) < LABEL_WHEN_SMALLER_THAN_PX,
+  }))
+
+  const rings = ringLabels.map(({ el, at }, i) => {
+    const ring = distanceRings.list[i]
+    // Local +X on the unit circle stays on world +X (the ring is only rotated about X).
+    at.set(ring.line.scale.x, 0, 0)
+    return {
+      el,
+      worldPos: at,
+      occludable: true,
+      // Wide circles: they'd otherwise crowd out the body names they surround.
+      spaced: false,
+      show: distanceRings.group.visible && labels.projectedRadiusPx(at, ring.line.scale.x) > LABEL_RING_MIN_RADIUS_PX,
+    }
+  })
+
+  // The lunar orbit names itself a quarter of a revolution ahead of the Moon,
+  // so the two labels don't stack.
+  const moonOrbitDrawn = moonOrbitTrace.line.visible && moonOrbitTrace.km
+  if (moonOrbitDrawn) {
+    moonOrbitLabelPos.fromArray(moonOrbitTrace.km, Math.floor(MOON_ORBIT_SAMPLES / 4) * 3)
+    placeKm(moonOrbitLabelPos, moonOrbitLabelPos, scaleT)
+  }
+
+  labels.update([
+    ...bodies,
+    // After the four above, so a planet's name never pushes the Earth's or the
+    // Moon's aside — the list order is the spacing arbitration.
+    ...planets.labelEntries(),
+    ...moons.labelEntries(),
+    ...rings,
+    { el: moonOrbitLabel, worldPos: moonOrbitLabelPos, occludable: true, show: Boolean(moonOrbitDrawn) },
+    // Perihelion / aphelion / nodes of the drawn heliocentric orbit.
+    ...Object.entries(neoScene.orbitMarkers).map(([key, mesh]) => ({
+      el: orbitMarkerLabels[key],
+      worldPos: mesh.position,
+      occludable: true,
+      show: neoScene.heliocentricGroup.visible,
+    })),
+  ])
+}
 
 // --- picking (click to inspect a NEO) -----------------------------------------
 
-const raycaster = new THREE.Raycaster()
-const pointer = new THREE.Vector2()
-
-function setPointerFromEvent(clientX, clientY) {
-  const rect = renderer.domElement.getBoundingClientRect()
-  pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1
-  pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1
-  raycaster.setFromCamera(pointer, camera)
-}
-
-function pickNeoAt(clientX, clientY) {
-  setPointerFromEvent(clientX, clientY)
-  const intersects = raycaster.intersectObjects(neoGroup.children)
-  return intersects.length > 0 ? intersects[0].object.userData.neo : null
-}
-
-// Star picking is done by hand in screen space rather than via
-// Raycaster.intersectObject(starPoints): that built-in path tests a fixed
-// world-space distance from the ray to each point, which doesn't track the
-// point's actual on-screen size (driven by our custom per-vertex shader) —
-// on a shell as large as STAR_SHELL_RADIUS, that mismatch reads as picking
-// the "wrong" star next to the one under the cursor. Projecting every star
-// to screen space and comparing pixel distance instead makes the hit target
-// match what's actually visible.
-const STAR_PICK_RADIUS_PX = 12
-const starPickWorldPos = new THREE.Vector3()
-const starPickScreenPos = new THREE.Vector3()
-const starPickRayDir = new THREE.Vector3()
-
-/** True if the globe sits between the camera and this star (so it's not actually visible). */
-function isOccludedByGlobe(worldPos) {
-  const camPos = camera.position
-  starPickRayDir.subVectors(worldPos, camPos)
-  const distToStar = starPickRayDir.length()
-  starPickRayDir.normalize()
-
-  const b = camPos.dot(starPickRayDir)
-  const c = camPos.dot(camPos) - EARTH_RADIUS * EARTH_RADIUS
-  const discriminant = b * b - c
-  if (discriminant < 0) return false // ray misses the globe entirely
-
-  const tHit = -b - Math.sqrt(discriminant)
-  return tHit > 0 && tHit < distToStar
-}
-
-/** Index of the star nearest the cursor on screen (named or not), or null. */
-function pickStarIndexAt(clientX, clientY) {
-  if (!starPoints) return null
-  const rect = renderer.domElement.getBoundingClientRect()
-  const positionAttr = starPoints.geometry.getAttribute('position')
-
-  let bestIndex = null
-  let bestDistSq = STAR_PICK_RADIUS_PX * STAR_PICK_RADIUS_PX
-
-  for (let i = 0; i < positionAttr.count; i++) {
-    starPickWorldPos.fromBufferAttribute(positionAttr, i)
-    if (isOccludedByGlobe(starPickWorldPos)) continue
-
-    starPickScreenPos.copy(starPickWorldPos).project(camera)
-    if (starPickScreenPos.z > 1) continue // behind the camera
-
-    const sx = (starPickScreenPos.x * 0.5 + 0.5) * rect.width + rect.left
-    const sy = (starPickScreenPos.y * -0.5 + 0.5) * rect.height + rect.top
-    const dx = sx - clientX
-    const dy = sy - clientY
-    const distSq = dx * dx + dy * dy
-    if (distSq < bestDistSq) {
-      bestDistSq = distSq
-      bestIndex = i
-    }
-  }
-
-  return bestIndex
-}
-
-function showStarTooltip(name, clientX, clientY) {
-  starTooltip.textContent = name
-  starTooltip.style.left = `${clientX}px`
-  starTooltip.style.top = `${clientY}px`
-  starTooltip.classList.remove('hidden')
-}
-
-function hideStarTooltip() {
-  starTooltip.classList.add('hidden')
-}
-
-// The raycaster threshold makes several neighbouring points plausible hits at
-// once (it's a coarse click target, not a per-pixel test) — magnifying and
-// brightening whichever one actually won the pick tells the user exactly
-// which star the tooltip is talking about.
-const STAR_HIGHLIGHT_SIZE_FACTOR = 1
-const STAR_HIGHLIGHT_MIN_SIZE = 4
-const STAR_HIGHLIGHT_WHITEN = 0.6 // 0 = original color, 1 = full white
-let hoveredStarIndex = null
-
-function setStarHighlight(index) {
-  if (hoveredStarIndex === index) return
-  const sizeAttr = starPoints.geometry.getAttribute('size')
-  const colorAttr = starPoints.geometry.getAttribute('color')
-
-  if (hoveredStarIndex !== null) {
-    sizeAttr.array[hoveredStarIndex] = starBaseSizes[hoveredStarIndex]
-    colorAttr.setXYZ(
-      hoveredStarIndex,
-      starBaseColors[hoveredStarIndex * 3],
-      starBaseColors[hoveredStarIndex * 3 + 1],
-      starBaseColors[hoveredStarIndex * 3 + 2],
-    )
-  }
-
-  hoveredStarIndex = index
-
-  if (index !== null) {
-    sizeAttr.array[index] = Math.max(starBaseSizes[index] * STAR_HIGHLIGHT_SIZE_FACTOR, STAR_HIGHLIGHT_MIN_SIZE)
-    colorAttr.setXYZ(
-      index,
-      THREE.MathUtils.lerp(starBaseColors[index * 3], 1, STAR_HIGHLIGHT_WHITEN),
-      THREE.MathUtils.lerp(starBaseColors[index * 3 + 1], 1, STAR_HIGHLIGHT_WHITEN),
-      THREE.MathUtils.lerp(starBaseColors[index * 3 + 2], 1, STAR_HIGHLIGHT_WHITEN),
-    )
-  }
-
-  sizeAttr.needsUpdate = true
-  colorAttr.needsUpdate = true
-}
-
-function showConstellationTooltip(name, clientX, clientY) {
-  constellationTooltip.textContent = name
-  constellationTooltip.style.left = `${clientX}px`
-  // Offset below the star tooltip's row so the two don't overlap when both show at once.
-  constellationTooltip.style.top = `${clientY + 22}px`
-  constellationTooltip.classList.remove('hidden')
-}
-
-function hideConstellationTooltip() {
-  constellationTooltip.classList.add('hidden')
-}
-
-/**
- * Shows one constellation's line figure (by IAU code) and its name tooltip,
- * hiding whichever was shown before. `code` may be '' or null (no figure at
- * this cursor position) — clears both cleanly either way.
- */
-let shownConstellationCode = null
-function showConstellation(code, clientX, clientY) {
-  if (code !== shownConstellationCode) {
-    const prev = constellationGroups.get(shownConstellationCode)
-    if (prev) prev.visible = false
-    shownConstellationCode = code
-    const next = constellationGroups.get(code)
-    if (next) next.visible = true
-  }
-
-  const name = code && constellationNames[code]
-  if (name) showConstellationTooltip(name, clientX, clientY)
-  else hideConstellationTooltip()
-}
-
-renderer.domElement.addEventListener('click', (event) => {
-  const neo = pickNeoAt(event.clientX, event.clientY)
-  if (neo) showNeoModal(neo)
-})
-
-document.querySelector('#apod-panel').addEventListener('click', () => {
-  if (currentApod) showApodModal(currentApod)
-})
-
-renderer.domElement.addEventListener('pointermove', (event) => {
-  if (pickNeoAt(event.clientX, event.clientY)) {
-    renderer.domElement.style.cursor = 'pointer'
-    hideStarTooltip()
-    if (starPoints) setStarHighlight(null)
-    showConstellation(null)
-    return
-  }
-
-  const starIndex = pickStarIndexAt(event.clientX, event.clientY)
-  if (starIndex !== null) {
-    renderer.domElement.style.cursor = 'pointer'
-    setStarHighlight(starIndex)
-    showConstellation(starConstellations[starIndex], event.clientX, event.clientY)
-    const name = starNames[starIndex]
-    if (name) showStarTooltip(name, event.clientX, event.clientY)
-    else hideStarTooltip()
-  } else {
-    renderer.domElement.style.cursor = 'default'
-    hideStarTooltip()
-    if (starPoints) setStarHighlight(null)
-    showConstellation(null)
-  }
-})
-
-renderer.domElement.addEventListener('pointerleave', () => {
-  if (starPoints) setStarHighlight(null)
-  showConstellation(null)
-  hideStarTooltip()
+createPicking({
+  canvas: renderer.domElement,
+  camera,
+  neoGroup: neoScene.group,
+  starfield,
+  panels,
+  // Read fresh at each pick: both radii follow the scale cursor.
+  occluders: () => [
+    { center: globe.position, radius: earthWorldRadius() },
+    { center: moon.position, radius: MOON_RADIUS * moon.scale.x },
+  ],
+  on: {
+    neoClicked: (neo) => showNeoModal(neo),
+    emptyClicked: () => neoScene.select(null),
+  },
 })
 
 // --- data loading (cache-first — the free NASA API key is rate-limited) --------
@@ -929,28 +987,35 @@ async function refreshIss() {
     const position = await fetchIssPosition()
     saveCached('iss', position)
     applyIssPosition(position)
-    renderIssPanel(position, null, Date.now())
+    panels.renderIss(position, null, Date.now())
   } catch (err) {
-    renderIssPanel(null, err.message)
+    panels.renderIss(null, err.message)
   }
 }
 
 async function refreshUsage() {
-  const badge = document.getElementById('usage-badge')
   try {
     const usage = await fetchUsage()
-    badge.textContent = `${usage.nasa_api_calls_today} requête${usage.nasa_api_calls_today === 1 ? '' : 's'} NASA aujourd'hui`
+    panels.setUsage(usage.nasa_api_calls_today)
   } catch {
-    badge.textContent = ''
+    panels.setUsage(null)
   }
+}
+
+function showNeoFeed(feed, fetchedAt) {
+  neoScene.showFeed(feed, fetchedAt)
+  renderNeoPanel(feed, null, fetchedAt)
+  renderScalePanel()
+  // Real positions (JPL Horizons) and per-object sheets fill in behind the
+  // scene, which already shows the feed at its approximate spots meanwhile.
+  neoScene.loadFeedExtras(feed)
 }
 
 async function refreshNeo() {
   try {
     const feed = await fetchNeoFeed()
     saveCached('neo', feed)
-    addNeoPoints(feed.objects)
-    renderNeoPanel(feed, null, Date.now())
+    showNeoFeed(feed, Date.now())
   } catch (err) {
     renderNeoPanel(null, err.message)
   }
@@ -960,23 +1025,25 @@ async function refreshApod() {
   try {
     const apod = await fetchApod()
     saveCached('apod', apod)
-    renderApodPanel(apod, null, Date.now())
+    panels.renderApod(apod, null, Date.now())
   } catch (err) {
-    renderApodPanel(null, err.message)
+    panels.renderApod(null, err.message)
   }
 }
 
-const updateBtn = document.getElementById('update-btn')
-updateBtn.addEventListener('click', async () => {
-  updateBtn.disabled = true
-  updateBtn.textContent = 'Mise à jour…'
-  await Promise.all([refreshIss(), refreshNeo(), refreshApod()])
-  await refreshUsage()
-  updateBtn.disabled = false
-  updateBtn.textContent = 'Mettre à jour'
-})
-
 refreshUsage()
+renderScalePanel()
+renderViewPanel()
+
+// Not wired to "Mettre à jour": the planet tables are keyless (JPL Horizons,
+// no NASA quota) and cover a year, so there is nothing for that button to
+// refresh. They load themselves once, then come back from localStorage.
+sunTable.load()
+planets.load()
+// Unlike a planet's, this one is not waited for: the Moon is drawn from the
+// first frame in every view, so there is no "centre on it" moment to hang the
+// fetch on. One keyless Horizons request a month, cached like the rest.
+loadOrientationFor('moon')
 
 const cachedIss = loadCached('iss')
 const cachedNeo = loadCached('neo')
@@ -984,20 +1051,23 @@ const cachedApod = loadCached('apod')
 
 if (cachedIss) {
   applyIssPosition(cachedIss.data)
-  renderIssPanel(cachedIss.data, null, cachedIss.fetchedAt)
+  panels.renderIss(cachedIss.data, null, cachedIss.fetchedAt)
 }
 if (cachedNeo) {
-  addNeoPoints(cachedNeo.data.objects)
-  renderNeoPanel(cachedNeo.data, null, cachedNeo.fetchedAt)
+  showNeoFeed(cachedNeo.data, cachedNeo.fetchedAt)
 }
 if (cachedApod) {
-  renderApodPanel(cachedApod.data, null, cachedApod.fetchedAt)
+  panels.renderApod(cachedApod.data, null, cachedApod.fetchedAt)
 }
 // First-ever load has nothing to show yet — fetch once. Otherwise stay on the
 // cached snapshot until "Mettre à jour" is clicked, to spare the NASA quota.
 if (!cachedIss || !cachedNeo || !cachedApod) {
-  updateBtn.click()
+  panels.requestUpdate()
 }
+
+// The ISS covers ~460 km a minute, visibly off at true scale — refresh it on
+// its own. wheretheiss.at isn't part of the NASA quota.
+setInterval(refreshIss, 60_000)
 
 // --- render loop --------------------------------------------------------------
 
@@ -1009,11 +1079,26 @@ window.addEventListener('resize', () => {
 
 function animate() {
   requestAnimationFrame(animate)
+  const nowMs = Date.now()
   // Recomputed fresh from wall-clock time every frame (not accumulated per
   // frame) so it's exactly right regardless of frame rate or a backgrounded
   // tab, with no drift to correct for.
-  globe.rotation.y = (getGreenwichSiderealTime(new Date()) * Math.PI) / 180
+  globe.rotation.y = (getGreenwichSiderealTime(new Date(nowMs)) * Math.PI) / 180
+  // Same discipline for the clouds: a function of wall-clock time, not a
+  // per-frame increment, so a backgrounded tab comes back where it should be.
+  // It adds to the globe's rotation rather than replacing it — the layer is a
+  // child of the sphere (scene/bodies.js).
+  globeClouds.rotation.y = cloudDriftAt(new Date(nowMs))
+
+  stepScaleTransition(performance.now())
+  stepRecenter(performance.now())
+  updateCameraLimits()
   controls.update()
+  starfield.group.position.copy(camera.position)
+  globe.updateMatrixWorld()
+  applyScale(nowMs / 1000)
+  updateSceneLabels()
+
   renderer.render(scene, camera)
 }
 animate()

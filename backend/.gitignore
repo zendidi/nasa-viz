@@ -18,3 +18,14 @@
 /phpunit.xml
 /.phpunit.cache/
 ###< phpunit/phpunit ###
+
+###> phpstan/phpstan ###
+/phpstan.neon
+###< phpstan/phpstan ###
+
+###> nasa-viz ###
+# Le build web est copié dans public/ au lancement (tools/start.ps1) et au
+# déploiement (DEPLOYMENT.md) : c'est une copie de web/dist/, pas une source.
+/public/*
+!/public/index.php
+###< nasa-viz ###

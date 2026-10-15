@@ -6,6 +6,18 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Agent tooling — TRACKED, unlike the two entries below it (decided 2026-09-30).
+# .claude/ is not a notebook but tooling: the Sonnet subagents, the permission
+# allowlist, and above all .claude/hooks/quota-guard.sh, which is what stops a
+# DEMO_KEY quota burn. Left untracked, that guard would vanish without a sound on
+# a clean clone. Only the personal overlays stay local:
+/.claude/settings.local.json
+/.claude/worktrees/
+
 # Agent-facing working notes — local only, not part of the public repo.
 /CLAUDE.md
 /docs/agent/
+
+/tools/php/
+/tools/derniere-url.txt
+/tools/calibration/.cache/

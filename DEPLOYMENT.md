@@ -1,0 +1,216 @@
+# Mise en prod — NASA Viz
+
+Checklist et guide pour la mise en ligne. Le projet continue d'évoluer avant la bascule réelle —
+ce document sert de préparation, pas de trace d'un déploiement déjà fait. À tenir à jour au fil
+des changements d'infra (nouvelle route, nouveau service, etc.).
+
+## Où on en est
+
+- **Backend** (Symfony 7, PHP ≥ 8.3) : proxy NASA fonctionnel, cache serveur déjà en place
+  (`cache.app`, TTL par route — voir plus bas), compteur d'usage, CORS via `nelmio/cors-bundle`.
+- **Web** (Vite + Three.js) : build statique (`npm run build` → `web/dist/`), aucune dépendance
+  serveur Node en prod — ce sont des fichiers statiques.
+- **Unity VR** : pas commencé, hors scope de cette mise en prod.
+- **Clé NASA** : toujours `DEMO_KEY` (30 req/h, 50 req/j) — à remplacer avant toute exposition
+  publique (voir étape 1).
+
+## Le cache serveur protège déjà le quota NASA — pas besoin de cron pour ça
+
+`backend/src/Controller/SpaceDataController.php` met déjà chaque route derrière `cache.app` avec un
+TTL par type de donnée : NEO 1h, APOD 24h, ISS 5s. Ce cache est partagé entre **tous** les
+visiteurs (pas un cache par navigateur comme `web/src/cache.js` côté client) : une fois la première
+personne de l'heure déclenché l'appel réel à NASA, tout le monde derrière reçoit la réponse cachée
+jusqu'à expiration du TTL — donc au régime permanent, ~1 appel réel/heure pour NEO et ~1/jour pour
+APOD, **quel que soit le nombre de visiteurs**. C'est déjà l'équivalent de la règle "1 req/h" visée.
+
+Une tâche cron qui rafraîchit le cache de façon proactive (plutôt que de laisser le premier
+visiteur après expiration déclencher l'appel) reste une amélioration possible — elle évite une
+petite latence supplémentaire pour cette personne-là et lisse le compteur `/api/usage` — mais ce
+n'est **pas un prérequis** pour tenir le quota. Voir `docs/agent/backlog.md` si on veut la faire un
+jour.
+
+## Un cron, pour Horizons cette fois — pas pour le quota
+
+La section ci-dessus dit qu'aucun cron n'est nécessaire pour tenir le quota NASA, et ça reste vrai.
+Mais depuis les planètes et les lunes, il y en a un qui vaut le coup pour une **autre** raison : la
+latence de JPL Horizons, qui est sans clé et hors quota, mais lente et variable.
+
+Mesuré sur cette machine : **~1 s par requête le 2026-09-29, 5 à 16 s le 2026-09-22**, même code et
+même `php.ini` — c'est la charge de Horizons qui varie, pas notre installation (voir la correction
+dans `docs/agent/gotchas.md`). Sans préchauffage, c'est le premier visiteur après chaque expiration
+qui paie, et il peut tomber un mauvais jour.
+
+```bash
+cd /chemin/vers/backend && php bin/console app:solar-system:warm
+```
+
+**À passer une fois après chaque déploiement**, pour remplir un cache vide sans attendre un
+visiteur :
+
+```bash
+php bin/console app:solar-system:warm --all-moons
+```
+
+`--dry-run` liste ce qui serait téléchargé sans rien télécharger.
+
+### Cadence
+
+**Une fois par heure suffit largement**, et une fois par jour marche aussi. La commande ne
+retélécharge que ce qui a expiré : quand tout est frais, elle ne fait aucune requête sortante et
+se termine en quelques dizaines de millisecondes. Faire tourner trop souvent ne coûte donc rien,
+mais n'apporte rien non plus.
+
+Ordres de grandeur en régime permanent :
+
+| ce qui est rafraîchi | cadence |
+|---|---|
+| 7 planètes (positions) + 7 orbites | 1 fois par mois chacune |
+| les 38 lunes, si toutes étaient visitées | ~6 requêtes/jour au total |
+
+### Ce qu'elle rafraîchit, et ce qu'elle ne rafraîchit pas
+
+Elle ne parcourt **pas** le catalogue entier. Elle reprend les planètes, plus les lunes des planètes
+qu'un visiteur a réellement centrées — la route l'écrit au passage, parce qu'un pool PSR-6 ne sait
+pas être énuméré. Une lune que personne n'a jamais regardée n'est jamais téléchargée, et une planète
+non visitée depuis 90 jours sort de la liste toute seule.
+
+C'est volontaire et c'est le cœur du dispositif : **remplissage paresseux par les visites,
+rafraîchissement anticipé par le cron**. Personne n'attend Horizons sauf le tout premier visiteur
+d'une planète donnée.
+
+### Détails qui comptent
+
+- Elle **sort toujours en code 0**. Un échec Horizons est transitoire par nature, la course suivante
+  le rattrape, et les routes savent de toute façon télécharger à la demande. Un code non nul ferait
+  envoyer un mail par le cron à chaque incident sans rien apporter.
+- Elle tourne en **CLI**, où `max_execution_time` vaut 0 contre 30 s pour une requête web (vérifié
+  sur cette machine). C'est ce qui lui permet d'enchaîner des dizaines de corps dans un seul
+  processus — mesuré : les 8 lunes restantes de Jupiter en 7 s, les 38 lunes en 33 s — là où une
+  route web doit s'en tenir à un corps par appel sous peine du fatal à 30 s.
+- Elle n'appelle **que** JPL Horizons : aucun quota NASA consommé, le compteur `/api/usage` ne bouge
+  pas.
+
+### À vérifier sur l'offre Infomaniak choisie
+
+Comme pour PHP 8.3+ et Composer (voir « Prérequis » plus haut), **la disponibilité des tâches cron
+dépend du plan** — à confirmer sur l'offre retenue. Si l'hébergement n'en propose pas, rien ne
+casse : le cache se remplit à la demande comme aujourd'hui, seul le premier visiteur de chaque
+planète paie la latence.
+
+## Prérequis côté hébergeur (Infomaniak)
+
+- Un hébergement supportant **PHP 8.3+** avec accès Composer (SSH, ou Composer disponible dans le
+  manager) — les offres Infomaniak "Hosting Web" le permettent, à vérifier sur le plan exact choisi.
+- Accès en écriture sur `backend/var/` (cache Symfony, logs).
+- Un nom de domaine (ou sous-domaine) avec HTTPS (Let's Encrypt, généralement automatique côté
+  Infomaniak).
+- Pas besoin de runtime Node en production — seulement pour builder `web/dist/` en local/CI avant
+  upload.
+
+## Architecture de déploiement recommandée : un seul domaine, pas de CORS
+
+Le plus simple sur un hébergement mutualisé : faire servir le build web statique **par le même
+Symfony** que l'API, en copiant le contenu de `web/dist/` dans `backend/public/`. Le front
+controller de Symfony (`public/index.php` + réécriture Apache) ne route vers PHP que les requêtes
+qui ne correspondent à aucun fichier existant, donc les assets statiques (`index.html`, JS, CSS,
+textures) sont servis directement, et `/api/*` continue d'aller au backend — même origine, donc
+**pas de configuration CORS nécessaire en prod**.
+
+Alternative (si on préfère des pipelines de déploiement séparés, ex. front sur un CDN/hébergement
+statique et backend sur un autre sous-domaine) : il faut alors ouvrir `CORS_ALLOW_ORIGIN` sur le
+domaine réel du front dans le `.env` de prod, et changer les appels `fetch('/api/...')` de
+`web/src/api.js` pour pointer vers l'URL absolue du backend. Non nécessaire avec l'option
+recommandée ci-dessus.
+
+## Étapes de mise en prod
+
+1. **Générer une vraie clé NASA API** sur https://api.nasa.gov (gratuite, 1000 req/h) et la mettre
+   dans `NASA_API_KEY` du `.env` de prod — ne pas commiter cette valeur.
+2. **Backend**
+   - `composer install --no-dev --optimize-autoloader`
+   - Créer un `.env.local` (ou variables d'environnement serveur) avec :
+     - `APP_ENV=prod`
+     - `APP_SECRET=<valeur aléatoire générée, différente de dev>`
+     - `NASA_API_KEY=<vraie clé>`
+     - `CORS_ALLOW_ORIGIN` — pas nécessaire si front+back sur le même domaine (voir ci-dessus)
+   - `php bin/console cache:clear --env=prod`
+   - Vérifier que `backend/var/` est accessible en écriture par le process PHP.
+3. **Frontend**
+   - `cd web && npm run build`
+   - Copier le contenu de `web/dist/` dans `backend/public/` (garder `backend/public/index.php` —
+     ne pas l'écraser).
+4. **Domaine / HTTPS** : pointer le domaine choisi sur le document root `backend/public/`, activer
+   le certificat.
+5. **Vérification post-déploiement**
+   - Charger le site, vérifier que le globe/ciel/ISS s'affichent sans erreur console (CORS, 404
+     textures, etc.).
+   - `GET /api/usage` répond et le compteur progresse normalement (pas de 502 upstream).
+   - Cliquer "Mettre à jour" une fois pour confirmer que le vrai appel NASA fonctionne avec la
+     nouvelle clé.
+
+## Checklist finale avant bascule publique
+
+- [ ] Vraie clé NASA API en place (plus `DEMO_KEY`)
+- [ ] `APP_ENV=prod` + `APP_SECRET` de prod généré
+- [ ] `composer install --no-dev` fait, cache Symfony vidé/reconstruit
+- [ ] Build web à jour copié dans `backend/public/`
+- [ ] HTTPS actif sur le domaine final
+- [ ] `/api/usage`, `/api/neo`, `/api/apod`, `/api/iss/position` testés en prod
+- [ ] Pas d'erreur CORS/console sur un chargement à froid (cache navigateur vide)
+- [ ] `docs/agent/decisions.md` et ce fichier mis à jour si l'archi de déploiement a changé
+  entre-temps
+
+## Journal de comparaison des sources NEO
+
+`/api/neo` écrit une ligne JSON dans `backend/var/log/neo-comparison.jsonl` **à chaque fois que les
+données des sources changent** (au plus une par heure et par plage de dates, ~25 ko par ligne).
+
+- `backend/var/log/` doit être **persistant et inscriptible** par l'utilisateur du serveur web ;
+  un échec d'écriture est journalisé mais ne casse jamais la route.
+- Rapport : `php bin/console app:neo:comparison-report --days=30`.
+- Prévoir une rotation (logrotate ou équivalent) : le pire cas est de l'ordre de quelques centaines
+  de Mo par an si le site est visité en continu ; en pratique bien moins, les lignes identiques
+  n'étant pas réécrites.
+- Purger le fichier est sans effet sur l'application : il ne sert qu'à l'analyse.
+
+## Faire tourner le site sur une machine sans outils de développement
+
+Vérifié le 2026-09-22 : **PHP seul suffit**, ni Node, ni Composer, ni serveur web à installer.
+
+1. Sur la machine de dev : `cd web && npm run build` (le lanceur recopie `web/dist/` dans
+   `backend/public/` tout seul à chaque démarrage — il n'y a plus à le faire à la main).
+2. **Copier le dossier du projet entier** sur la machine cible, y compris `backend/vendor/`
+   (~29 Mo, ce qui rend Composer inutile là-bas) et `web/dist/`. Ces deux dossiers sont dans
+   `.gitignore` : un `git clone` ne les contient pas, il faut alors `composer install` +
+   `npm install && npm run build`. `web/node_modules/` n'a pas à être copié.
+3. Sur la machine cible, **deux double-clics** :
+   - `Installer-PHP.bat` — ne fait rien si un PHP 8.3+ est déjà là ; sinon télécharge le zip
+     officiel de windows.php.net (version choisie dans `releases.json`, SHA256 vérifié), le
+     décompresse dans `tools/php/` et y écrit un `php.ini` activant `openssl`, `curl`, `mbstring`,
+     `fileinfo`. Aucun droit admin, PATH et registre inchangés ; désinstaller = supprimer
+     `tools/php/`. Arguments : `Installer-PHP.bat 8.3`, `Installer-PHP.bat --force`.
+   - `Lancer-NASA-Viz.bat` — vérifie PHP (`tools/php/` d'abord, puis le PATH) et `vendor/`, crée
+     `.env` depuis `.env.example`, recopie `web/dist/` dans `backend/public/` (sans toucher
+     `index.php`), prend le premier port libre à partir de 8010, **attend que le serveur réponde
+     vraiment en HTTP** avant d'annoncer l'URL, l'affiche, la copie dans le presse-papiers, l'écrit
+     dans `tools/derniere-url.txt` et ouvre le navigateur. Arguments :
+     `Lancer-NASA-Viz.bat 8080 --no-open`, et `--dev` pour lancer en plus le serveur Vite
+     (demande Node + `npm install`, et impose le port 8000 côté backend puisque
+     `web/vite.config.js` y proxifie `/api` en dur).
+
+   Les deux `.bat` ne font que déléguer à `tools/start.ps1` et `tools/install-php.ps1`, lancés en
+   `-ExecutionPolicy Bypass` pour ne rien exiger de la machine. Équivalent manuel depuis
+   `backend/` : `php -S 127.0.0.1:8000 -t public`.
+
+Le même processus sert la page, les assets et `/api/*` : même origine, donc pas de CORS.
+
+**Piège `DirectoryIndex`** : une requête sur `/` est une requête de répertoire, et Apache comme le
+serveur intégré de PHP préfèrent `public/index.php` (Symfony) à `public/index.html` — sans rien,
+la racine répond 404 alors que tous les autres fichiers sont servis. D'où la route `/` de
+`App\Controller\FrontendController`, qui renvoie `public/index.html` quand le build est là, et un
+petit texte listant les routes d'API sinon. Ne pas la supprimer en croyant à du code mort.
+
+Limites de ce mode « poste isolé » : serveur PHP mono-processus (une requête à la fois, suffisant
+pour un poste), `APP_ENV=dev` par défaut (plus lent et plus bavard — passer `APP_ENV=prod` +
+`APP_SECRET` dans `backend/.env.local` pour un usage prolongé), et `DEMO_KEY` toujours limitée à
+50 requêtes NASA par jour et par adresse IP.

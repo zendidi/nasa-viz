@@ -4,6 +4,28 @@
     <meta charset="UTF-8" />
     <title>NASA Viz</title>
     <style>html,body,#app{margin:0;height:100%;background:#000}</style>
+    <!--
+      Les textures sont réclamées ici, pas seulement par `makeGlobe()`, pour
+      passer AVANT les appels /api/* dans la file : le mode « poste isolé »
+      tourne sur `php -S`, qui sert une requête à la fois (mesuré : une texture
+      demandée pendant un appel upstream de 600 ms attend ces 600 ms). Sur cache
+      froid les sept appels Horizons prennent des dizaines de secondes, et sans
+      ce préchargement la Terre et la Lune restent des sphères noires jusqu'à ce
+      que la file se vide. Le scanner de préchargement les demande dès l'analyse
+      du HTML, donc avant que le bundle n'ait pu lancer le moindre fetch.
+    -->
+    <link rel="preload" as="image" href="/textures/2k_earth_daymap.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_nightmap.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_specular_map.jpg" />
+    <link rel="preload" as="image" href="/textures/2k_earth_normal_map.jpg" />
+    <link rel="preload" as="image" href="/textures/moon_1024.jpg" />
+    <!--
+      Les nuages (`2k_earth_clouds.jpg`) sont le seul fichier Terre
+      volontairement ABSENT de cette liste : 966 ko, plus que les quatre
+      au-dessus réunies, pour une couche dont l'absence ne se voit presque pas —
+      une Terre sans nuages reste une Terre, une Terre sans carte de jour est
+      une sphère noire. Elle arrive par la file normale.
+    -->
   </head>
   <body>
     <div id="app"></div>

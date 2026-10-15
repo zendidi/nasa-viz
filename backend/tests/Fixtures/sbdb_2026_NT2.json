@@ -1,0 +1,149 @@
+{
+    "signature": {
+        "version": "1.3",
+        "source": "NASA/JPL Small-Body Database (SBDB) API"
+    },
+    "object": {
+        "pha": true,
+        "kind": "au",
+        "orbit_id": "19",
+        "spkid": "54642785",
+        "des": "2026 NT2",
+        "prefix": null,
+        "fullname": "(2026 NT2)",
+        "orbit_class": {
+            "code": "APO",
+            "name": "Apollo"
+        },
+        "neo": true
+    },
+    "phys_par": [
+        {
+            "sigma": ".38506",
+            "desc": "absolute magnitude (magnitude at 1 au from Sun and observer)",
+            "value": "20.271",
+            "notes": "autocmod 3.0g",
+            "ref": "19",
+            "name": "H",
+            "units": null,
+            "title": "absolute magnitude"
+        }
+    ],
+    "orbit": {
+        "t_jup": "3.758",
+        "pe_used": "DE441",
+        "first_obs": "2026-07-15",
+        "producer": "Otto Matic",
+        "rms": ".30563",
+        "cov_epoch": "2461250.5",
+        "source": "JPL",
+        "last_obs": "2026-09-15",
+        "n_dop_obs_used": null,
+        "moid_jup": "2.54524",
+        "model_pars": [],
+        "condition_code": "5",
+        "not_valid_before": null,
+        "data_arc": "62",
+        "orbit_id": "19",
+        "n_del_obs_used": null,
+        "epoch": "2461200.5",
+        "sb_used": "SB441-N16",
+        "equinox": "J2000",
+        "n_obs_used": 85,
+        "two_body": null,
+        "not_valid_after": null,
+        "soln_date": "2026-09-15 06:22:07",
+        "comment": null,
+        "moid": ".0291634",
+        "elements": [
+            {
+                "value": ".5545505924276447",
+                "sigma": "1.3721E-5",
+                "title": "eccentricity",
+                "units": null,
+                "label": "e",
+                "name": "e"
+            },
+            {
+                "title": "semi-major axis",
+                "units": "au",
+                "label": "a",
+                "name": "a",
+                "value": "1.878750582513274",
+                "sigma": "5.1507E-5"
+            },
+            {
+                "sigma": "2.8523E-6",
+                "value": ".8368883339567554",
+                "name": "q",
+                "title": "perihelion distance",
+                "units": "au",
+                "label": "q"
+            },
+            {
+                "value": "8.611251725714746",
+                "sigma": ".00013933",
+                "title": "inclination; angle with respect to x-y ecliptic plane",
+                "units": "deg",
+                "label": "i",
+                "name": "i"
+            },
+            {
+                "name": "om",
+                "title": "longitude of the ascending node",
+                "units": "deg",
+                "label": "node",
+                "sigma": "6.5154E-5",
+                "value": ".4239608070453831"
+            },
+            {
+                "title": "argument of perihelion",
+                "units": "deg",
+                "label": "peri",
+                "name": "w",
+                "value": "46.05136788367258",
+                "sigma": "7.9624E-5"
+            },
+            {
+                "name": "ma",
+                "title": "mean anomaly",
+                "units": "deg",
+                "label": "M",
+                "sigma": ".0022742",
+                "value": "307.2133589937521"
+            },
+            {
+                "value": "2461338.418855867277",
+                "sigma": ".00027142",
+                "title": "time of perihelion passage",
+                "units": "TDB",
+                "label": "tp",
+                "name": "tp"
+            },
+            {
+                "sigma": ".038681",
+                "value": "940.5938162714864",
+                "name": "per",
+                "title": "sidereal orbital period",
+                "units": "d",
+                "label": "period"
+            },
+            {
+                "name": "n",
+                "title": "mean motion",
+                "units": "deg/d",
+                "label": "n",
+                "sigma": "1.574E-5",
+                "value": ".3827369410390554"
+            },
+            {
+                "name": "ad",
+                "units": "au",
+                "title": "aphelion distance",
+                "label": "Q",
+                "sigma": "8.0071E-5",
+                "value": "2.920612831069793"
+            }
+        ]
+    }
+}
