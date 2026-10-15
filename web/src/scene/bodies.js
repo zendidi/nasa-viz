@@ -378,13 +378,13 @@ export function makeSunMarker() {
 }
 
 /**
- * Textured (mrdoob/three.js examples) and lit by the same sunLight as the
+ * Textured (Solar System Scope, CC BY 4.0) and lit by the same sunLight as the
  * globe — its visible phase (crescent/gibbous) falls out of that real
  * directional lighting automatically, no separate phase calculation needed.
  */
 export function makeMoon() {
   const textureLoader = new THREE.TextureLoader()
-  const moonMap = textureLoader.load('/textures/moon_1024.jpg')
+  const moonMap = textureLoader.load('/textures/2k_moon.jpg')
   moonMap.colorSpace = THREE.SRGBColorSpace
 
   return new THREE.Mesh(

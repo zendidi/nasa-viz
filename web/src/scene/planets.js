@@ -34,7 +34,16 @@ import { pivotRadius, planetRadius } from '../scale.js'
  */
 const PLANETS = {
   mercury: { label: 'Mercure', color: 0x9c9187, map: '/textures/2k_mercury.jpg' },
-  venus: { label: 'Vénus', color: 0xf0d9a6, map: '/textures/2k_venus_surface.jpg' },
+  // Cloud deck by default: from space Venus is a featureless yellowish sphere,
+  // and the ground under the clouds is not what a camera there would see. The
+  // radar surface is opt-in, from a checkbox that only exists while Venus is
+  // the pivot (`setVenusSurface`).
+  venus: {
+    label: 'Vénus',
+    color: 0xf0d9a6,
+    map: '/textures/2k_venus_atmosphere.jpg',
+    surfaceMap: '/textures/2k_venus_surface.jpg',
+  },
   mars: { label: 'Mars', color: 0xd0553a, map: '/textures/2k_mars.jpg' },
   jupiter: { label: 'Jupiter', color: 0xd7b98e, map: '/textures/2k_jupiter.jpg' },
   saturn: {
@@ -327,6 +336,41 @@ export function createPlanets({
   /** Planets already wearing their map, so a second visit doesn't re-assign. */
   const textured = new Set()
 
+  /** True while Venus is asked to show the radar surface instead of its clouds. */
+  let venusSurface = false
+
+  const mapUrlFor = (id) => (id === 'venus' && venusSurface ? PLANETS.venus.surfaceMap : PLANETS[id].map)
+
+  /**
+   * Loads the map a planet should wear *now* and puts it on. The check after
+   * the load is for the checkbox being flipped while the image was in flight:
+   * the older answer must not land on top of the newer one.
+   */
+  function applyMap(body) {
+    const url = mapUrlFor(body.id)
+    return loadColorMap(url).then((map) => {
+      if (mapUrlFor(body.id) !== url) return
+      body.mesh.material.uniforms.uMap.value = map
+      body.mesh.material.uniforms.uColor.value.setHex(TEXTURED_TINT)
+      // No `on.changed()`: that redraws the *panel*, and a texture changes
+      // nothing it says. The render loop is a plain rAF, so the new map is on
+      // screen on the next frame by itself.
+    })
+  }
+
+  /**
+   * Venus: radar surface (true) or cloud deck (false). The surface map is
+   * fetched the first time it is asked for, like every other map here. If
+   * Venus has not been centred on yet nothing is loaded: `loadTextureFor` will
+   * pick the right one.
+   */
+  function setVenusSurface(enabled) {
+    venusSurface = enabled
+    const body = bodies.find((b) => b.id === 'venus')
+    // A failed load leaves the previous map on, which is a correct picture, only not the requested one.
+    if (body && textured.has('venus')) applyMap(body).catch(() => {})
+  }
+
   /**
    * Gives one planet its colour map. Called when that planet becomes the pivot
    * and at no other time — the same rule the moons follow, for the same reason:
@@ -350,14 +394,7 @@ export function createPlanets({
     buildRingFor(body)
     if (textured.has(id) || !PLANETS[id]?.map) return
     textured.add(id)
-    loadColorMap(PLANETS[id].map)
-      .then((map) => {
-        body.mesh.material.uniforms.uMap.value = map
-        body.mesh.material.uniforms.uColor.value.setHex(TEXTURED_TINT)
-        // No `on.changed()`: that redraws the *panel*, and a texture changes
-        // nothing it says. The render loop is a plain rAF, so the new map is on
-        // screen on the next frame by itself.
-      })
+    applyMap(body)
       .catch(() => {
         // Left flat and forgotten rather than retried in place: a planet in its
         // legend colour is the state this scene shipped with for months, so a
@@ -596,6 +633,7 @@ export function createPlanets({
     update,
     load,
     loadTextureFor,
+    setVenusSurface,
     /**
      * The record main.js needs to make `id` the pivot, or null if it cannot be
      * one yet. The position is brought up to date before handing it over: a

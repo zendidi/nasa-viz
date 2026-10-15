@@ -61,7 +61,7 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  *                                          scale step when it happens over it
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed,
- *                                          allOrbits
+ *                                          allOrbits, venusSurface
  */
 /**
  * The moons line of the planets panel. Only ever shown while a planet is the
@@ -351,14 +351,17 @@ export function createPanels({ app, wheelTarget, on }) {
    * - and its listener is delegated from the panel once (see below), because
    *   the input this markup creates is a new element each time.
    */
-  function allOrbitsLine({ enabled, available, total } = {}) {
+  function allOrbitsLine({ enabled, available, total, scaleLocked } = {}) {
     if (!total) return ''
     const count = available === total ? `${total}` : `${available}/${total}`
+    // Disabled, not unticked: the user's choice is kept and comes back at 100 % réel.
     return `
       <p class="neo-toggle">
-        <label><input type="checkbox" id="neo-all-orbits"${enabled ? ' checked' : ''}>
+        <label><input type="checkbox" id="neo-all-orbits"${enabled ? ' checked' : ''}${scaleLocked ? ' disabled' : ''}>
         Orbites de tous les NEO (${count})</label>
-        <span class="muted">vue héliocentrée</span>
+        <span class="muted">${
+          scaleLocked ? 'Orbites visibles en échelle réelle (Maj + molette)' : 'vue héliocentrée, échelle réelle'
+        }</span>
       </p>
     `
   }
@@ -390,6 +393,11 @@ export function createPanels({ app, wheelTarget, on }) {
   // renderNeo(), so a listener on the input would die with the first redraw.
   neoPanel.addEventListener('change', (event) => {
     if (event.target.id === 'neo-all-orbits') on.allOrbits(event.target.checked)
+  })
+
+  // Same delegation for the Venus box, which lives inside renderPlanets' template.
+  planetsPanel.addEventListener('change', (event) => {
+    if (event.target.id === 'venus-surface') on.venusSurface(event.target.checked)
   })
 
   let neoPositions = { known: 0, total: 0, loading: false }
@@ -429,7 +437,7 @@ export function createPanels({ app, wheelTarget, on }) {
    * @param {{planet: string, known: number, loading: boolean} | null} moons
    *   the centred planet's moons, or null when the pivot is not a planet
    */
-  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend, drawn, moons) {
+  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend, drawn, moons, venus = null) {
     const swatches = legend.map((p) => `<span class="dot" style="background:${p.color}"></span>${p.label}`)
     planetsPanel.innerHTML = `
       ${PLANETS_HEADING}
@@ -448,6 +456,12 @@ export function createPanels({ app, wheelTarget, on }) {
       }</p>
       <p class="legend">${swatches.join(' &nbsp;')}</p>
       ${moonsLine(moons)}
+      ${
+        venus
+          ? `<p class="neo-toggle"><label><input type="checkbox" id="venus-surface"${venus.surface ? ' checked' : ''}>
+        Voir sous les nuages (surface radar)</label></p>`
+          : ''
+      }
     `
   }
 

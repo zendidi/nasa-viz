@@ -15,8 +15,8 @@ Saturne, bande 2048 × 125).
 | fichier | corps / carte | amont | ici |
 |---|---|---|---|
 | `2k_mercury.jpg` | Mercure, couleur | 873 ko | 442 ko — ré-encodé q80 |
-| `2k_venus_surface.jpg` | Vénus, surface (radar) | 885 ko | 455 ko — ré-encodé q80 |
-| `2k_venus_atmosphere.jpg` | Vénus, nuages | 230 ko | inchangé — en réserve |
+| `2k_venus_surface.jpg` | Vénus, surface (radar) — case « Voir sous les nuages » | 885 ko | 455 ko — ré-encodé q80 |
+| `2k_venus_atmosphere.jpg` | Vénus, nuages — texture par défaut | 230 ko | inchangé |
 | `2k_mars.jpg` | Mars, couleur | 751 ko | 385 ko — ré-encodé q80 |
 | `2k_jupiter.jpg` | Jupiter, couleur | 499 ko | inchangé |
 | `2k_saturn.jpg` | Saturne, couleur | 200 ko | inchangé |
@@ -41,7 +41,7 @@ voir `docs/planetes-et-lunes.md`.
 ## three.js — licence non établie
 
 `earth_atmos_2048.jpg`, `earth_lights_2048.png`, `earth_normal_2048.jpg`,
-`earth_specular_2048.jpg` et `moon_1024.jpg` viennent des exemples three.js, dont beaucoup d'assets
+`earth_specular_2048.jpg` et `moon_1024.jpg` (retiré le 2026-10-15) venaient des exemples three.js, dont beaucoup d'assets
 n'ont **pas de licence propre** — c'est un sujet ouvert chez eux. Le jeu Solar System Scope ci-dessus
 couvre exactement les mêmes cartes : ces cinq fichiers sont à retirer au moment où la scène bascule.
 
@@ -55,9 +55,13 @@ Ce qui a rendu la bascule possible : `earth_atmos_2048.jpg` a **les nuages peint
 jour**, donc une couche nuageuse par-dessus les aurait dessinés deux fois. Le jeu SSS livre le jour
 sans nuages et les nuages à part, seule forme où une couche indépendante a un sens.
 
-**`moon_1024.jpg` reste en service**, et c'est délibéré : `2k_moon.jpg` attend en réserve, mais
-l'alignement en longitude des deux jeux n'a été mesuré que pour la Terre (0 px d'écart sur 2048, le
-2026-09-29). La Lune porte une orientation calibrée au degré — le comptage vers l'est valait 12°,
-voir `docs/agent/decisions.md` — qu'un jeu de textures décalé en longitude casserait sans que rien
-ne le signale à l'écran. La bascule de la Lune demande donc d'abord la même mesure
-(`tools/calibration/texture-longitude.py`), pas seulement un changement de chemin.
+**Bascule faite pour la Lune le 2026-10-15** : la scène sert `2k_moon.jpg`, et `moon_1024.jpg` a
+été retiré du dépôt. La Lune porte une orientation calibrée au degré (le comptage vers l'est valait
+12°, voir `docs/agent/decisions.md`), donc la bascule a d'abord été mesurée : les deux cartes,
+confrontées aux 59 mers du gazetteer IAU/USGS par la méthode de
+`tools/calibration/texture-longitude.py`, ont la même convention (bord gauche à 180°, pas de
+miroir) et des décalages de −0,53° (`2k_moon`) et −1,05° (`moon_1024`) — un demi-degré d'écart,
+sous la précision du gazetteer. La carte SSS est aussi nettement plus lisible : corrélation aux mers
+r = −0,58 contre −0,16.
+
+Il ne reste donc, de ce jeu three.js, que les quatre fichiers Terre en attente de comparaison.

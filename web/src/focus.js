@@ -11,7 +11,7 @@
  * Pure data + math, no Three.js.
  */
 
-import { AU_KM, EARTH_CURVE, LUNAR_DISTANCE_KM, SUN_CURVE, moonSystemCurve, orbitingCurve } from './scale.js'
+import { AU_KM, EARTH_CURVE, LUNAR_DISTANCE_KM, SUN_CURVE, isRealScale, moonSystemCurve, orbitingCurve } from './scale.js'
 
 const lunarRing = (count, label) => ({ km: count * LUNAR_DISTANCE_KM, label })
 const auRing = (au) => ({ km: au * AU_KM, label: `${au.toLocaleString('fr-FR')} ua` })
@@ -193,3 +193,14 @@ for (const id of PLANET_FOCUS_IDS) {
  * then the planets outward from the Sun.
  */
 export const FOCUS_IDS = ['earth', 'sun', ...PLANET_FOCUS_IDS]
+
+/**
+ * Whether the NEO ellipses (the selected one's and the opt-in bundle) are drawn.
+ * Sun pivot at 100 % réel only: the scale curve compresses distance from the
+ * pivot non-linearly, so below 1 it bends an ellipse's shape and a hundred and
+ * fifty of them pile up, which is not reliable to read. The week trajectory is
+ * not subject to this: it goes through the same mapping as the NEO's own dot.
+ */
+export function neoEllipsesVisible(focusId, t) {
+  return focusId === 'sun' && isRealScale(t)
+}
