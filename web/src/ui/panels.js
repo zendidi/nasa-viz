@@ -31,9 +31,33 @@ const VIEW_DESCRIPTIONS = {
 
 const viewDescription = (id) =>
   VIEW_DESCRIPTIONS[id] ??
-  `Scène centrée sur ${FOCUSES[id].label} · son orbite et celles des autres planètes`
+  `Scène centrée sur ${FOCUSES[id].label} · autres planètes et orbites planétaires à l’échelle réelle`
+/** Speeds of the simulated clock, in simulated seconds per real second (clock.js). */
+const TIME_RATES = [
+  { rate: 1, label: '×1' },
+  { rate: 3600, label: '1 h/s' },
+  { rate: 86_400, label: '1 j/s' },
+]
+
+// One formatter for the whole session: this is called every frame while the
+// clock runs fast. UTC and said so — the scene's tables are UTC, and a local
+// time would shift with the viewer's zone.
+const SIM_DATE_FORMAT = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'medium', timeZone: 'UTC' })
+const formatSimDate = (ms) => `${SIM_DATE_FORMAT.format(ms)} UTC`
+
 const NEO_HEADING = '<h2>Astéroïdes proches (NEO)</h2>'
 const PLANETS_HEADING = '<h2>Planètes</h2>'
+
+/**
+ * What the panel calls the full set: the eight planets, the Earth included
+ * (always known - it is the geocentric origin, so it has no table to wait for
+ * and is not in the `known/total` counters), plus Pluto, which the app treats as
+ * a planet although it is a dwarf one ("on l'affiche parce qu'on l'aime bien",
+ * user, 2026-10-16). Written out rather than derived from `total`: the counters
+ * are 7 + Pluto = 8 bodies with a table, and that this equals "8 planets" is a
+ * coincidence of the Earth being missing from them, not a relation to lean on.
+ */
+const PLANET_COUNT_LABEL = '8 planètes + Pluton'
 const ISS_HEADING = '<h2><span class="dot dot-iss"></span>ISS</h2>'
 const APOD_HEADING = '<h2>Image du jour (APOD)</h2>'
 
@@ -61,7 +85,8 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  *                                          scale step when it happens over it
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed,
- *                                          allOrbits, points, venusSurface, rings
+ *                                          allOrbits, points, venusSurface, rings,
+ *                                          timeRate, timeReset
  */
 /**
  * The moons line of the planets panel. Only ever shown while a planet is the
@@ -94,6 +119,7 @@ export function createPanels({ app, wheelTarget, on }) {
       <span id="usage-badge" class="muted" title="Requêtes envoyées à api.nasa.gov (NeoWs + APOD) depuis minuit UTC — les autres sources (JPL, ESA, IMCCE, ISS) sont sans quota">…</span>
       <button id="ui-style-btn" class="header-toggle" title="Panneau encadré, ou texte brut posé sur la scène">Panneau</button>
       <button id="apod-btn" class="header-toggle" aria-pressed="true" title="Afficher ou masquer l'image du jour, pour dégager la vue">APOD</button>
+      <button id="time-btn" class="header-toggle" aria-pressed="false" title="Afficher le panneau du temps simulé — le masquer remet l'heure réelle">Temps</button>
     </div>
     <div id="info-panel">
       <section id="iss-panel">
@@ -160,6 +186,26 @@ export function createPanels({ app, wheelTarget, on }) {
     <p class="muted scale-hint">Touche R : recentrer</p>
   `
   bottomBar.appendChild(viewPanel)
+
+  // The simulated clock: three speeds (no reverse) and the way back to real time.
+  const timePanel = document.createElement('div')
+  timePanel.id = 'time-panel'
+  timePanel.classList.add('hidden') // off by default; the header's "Temps" toggle shows it
+  timePanel.innerHTML = `
+    <div class="scale-row">
+      <label>Temps</label>
+      ${TIME_RATES.map((r) => `<button class="time-rate" data-rate="${r.rate}">${r.label}</button>`).join('')}
+    </div>
+    <div class="scale-row">
+      <button id="time-now-btn">Maintenant</button>
+    </div>
+    <p id="time-label"></p>
+    <p id="time-limit" class="hidden"></p>
+  `
+  bottomBar.appendChild(timePanel)
+  const timeLabel = timePanel.querySelector('#time-label')
+  const timeLimit = timePanel.querySelector('#time-limit')
+  const timeNowBtn = timePanel.querySelector('#time-now-btn')
 
   const sceneLabels = document.createElement('div')
   sceneLabels.id = 'scene-labels'
@@ -289,16 +335,26 @@ export function createPanels({ app, wheelTarget, on }) {
     #bottom-bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2;
                   display: flex; align-items: stretch; justify-content: center; flex-wrap: wrap; gap: 12px;
                   max-width: calc(100vw - 40px); }
-    #scale-panel, #view-panel { background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px;
+    #scale-panel, #view-panel, #time-panel { background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px;
                    padding: 10px 16px; color: #eaf4ff; font-family: system-ui, sans-serif; text-align: center; }
-    #view-panel { display: flex; flex-direction: column; justify-content: center; }
-    #scale-panel .scale-row, #view-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
-    #scale-panel .scale-row + .scale-row, #view-panel .scale-row + .scale-row { margin-top: 8px; }
-    #scale-panel label, #view-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
+    #view-panel, #time-panel { display: flex; flex-direction: column; justify-content: center; }
+    #time-panel.hidden { display: none; }
+    .time-rate, #time-now-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
+                  border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; text-shadow: none; }
+    .time-rate:hover, #time-now-btn:hover { background: #24608f; }
+    .time-rate.active { background: #4fa8ff; color: #0e2233; }
+    #time-now-btn:disabled { opacity: 0.35; cursor: default; }
+    #time-label { margin: 8px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; max-width: 220px; }
+    #time-label.muted { opacity: 0.6; }
+    #time-limit { margin: 4px 0 0; font-size: 12px; color: #ffbf66; max-width: 220px; }
+    #time-limit.hidden { display: none; }
+    #scale-panel .scale-row, #view-panel .scale-row, #time-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    #scale-panel .scale-row + .scale-row, #view-panel .scale-row + .scale-row, #time-panel .scale-row + .scale-row { margin-top: 8px; }
+    #scale-panel label, #view-panel label, #time-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
     #scale-panel .scale-end { font-size: 11px; opacity: 0.6; }
     #scale-slider { width: 260px; accent-color: #4fa8ff; }
     .scale-preset.active, .focus-btn.active { background: #4fa8ff; color: #0e2233; }
-    /* Seven planets don't fit one line next to the scale panel, and the row must
+    /* Eight planets and Pluto don't fit one line next to the scale panel, and the row must
        not push #bottom-bar wider than the viewport. */
     #view-panel .rings-toggle { cursor: pointer; pointer-events: auto; margin: 0 0 0 4px; }
     #view-panel .rings-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
@@ -410,6 +466,16 @@ export function createPanels({ app, wheelTarget, on }) {
   apodBtn.addEventListener('click', () => {
     const shown = ui.querySelector('#apod-panel').classList.toggle('hidden') === false
     apodBtn.setAttribute('aria-pressed', String(shown))
+  })
+
+  // The time panel is hidden at every start (not remembered). Putting it away
+  // also puts the clock back on the real time: a hidden panel must not leave a
+  // simulated date running with no control in sight.
+  const timeBtn = ui.querySelector('#time-btn')
+  timeBtn.addEventListener('click', () => {
+    const shown = timePanel.classList.toggle('hidden') === false
+    timeBtn.setAttribute('aria-pressed', String(shown))
+    if (!shown) on.timeReset()
   })
 
   const issPanel = ui.querySelector('#iss-panel')
@@ -536,11 +602,11 @@ export function createPanels({ app, wheelTarget, on }) {
   /**
    * The planets are neither a feed nor a snapshot: their tables cover a year
    * and are refetched when they near their end, so there is no "maj" stamp to
-   * show — only how many of the seven are actually placed.
+   * show — only how many of the bodies with a table (seven planets and Pluto) are actually placed.
    *
    * `drawn` is false when the scene is deliberately not showing them (the
-   * geocentric view below 100 % réel). Two words are enough: the panel must not
-   * claim seven placed planets over an empty sky, but *why* they are hidden is
+   * Earth's or a planet's view below 100 % réel; with a planet as pivot, only the others). Two words are enough: the panel must not
+   * claim placed planets over an empty sky, but *why* they are hidden is
    * not news the user needs every time they move the slider — the reasoning
    * lives in docs/echelle-reelle.md.
    *
@@ -558,10 +624,10 @@ export function createPanels({ app, wheelTarget, on }) {
         loading
           ? `positions réelles (JPL Horizons) : ${known}/${total}…`
           : known === total
-            ? `${total} planètes · positions réelles (JPL Horizons)`
+            ? `${PLANET_COUNT_LABEL} · positions réelles (JPL Horizons)`
             : `${known}/${total} placées — les autres n'ont pas répondu`
       }</p>
-      ${drawn ? '' : '<p class="muted">planètes masquées</p>'}
+      ${drawn ? '' : `<p class="muted">${moons ? 'autres planètes masquées' : 'planètes masquées'}</p>`}
       <p class="muted">${
         orbits === total && !loadingOrbits
           ? 'orbites tracées (vue Soleil)'
@@ -633,6 +699,32 @@ export function createPanels({ app, wheelTarget, on }) {
       button.disabled = FOCUSES[id].group === 'planet' && !focusableIds.includes(id)
     }
     viewLabel.textContent = viewDescription(focusId)
+  }
+
+  /**
+   * @param {object} state
+   * @param {number} state.rate      simulated seconds per real second
+   * @param {boolean} state.realTime the scene shows the real time right now
+   * @param {number} state.simMs     the simulated time
+   * @param {boolean} state.atLimit  the clock has run into its upper bound
+   * @param {number|null} state.limitMs that bound
+   */
+  let lastTimeKey = null
+  function renderTime({ rate, realTime, simMs, atLimit, limitMs }) {
+    // Called every frame while the clock runs: only touch the DOM when the
+    // displayed text would actually change (it ticks once a second at most).
+    const stamp = realTime ? '' : formatSimDate(simMs)
+    const key = `${rate}|${realTime}|${stamp}|${atLimit}`
+    if (key === lastTimeKey) return
+    lastTimeKey = key
+    for (const button of timePanel.querySelectorAll('.time-rate')) {
+      button.classList.toggle('active', Number(button.dataset.rate) === rate)
+    }
+    timeNowBtn.disabled = realTime
+    timeLabel.textContent = realTime ? 'temps réel' : `Simulé : ${stamp}`
+    timeLabel.classList.toggle('muted', realTime)
+    timeLimit.classList.toggle('hidden', !atLimit)
+    if (atLimit) timeLimit.textContent = `Butée : fin des tables JPL (${formatSimDate(limitMs)}) — le temps s'arrête ici`
   }
 
   // --- modal -------------------------------------------------------------
@@ -742,6 +834,10 @@ export function createPanels({ app, wheelTarget, on }) {
   for (const button of viewPanel.querySelectorAll('.focus-btn')) {
     button.addEventListener('click', () => on.focus(button.dataset.focus))
   }
+  for (const button of timePanel.querySelectorAll('.time-rate')) {
+    button.addEventListener('click', () => on.timeRate(Number(button.dataset.rate)))
+  }
+  timeNowBtn.addEventListener('click', () => on.timeReset())
   viewPanel.querySelector('#recenter-btn').addEventListener('click', () => on.recenter())
   // Static markup, never re-rendered: a direct listener is enough here.
   viewPanel.querySelector('#rings-toggle').addEventListener('change', (event) => on.rings(event.target.checked))
@@ -801,6 +897,7 @@ export function createPanels({ app, wheelTarget, on }) {
     renderApod,
     renderScale,
     renderView,
+    renderTime,
     setUsage,
     openModal,
     openDetail,

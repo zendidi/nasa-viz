@@ -31,7 +31,7 @@ import { eclipticAuToSceneKm } from './geo.js'
  *
  * @typedef {{
  *   line: THREE.LineSegments, km: Float32Array|null, pairs: Int32Array|null,
- *   frame: OrbitFrame,
+ *   frame: OrbitFrame, offsetKm: THREE.Vector3|null,
  * }} OrbitTrace
  */
 
@@ -57,7 +57,7 @@ export function createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricK
     )
     line.frustumCulled = false // vertices move every frame; the bounding sphere would be stale
     parent.add(line)
-    return { line, km: null, pairs: null, frame }
+    return { line, km: null, pairs: null, frame, offsetKm: null }
   }
 
   /**
@@ -91,6 +91,12 @@ export function createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricK
     )
   }
 
+  /**
+   * `trace.offsetKm`, when set, rigidly translates the whole line in km (scene
+   * axes) **before** the scene's compression is applied, so it is a real
+   * displacement at every scale and costs one addition per vertex, with no
+   * geometry rebuild. Set by the owner each frame (Pluto's line, planets.js).
+   */
   function update(trace, t) {
     if (!trace.km || trace.pairs.length === 0) {
       trace.line.visible = false
@@ -100,6 +106,7 @@ export function createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricK
     const positions = trace.line.geometry.getAttribute('position')
     for (let i = 0; i < trace.pairs.length; i++) {
       scratch.fromArray(trace.km, trace.pairs[i] * 3)
+      if (trace.offsetKm) scratch.add(trace.offsetKm)
       place(scratch, scratch, t)
       positions.setXYZ(i, scratch.x, scratch.y, scratch.z)
     }

@@ -161,16 +161,45 @@ final class SolarSystemClientTest extends TestCase
         // shape, but it is not a planet and `planetIds()` must keep it out — it
         // has no moons and no orbit to draw.
         self::assertSame(
-            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'sun'],
+            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto', 'sun'],
             SolarSystemClient::ids(),
         );
         self::assertSame(
-            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'],
+            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'],
             SolarSystemClient::planetIds(),
         );
         self::assertSame(['id' => 'sun', 'name' => 'Sun', 'radius_km' => 696340.0], SolarSystemClient::describe('sun'));
         // The Earth is the frame's origin — a table of zeroes, deliberately absent.
         self::assertFalse(SolarSystemClient::isKnown('earth'));
         self::assertSame(['id' => 'jupiter', 'name' => 'Jupiter', 'radius_km' => 69911.0], SolarSystemClient::describe('jupiter'));
+    }
+
+    /**
+     * Pluto's body-centre ephemeris (plu060) stops on 2199-12-29 and its 248-year
+     * period from 2026 ends in 2274, so Horizons answers "No ephemeris for target
+     * Pluto after A.D. 2199" (measured 2026-10-16). Its orbit is therefore drawn
+     * from the barycentre '9' (DE441, to 2650); its positions, a year long, stay
+     * on '999'. Without this the orbit route returns nothing for Pluto.
+     */
+    public function testPlutosOrbitComesFromTheBarycentreButItsPositionsFromTheBody(): void
+    {
+        [$client, $urls] = $this->clientRecording(
+            static fn (string $url) => new MockResponse(json_encode(['result' => self::MARS_RESULT])),
+        );
+        $start = new \DateTimeImmutable('2026-10-01', new \DateTimeZone('UTC'));
+
+        $client->getPositions(['pluto'], $start);
+        $orbit = $client->getOrbit('pluto', $start);
+
+        self::assertStringContainsString('COMMAND=%27999%27', $urls[0]);
+        self::assertStringContainsString('COMMAND=%279%27', $urls[1]);
+        self::assertStringContainsString('STEP_SIZE=%27'.SolarSystemClient::ORBIT_INTERVALS.'%27', $urls[1]);
+        // 90 560 d is 247,9 years, a window Horizons serves in one request.
+        self::assertEqualsWithDelta(90560 * 86400, $orbit['stop'] - $orbit['start'], 60.0);
+        self::assertSame(
+            ['id' => 'pluto', 'name' => 'Pluto', 'radius_km' => 1188.3],
+            SolarSystemClient::describe('pluto'),
+        );
+        self::assertSame('999', SolarSystemClient::horizonsId('pluto'));
     }
 }

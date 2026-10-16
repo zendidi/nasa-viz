@@ -9,8 +9,8 @@
  *    asks Horizons with `CENTER='500@599'`). Since that planet *is* the pivot,
  *    the samples are already pivot-relative and go through `placeRelativeKm`
  *    untouched — no frame conversion, no subtraction, nothing to get wrong.
- * 2. Nothing is fetched until a planet is centred on. Loading all 38 up front
- *    would cost 38 Horizons requests for moons nobody is looking at.
+ * 2. Nothing is fetched until a planet is centred on. Loading all 39 up front
+ *    would cost 39 Horizons requests for moons nobody is looking at.
  * 3. Its orbit costs no extra request: a position table spans about eleven
  *    orbits, so its first `orbit_samples` points *are* one loop. The backend
  *    says how many, and says `covers_full_orbit: false` for the four slowest
@@ -20,9 +20,11 @@
 import * as THREE from 'three'
 import { fetchMoons } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
-import { makeLitBodyMaterial } from './bodies.js'
-import { icrfToScene } from './geo.js'
+import { loadColorMap, makeLitBodyMaterial } from './bodies.js'
+import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift, setBodyOrientation } from './geo.js'
+import { poleOf } from './orientation.js'
 import { moonRadius } from '../scale.js'
+import { sampleCatmullRom, subdivideTable } from '../interpolate.js'
 
 /** French names, by backend id. The backend owns the physics, this owns the wording. */
 const MOON_LABELS = {
@@ -64,6 +66,7 @@ const MOON_LABELS = {
   thalassa: 'Thalassa',
   naiad: 'Naïade',
   halimede: 'Halimède',
+  charon: 'Charon',
 }
 
 /**
@@ -78,6 +81,34 @@ const MOON_COLOR = 0xc8c8c8
 const moonGeometry = new THREE.SphereGeometry(1, 20, 20)
 
 /**
+ * Charon is the only moon with a surface, and the one that is a half of a
+ * double system (radius 606 km against Pluto's 1 188): New Horizons mapped it,
+ * so it wears a map, and the 48 segments are for the same reason as the
+ * planets' - a textured limb is read against black.
+ *
+ * `tint` multiplies the greyscale USGS mosaic (same role as `tint` in
+ * planets.js, and as easy to change): neutral grey, very slightly warm,
+ * #e2dcd4 - Charon is the grey one next to Pluto's beige, and the red polar cap
+ * (Mordor Macula) is not in a greyscale map anyway. Left edge 0 deg E, like
+ * Pluto's (mapUShift in geo.js).
+ */
+const TEXTURED_MOONS = {
+  charon: { map: '/textures/1k_charon.jpg', tint: 0xe2dcd4, mapLeftEdgeLon: 0 },
+}
+const texturedMoonGeometry = new THREE.SphereGeometry(1, 48, 48)
+
+/**
+ * Moons in synchronous rotation, whose orbit lies in the equator of the planet
+ * they follow: nothing is served for them (no `/orientation` route entry), the
+ * pose is computed here. Pole = the planet's pole, longitude 0 = the face that
+ * looks at the planet (Charon's sub-Pluto point is 0 deg by convention). The
+ * other moons stay unoriented grey spheres.
+ */
+const LOCKED_MOONS = new Set(['charon'])
+const lockPole = new THREE.Vector3()
+const lockMeridian = new THREE.Vector3()
+
+/**
  * Smaller floor than a planet's 3,5 px: at the readable end a moon is drawn
  * beside the planet it orbits, and a moon that never shrinks below a planet's
  * minimum would read as another planet.
@@ -87,9 +118,13 @@ const MOON_MIN_RADIUS_PX = 2.5
 /** Fainter than a planet's orbit (0,35): there are up to nine at once, around one body. */
 const ORBIT_OPACITY = 0.22
 
+/** Curve points per hourly sample in a moon's orbit line — same factor as the planets'. */
+const ORBIT_SMOOTHING = 8
+
 /** A stored table is usable while "now" sits inside the window it covers. */
 function covers(record) {
   if (!record?.positions?.length) return false
+  // Wall clock on purpose: cache validity, not scene time.
   const nowMs = Date.now()
   const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
   return nowMs >= record.start * 1000 && nowMs < endMs
@@ -128,9 +163,9 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
   let loadingPlanet = null
 
   /**
-   * Meshes are created as tables arrive rather than all 38 up front: a planet's
-   * moons are the only ones ever on screen, so 38 hidden meshes would be 38
-   * draw-call candidates and 38 materials for nothing.
+   * Meshes are created as tables arrive rather than all 39 up front: a planet's
+   * moons are the only ones ever on screen, so 39 hidden meshes would be 39
+   * draw-call candidates and 39 materials for nothing.
    *
    * @type {Record<string, {id: string, label: string, mesh: THREE.Mesh, labelEl: HTMLElement,
    *   orbit: object, radiusKm: number, positionKm: THREE.Vector3, known: boolean, fade: number}>}
@@ -142,7 +177,10 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
       bodies[id].radiusKm = radiusKm
       return bodies[id]
     }
-    const mesh = new THREE.Mesh(moonGeometry, makeLitBodyMaterial(MOON_COLOR))
+    const mesh = new THREE.Mesh(
+      TEXTURED_MOONS[id] ? texturedMoonGeometry : moonGeometry,
+      makeLitBodyMaterial(MOON_COLOR),
+    )
     mesh.visible = false
     group.add(mesh)
     bodies[id] = {
@@ -159,36 +197,62 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
     return bodies[id]
   }
 
-  const interpA = new THREE.Vector3()
-  const interpB = new THREE.Vector3()
+  /** Moons already asked for their map, so each is fetched once (and retried only after a failure). */
+  const textured = new Set()
+
+  /** Same rule as the planets: the map is fetched when its moon is first drawn, not at startup. */
+  function loadMapFor(body) {
+    const spec = TEXTURED_MOONS[body.id]
+    if (!spec || textured.has(body.id)) return
+    textured.add(body.id)
+    loadColorMap(spec.map)
+      .then((map) => {
+        const { uniforms } = body.mesh.material
+        uniforms.uMap.value = map
+        uniforms.uColor.value.setHex(spec.tint)
+        uniforms.uMapShift.value = mapUShift(spec.mapLeftEdgeLon ?? SSS_MAP_LEFT_EDGE_LON)
+      })
+      .catch(() => textured.delete(body.id))
+  }
+
   const sunDir = new THREE.Vector3()
+  const interpIcrf = [0, 0, 0]
 
   /**
-   * Linear interpolation in the moon's own table. Clamped rather than refused
-   * past the end: unlike a planet's yearly table, a moon's window is days long
-   * and can lapse while the tab stays open. A moon frozen at its last known
-   * sample is wrong by a fraction of an orbit; a moon that vanishes mid-session
-   * looks like a bug. The refetch happens on the next visit.
+   * Cubic Catmull-Rom in the moon's own hourly table (interpolate.js), in ICRF
+   * km, then one conversion to scene axes — same discipline as planets.js.
+   * Max error on a synthetic circular orbit at Io's radius (421 700 km, period
+   * 1,769 d, 3 600 s step; measured 2026-10-16): linear 1 154 km (two thirds of
+   * Io's own 1 822 km radius), cubic 22 km in the interior and 88 km on the
+   * first/last interval, where the quadratic through the three nearest samples
+   * replaces the missing neighbour.
+   *
+   * Clamped rather than refused past the end (`sampleCatmullRom` clamps `f`):
+   * unlike a planet's yearly table, a moon's window is days long and can lapse
+   * while the tab stays open. A moon frozen at its last known sample is wrong by
+   * a fraction of an orbit; a moon that vanishes mid-session looks like a bug.
+   * The refetch happens on the next visit.
    */
   function updatePositionKm(body, nowSeconds) {
     const table = tables[body.id]
     if (!table) return
     const f = (nowSeconds - table.start) / table.stepSeconds
-    const i = THREE.MathUtils.clamp(Math.floor(f), 0, table.positions.length - 2)
-    const a = table.positions[i]
-    const b = table.positions[i + 1]
-    icrfToScene(a[0], a[1], a[2], interpA)
-    icrfToScene(b[0], b[1], b[2], interpB)
-    body.positionKm.lerpVectors(interpA, interpB, THREE.MathUtils.clamp(f - i, 0, 1))
+    sampleCatmullRom(table.positions, f, interpIcrf)
+    icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], body.positionKm)
     body.known = true
   }
 
-  /** Draws the loop from the first `orbitSamples` points of the position table. */
+  /**
+   * Draws the loop from the first `orbitSamples` points of the position table,
+   * redrawn by `subdivideTable` — the same Catmull-Rom curve `updatePositionKm`
+   * places the moon on. Straight hourly chords stopped holding the moon on its
+   * line once placement went cubic: Io's chords sag up to ~1 154 km below the
+   * curve (circle r = 421 700 km, 1,769 d, 3 600 s step), 0,63 of its radius.
+   */
   function setOrbit(body) {
     const table = tables[body.id]
     if (!table?.orbitSamples) return
-    const points = table.positions
-      .slice(0, table.orbitSamples)
+    const points = subdivideTable(table.positions.slice(0, table.orbitSamples), ORBIT_SMOOTHING)
       .map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()))
     traces.setKm(body.orbit, points, () => true)
   }
@@ -209,6 +273,16 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
 
       // Already relative to the pivot, because the pivot IS this moon's planet.
       placeRelativeKm(body.mesh.position, body.positionKm, t)
+
+      loadMapFor(body)
+      // Locked moon: pole of its planet, longitude 0 toward the planet. The
+      // position is pivot-relative (the planet is the pivot), so "toward the
+      // planet" is simply minus the position. Skipped until the planet's own
+      // orientation has landed - the pole is the one thing it comes from.
+      if (LOCKED_MOONS.has(body.id) && poleOf(planet.id, lockPole)) {
+        lockMeridian.copy(body.positionKm).negate()
+        setBodyOrientation(body.mesh.quaternion, lockPole, lockMeridian)
+      }
 
       // The Sun's direction from the moon itself: the planet's geocentric
       // position plus the moon's own offset from it. The offset is tiny next to

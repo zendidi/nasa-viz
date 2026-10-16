@@ -38,6 +38,31 @@ ré-encodages q80, 45,7 et 46,9 dB pour les deux conversions.
 Le crédit à l'écran est à poser quand ces textures seront effectivement affichées (lot 5, étape 2) —
 voir `docs/planetes-et-lunes.md`.
 
+## USGS Astrogeology / NASA New Horizons — domaine public
+
+`1k_pluto.jpg` et `1k_charon.jpg` sont les aperçus 1024 × 512 publiés par l'USGS des mosaïques
+globales New Horizons LORRI/MVIC (juillet 2017, 300 m/px), téléchargés tels quels le 2026-10-16 :
+
+| fichier | produit USGS | ici |
+|---|---|---|
+| `1k_pluto.jpg` | *Pluto New Horizons LORRI MVIC Global Mosaic 300m* | 83 ko, inchangé |
+| `1k_charon.jpg` | *Charon New Horizons LORRI MVIC Global Mosaic 300m* | 69 ko, inchangé |
+
+Pages produit : <https://astrogeology.usgs.gov/search/map/pluto_new_horizons_lorri_mvic_global_mosaic_300m>
+et <https://astrogeology.usgs.gov/search/map/charon_new_horizons_lorri_mvic_global_mosaic_300m>.
+Œuvre du gouvernement fédéral américain (domaine public) ; condition d'usage de l'USGS : « Please
+cite authors » — crédit : NASA / JHU APL / SwRI, mosaïque USGS Astrogeology.
+
+Trois différences avec le jeu Solar System Scope, à respecter au branchement :
+- **convention de longitude** : 0 à 360° est, **bord gauche à 0°** (le cœur, Sputnik Planitia vers
+  175° E, tombe au centre de l'image) — là où les cartes SSS ont le bord gauche à 180° ;
+- **niveaux de gris** (une composante) : la couleur réelle n'y est pas ;
+- **l'hémisphère sud est noir** sous ~−20 à −30° de latitude : il était dans la nuit polaire au
+  survol de 2015 et n'a jamais été photographié. Ce noir est une absence de données, pas un relief.
+
+Les TIFF pleine résolution (296 Mo et 77 Mo, `planetarymaps.usgs.gov/mosaic/…_8bit.tif`) n'ont pas
+été pris : une version 2K en serait tirée si le 1K se révèle trop flou de près.
+
 ## three.js — licence non établie
 
 `earth_atmos_2048.jpg`, `earth_lights_2048.png`, `earth_normal_2048.jpg`,

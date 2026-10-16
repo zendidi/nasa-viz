@@ -32,6 +32,8 @@ const TABLE_MARGIN_MS = 30 * 86_400_000
 
 function covers(record, marginMs = 0) {
   if (!record?.positions?.length) return false
+  // Wall clock on purpose: this decides whether a *cached* table is still worth
+  // keeping, a fact about the real world — not about the simulated date.
   const nowMs = Date.now()
   const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
   return nowMs >= record.start * 1000 && nowMs < endMs - marginMs
@@ -122,6 +124,10 @@ export function createSunTable({ on }) {
     positionKmAt,
     earthOrbitSamplesKm,
     load,
+    /** End of the loaded window in ms (the last sample), null without a table — the simulated clock's upper bound. */
+    get endMs() {
+      return table ? (table.start + (table.positions.length - 1) * table.stepSeconds) * 1000 : null
+    },
     /** False while the low-precision series is standing in. */
     get known() {
       return table !== null

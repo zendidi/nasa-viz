@@ -50,7 +50,7 @@ formes de réponse, pas ce fichier.
   sans clé, hors quota. Une seule forme de requête pour deux familles de corps : petits corps par
   désignation (`DES=2014 SU1;`, pas horaire) et corps majeurs par identifiant Horizons (`'499'` =
   Mars, pas journalier).
-- `src/Service/SolarSystemClient.php` — les sept planètes autres que la Terre : identifiants
+- `src/Service/SolarSystemClient.php` — les huit planètes autres que la Terre (Pluton compris, orbite tirée du barycentre `9`) : identifiants
   Horizons, noms UAI, rayons moyens, périodes sidérales, et la fenêtre commune (à partir du 1er du
   mois UTC) qui fait que des tables téléchargées à des jours différents restent sur la même
   horloge. Sert deux choses sans rapport (voir le tableau de `docs/planetes-et-lunes.md` §3c) :
@@ -78,7 +78,7 @@ formes de réponse, pas ce fichier.
     planète ; la route ne va chercher qu'une lune absente par appel, donc un cache froid converge
     en autant d'appels qu'il y a de lunes
   - `/api/solar-system/orientation?body=` — TTL 40 jours : le pôle et le méridien origine en
-    vecteurs unitaires ICRF plus le taux de rotation signé. Accepte les sept planètes **et `moon`**.
+    vecteurs unitaires ICRF plus le taux de rotation signé. Accepte les neuf planètes (Pluton compris) **et `moon`**.
     Une table `OBSERVER` de deux lignes, donc ~1 s là où une table de vecteurs coûte 5 à 16 s
   - `/api/apod` — TTL 24h, désormais sur `science.nasa.gov` et sans clé
   - `/api/usage` — pas de cache, lecture directe du compteur
@@ -113,7 +113,7 @@ formes de réponse, pas ce fichier.
     `LineSegments` (les PHA à part, plus vifs) au lieu d'une polyligne par objet.
   - `src/scale.js` — modèle d'échelle « lisible → réel » (slider 9 crans), une courbe de
     compression par corps pivot (`docs/echelle-reelle.md`)
-  - `src/scene/planets.js` — les sept planètes : tables Horizons (`/api/solar-system/positions`,
+  - `src/scene/planets.js` — les huit planètes autres que la Terre (Pluton compris) : tables Horizons (`/api/solar-system/positions`,
     chargées une par une en arrière-plan, cache `localStorage`), interpolation à la minute, sphères
     texturées et leurs libellés. Placées par le même `placeKm()` que la Lune, donc visibles dans les
     deux vues sans seconde source (`docs/planetes-et-lunes.md`). Le module charge ensuite
@@ -130,11 +130,12 @@ formes de réponse, pas ce fichier.
   - `src/scene/geo.js` — la géométrie partagée, et **la convention de longitude des cartes** : bord
     gauche à 180°, centre à 0, est vers la droite. Mesurée, pas supposée — voir
     `tools/calibration/`
-  - `src/focus.js` — point de vue : quel corps est au centre de la scène (les sept planètes, la
-    Terre, le Soleil — neuf pivots, `FOCUSES` ; le pivot est l'origine, tout le reste est placé
+  - `src/focus.js` — point de vue : quel corps est au centre de la scène (les huit planètes autres que la Terre, la
+    Terre, le Soleil — dix pivots, `FOCUSES` ; le pivot est l'origine, tout le reste est placé
     relativement). Les orbites planétaires et l'orbite terrestre se tracent depuis n'importe lequel
     de ces pivots (`placeHeliocentricKm`, 2026-10-12). En vue héliocentrée, le NEO sélectionné voit
     son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
+  - `src/clock.js` — horloge simulée unique (module pur, testé par `tests/clock.test.js`) : `createClock`, vitesses ×1 / 1 h/s / 1 j/s, `setRate` sans saut, `reset`, bornes (fin de la table Soleil ou 1er du mois UTC + 365 j), `atLimit` ; le temps réel n'est jamais borné. Les caches restent sur l'horloge murale.
   - `src/neoInfo.js` — textes de comparaison des sources et de la fiche, couleurs par taxonomie
   - Badge de quota (`GET /api/usage`)
 

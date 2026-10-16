@@ -137,8 +137,8 @@ Ordres de grandeur en régime permanent :
 
 | ce qui est rafraîchi | cadence |
 |---|---|
-| 7 planètes (positions) + 7 orbites | 1 fois par mois chacune |
-| les 38 lunes, si toutes étaient visitées | ~6 requêtes/jour au total |
+| 8 planètes (positions, Pluton compris) + 8 orbites | 1 fois par mois chacune |
+| les 39 lunes (Charon comprise), si toutes étaient visitées | ~6 requêtes/jour au total (estimé pour 38 lunes, Charon en plus) |
 
 ### Ce qu'elle rafraîchit, et ce qu'elle ne rafraîchit pas
 

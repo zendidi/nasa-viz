@@ -8,7 +8,7 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
  * The planets of the solar system, as geocentric position tables from JPL
  * Horizons (keyless, outside the api.nasa.gov quota).
  *
- * A fixed body set, unlike /api/neo/positions: there are eight planets and a
+ * A fixed body set, unlike /api/neo/positions: there are nine planets (Pluto included, by decision) and a
  * client can only pick from them, so no designation here is ever user input.
  *
  * Three things are deliberately hard-coded rather than read from Horizons:
@@ -90,6 +90,12 @@ final class SolarSystemClient
         'saturn' => ['699', 'Saturn', 58232.0, 10759.22],
         'uranus' => ['799', 'Uranus', 25362.0, 30685.4],
         'neptune' => ['899', 'Neptune', 24622.0, 60189.0],
+        // Pluto, by the user's decision of 2026-10-16: shown as a planet because
+        // the app likes it, knowing it is a dwarf planet. '999' is the body
+        // centre, not the Pluto system barycentre ('9'). Radius from New
+        // Horizons (1 188,3 km). Period 247,9 years, so its orbit goes through
+        // the same unitless-STEP_SIZE path as Neptune's: 360 intervals, ~251 d.
+        'pluto' => ['999', 'Pluto', 1188.3, 90560.0],
         // The Sun, served by the same route and the same cache as a planet
         // because its table has exactly the same shape: geocentric, daily, a
         // year long, renewed monthly. It is not a planet, so `planetIds()`
@@ -102,6 +108,18 @@ final class SolarSystemClient
         // the terminator, the Moon, the NEOs and the whole heliocentric view.
         'sun' => ['10', 'Sun', 696340.0, 365.256],
     ];
+
+    /**
+     * Bodies whose drawn orbit is asked of the system barycentre rather than the
+     * body centre. Pluto's body-centre ephemeris (plu060) ends on 2199-12-29 —
+     * measured: Horizons answers "No ephemeris for target Pluto after
+     * 2199-DEC-29" — while a full period from 2026 ends in 2274. The barycentre
+     * ('9', DE441) runs to 2650. The two differ by Pluto's wobble around the
+     * Pluto-Charon barycentre, about 2 100 km, against a chord error of the order
+     * of 10^5 km at 360 intervals: invisible on a line that size. Positions stay
+     * on '999', whose one-year window is nowhere near the limit.
+     */
+    private const ORBIT_COMMAND = ['pluto' => '9'];
 
     public function __construct(private readonly HorizonsClient $horizons)
     {
@@ -224,7 +242,7 @@ final class SolarSystemClient
         $stop = $stop->setTime((int) $stop->format('G'), (int) $stop->format('i'));
 
         $table = $this->horizons->getMajorBodyVectors(
-            [$id => self::BODIES[$id][0]],
+            [$id => self::ORBIT_COMMAND[$id] ?? self::BODIES[$id][0]],
             $start,
             $stop,
             (string) self::ORBIT_INTERVALS,

@@ -3,9 +3,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
 import { getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
+import { createClock, defaultMaxMs } from './clock.js'
 import { createSunTable } from './sunTable.js'
 import { orbitSchematicSvg } from './orbit.js'
-import { FOCUSES, neoEllipsesVisible } from './focus.js'
+import { FOCUSES, hidesPlanets, neoEllipsesVisible } from './focus.js'
 import { createPanels } from './ui/panels.js'
 import { createStarfield } from './scene/starfield.js'
 import { createPicking } from './picking.js'
@@ -145,6 +146,13 @@ const sunPositionKm = new THREE.Vector3()
 const moonPositionKm = new THREE.Vector3()
 const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)
 
+// The one clock for everything placed or oriented in time (clock.js). It reads
+// the wall only through the argument we hand it: the cache-validity checks and
+// the interface animations (`performance.now()`) stay on the real clock.
+// Declared before the Sun table, whose `changed` callback reads it.
+const clock = createClock({ wallMs: Date.now() })
+const simNowMs = () => clock.nowMs(Date.now())
+
 // The Sun comes from JPL Horizons, with `astronomy.js`'s series standing in
 // until the table lands. Declared here because updateAstronomy() below runs on
 // the very first frame, long before any fetch returns.
@@ -153,14 +161,19 @@ const sunTable = createSunTable({
     // Everything derived from the Sun has to be redone when the real one
     // arrives: the scene's positions, and the Earth's own drawn orbit.
     changed: () => {
-      updateAstronomy()
-      rebuildBodyOrbits()
+      const wallMs = Date.now()
+      updateAstronomy(new Date(clock.nowMs(wallMs)))
+      rebuildBodyOrbits(clock.nowMs(wallMs))
+      refreshClockBounds(wallMs) // the table's real end replaces the 1st-of-month + 365 d guess
     },
   },
 })
 
-function updateAstronomy() {
-  const now = new Date()
+/** Sim time of the last updateAstronomy(), to know when the next one is due (stepAstronomy). */
+let astronomySimMs = NaN
+
+function updateAstronomy(now) {
+  astronomySimMs = now.getTime()
 
   sunTable.positionKmAt(now, sunPositionKm)
   sunDistanceKm = sunPositionKm.length()
@@ -270,14 +283,30 @@ function placeHeliocentricKm(out, heliocentricKm, t) {
   return placeKm(out, placeHeliocentric, t)
 }
 
-updateAstronomy()
+updateAstronomy(new Date(simNowMs()))
+
 // Real drift is slow (~1°/day for the Sun, ~0.5°/h for the Moon) — no need to
-// recompute every frame. The drawn orbits are re-sampled with it so their first
-// sample stays the body's current position (rebuildBodyOrbits()).
-setInterval(() => {
-  updateAstronomy()
-  rebuildBodyOrbits()
-}, 60_000)
+// recompute every frame at ×1: the gate is 60 s of *simulated* time, which is
+// one minute of wall time at ×1 (the cadence the scene always had) and every
+// frame from 1 h/s up, so the lighting and the Moon move smoothly when sped up.
+// The drawn orbits are re-sampled with it so their first sample stays the body's
+// current position (rebuildBodyOrbits()) — but at most every 250 ms of wall time:
+// that rebuild allocates new geometry, and a Moon orbit 0,07° stale (1 h/s) is
+// invisible where a per-frame GPU re-upload would not be free.
+const ASTRONOMY_STEP_MS = 60_000
+const ORBIT_REBUILD_MIN_WALL_MS = 250
+let orbitsRebuiltWallMs = 0
+
+function stepAstronomy(simMs, wallMs) {
+  if (Math.abs(simMs - astronomySimMs) < ASTRONOMY_STEP_MS) return
+  updateAstronomy(new Date(simMs))
+  if (wallMs - orbitsRebuiltWallMs >= ORBIT_REBUILD_MIN_WALL_MS) {
+    orbitsRebuiltWallMs = wallMs
+    // The Earth's line comes from the Sun table and does not depend on "now";
+    // only the fallback series (no table yet) samples forward from it.
+    rebuildBodyOrbits(simMs, { earth: !sunTable.known })
+  }
+}
 
 // --- NEOs ----------------------------------------------------------------------
 
@@ -336,16 +365,17 @@ const DAY_MS = 86_400_000
 const earthOrbitTrace = traces.make(0x4fa8ff, 0.5, { parent: scene, frame: 'heliocentric' })
 const moonOrbitTrace = traces.make(0x8ea3b8, 0.5, { parent: scene, frame: 'geocentric' })
 
-function sampleBodyOrbit(count, days, positionAt) {
+function sampleBodyOrbit(startMs, count, days, positionAt) {
   return Array.from({ length: count + 1 }, (_, i) =>
-    positionAt(new Date(Date.now() + (i / count) * days * DAY_MS)),
+    positionAt(new Date(startMs + (i / count) * days * DAY_MS)),
   )
 }
 
-function rebuildBodyOrbits() {
+/** @param {number} startMs simulated time the samples start from — sample 0 is the body "now" */
+function rebuildBodyOrbits(startMs, { earth = true } = {}) {
   traces.setKm(
     moonOrbitTrace,
-    sampleBodyOrbit(MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) => {
+    sampleBodyOrbit(startMs, MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) => {
       const { ra, dec, distanceKm } = getMoonEquatorial(date)
       return latLngToVector3(dec, ra, distanceKm)
     }),
@@ -356,17 +386,18 @@ function rebuildBodyOrbits() {
   // globe's own position is interpolated from, so the Earth lands on its line by
   // construction. Only while the fallback series is standing in is the curve
   // sampled a year forward from now instead.
+  if (!earth) return
   traces.setKm(
     earthOrbitTrace,
     sunTable.earthOrbitSamplesKm() ??
-      sampleBodyOrbit(EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) =>
+      sampleBodyOrbit(startMs, EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) =>
         sunTable.positionKmAt(date, new THREE.Vector3()).negate(),
       ),
     () => true,
   )
 }
 
-rebuildBodyOrbits()
+rebuildBodyOrbits(simNowMs())
 
 /**
  * The Moon's orbit is geocentric, so it collapses onto the Earth from anywhere
@@ -375,8 +406,8 @@ rebuildBodyOrbits()
  * The Earth's is heliocentric, and since 2026-10-12 that means it draws from
  * every pivot — through the globe itself when the Earth is the pivot, exactly
  * as Mars's orbit does from Mars. It follows the planets' own fade so that the
- * heliocentric orbits come and go as one set: in the geocentric view, where a
- * planet is only drawn at 100 % réel, an orbit left on screen with no planet on
+ * heliocentric orbits come and go as one set: from the Earth or a planet, where
+ * the other planets are only drawn at 100 % réel, an orbit left on screen with no planet on
  * it would be the one line in the scene with nothing to point at.
  */
 function updateBodyOrbits(t) {
@@ -417,7 +448,7 @@ function setScaleStep(step) {
 
 /** NEO distances from the current pivot — what the scale label and the camera anchors quote. */
 function neoDistancesKm() {
-  neoScene.refreshPositions(Date.now() / 1000)
+  neoScene.refreshPositions(simNowMs() / 1000)
   return neoScene.entries.filter((e) => e.source).map((e) => e.positionKm.distanceTo(focusPositionKm()))
 }
 
@@ -486,8 +517,8 @@ function updateCameraLimits() {
   }
   // Neptune sits further out than any NEO in both views — without this the
   // zoom would stop short of the planet it is drawing. Only while the planets
-  // are actually drawn: the geocentric view hides them below 100 % réel, and an
-  // invisible Neptune must not be what lets the camera pull back 26 units.
+  // are actually drawn: the Earth's and the planets' views hide the others below
+  // 100 % réel (the pivot itself is at distance 0), and an invisible Neptune must not be what lets the camera pull back 26 units.
   if (planets.drawnAt(scaleT)) {
     for (const body of planets.bodies) {
       if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
@@ -546,7 +577,7 @@ function setFocus(nextId) {
   // silently be placed relative to (0,0,0) — that is, relative to the Earth,
   // while the panel claimed another pivot. The button is disabled meanwhile
   // (panels.renderView), this is the guard behind it.
-  const nextPlanet = next.group === 'planet' ? planets.focusBody(nextId, Date.now() / 1000) : null
+  const nextPlanet = next.group === 'planet' ? planets.focusBody(nextId, simNowMs() / 1000) : null
   if (next.group === 'planet' && !nextPlanet) return
 
   focusOffset.subVectors(camera.position, controls.target)
@@ -633,7 +664,7 @@ function earthWorldRadius() {
 function applyScale(nowSeconds) {
   const t = scaleT
   // The Sun's *position* is refreshed every frame, not with updateAstronomy()'s
-  // minute: every heliocentric orbit line hangs off it (placeHeliocentricKm)
+  // 60 simulated seconds (a minute at ×1): every heliocentric orbit line hangs off it (placeHeliocentricKm)
   // while the planets move every frame, and the geocentric Sun runs at ~30 km/s
   // — a minute-old Sun put Mercury up to ~1 800 km (0,7 of its radius) off its
   // own line at true scale, snapping back each minute (seen 2026-10-15). The
@@ -669,8 +700,11 @@ function applyScale(nowSeconds) {
   // Low orbit is invisible from any other pivot (the Moon is already back on
   // top of the Earth there), and an ISS dot pinned at the Earth's pixel would
   // only add noise.
-  issMarker.visible = issPosition !== null && isEarthFocus
-  if (issPosition && isEarthFocus) {
+  // Hidden the moment the simulated time is not the real time: the ISS is a live
+  // position with no table behind it, so at any other date it would be a lie.
+  const issShown = issPosition !== null && isEarthFocus && clock.isRealTime()
+  issMarker.visible = issShown
+  if (issShown) {
     issMarker.position.copy(
       latLngToVector3(issPosition.latitude, issPosition.longitude, issOrbitRadius(issPosition.altitude_km, t)),
     )
@@ -704,6 +738,8 @@ const panels = createPanels({
       await Promise.all([refreshIss(), refreshNeo(), refreshApod()])
       await refreshUsage()
     },
+    timeRate: (rate) => setTimeRate(rate),
+    timeReset: () => resetTime(),
     scaleStep: (step) => setScaleStep(step),
     scaleStepBy: (direction) => setScaleStep(scaleStep + direction),
     focus: (id) => setFocus(id),
@@ -735,6 +771,54 @@ const panels = createPanels({
   },
 })
 const { sceneLabels } = panels
+
+// --- simulated clock (UI side) -------------------------------------------------------
+
+/**
+ * The upper bound: the end of the Sun table (the planets' tables share its
+ * window, `SolarSystemClient::windowStart` + 365 d), or the same date computed by
+ * hand while none is loaded. The lower bound is wherever the clock stands when
+ * it starts running fast — there is no reverse, so it can never be crossed anyway.
+ */
+function refreshClockBounds(wallMs) {
+  clock.setBounds(clock.nowMs(wallMs), sunTable.endMs ?? defaultMaxMs(wallMs), wallMs)
+}
+
+function renderTimePanel(simMs, wallMs) {
+  panels.renderTime({
+    rate: clock.rate,
+    realTime: clock.isRealTime(),
+    simMs,
+    atLimit: clock.atLimit(wallMs),
+    limitMs: clock.maxMs,
+  })
+}
+
+/** Everything that was computed "once a minute" from the old time has to be redone now, not 60 s later. */
+function afterTimeJump() {
+  const wallMs = Date.now()
+  const simMs = clock.nowMs(wallMs)
+  updateAstronomy(new Date(simMs))
+  orbitsRebuiltWallMs = wallMs
+  rebuildBodyOrbits(simMs, { earth: !sunTable.known })
+  renderTimePanel(simMs, wallMs)
+  renderScalePanel() // its NEO distances are the simulated ones
+  // The sheet quotes a distance at the simulated date, written once: redo it.
+  if (modalNeo) renderNeoModal()
+}
+
+function setTimeRate(rate) {
+  const wallMs = Date.now()
+  clock.setRate(rate, wallMs)
+  refreshClockBounds(wallMs)
+  afterTimeJump()
+}
+
+function resetTime() {
+  clock.reset(Date.now())
+  afterTimeJump()
+  refreshIss() // keyless; the marker reappears at once, on a fresh position rather than one up to 60 s old
+}
 
 /** Legend swatches: the two constant colours, plus every spectral complex actually loaded. */
 function neoLegend() {
@@ -822,7 +906,7 @@ function renderNeoModal() {
     <p><strong>Désignation</strong> ${escapeHtml(designation)}</p>
     <p><strong>Diamètre</strong> ${diameter}</p>
     <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
-    ${entry ? neoScene.describePosition(entry) : ''}
+    ${entry ? neoScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : ''}
     ${
       approach
         ? `
@@ -842,7 +926,7 @@ function renderNeoModal() {
     ${
       details?.orbit
         ? orbitSchematicSvg(details.orbit, {
-            now: new Date(),
+            now: new Date(simNowMs()),
             approachAt: approach ? new Date(approach.datetime ?? `${approach.date}T12:00Z`) : null,
             hazardous: neo.is_potentially_hazardous,
           })
@@ -896,8 +980,10 @@ const planets = createPlanets({
   traces,
   placeKm,
   minRadiusAt,
-  // Only the Earth's view hides them: from Mars the planets are the subject.
-  hidesPlanets: () => focusId === 'earth',
+  // Every pivot but the Sun hides the *other* planets and the planetary orbit
+  // lines below 100 % reel (2026-10-16; Earth since 2026-09-29). The pivot planet
+  // itself stays drawn: planets.js exempts it.
+  hidesPlanets: () => hidesPlanets(focusId),
   focusPlanetId: () => (focusPlanet ? focusPlanet.id : null),
   // Passed by reference, not by value: `updateAstronomy()` copies into this same
   // vector every minute, so the planets' lighting follows the Sun on its own.
@@ -1079,6 +1165,7 @@ async function refreshApod() {
 refreshUsage()
 renderScalePanel()
 renderViewPanel()
+renderTimePanel(simNowMs(), Date.now())
 
 // Not wired to "Mettre à jour": the planet tables are keyless (JPL Horizons,
 // no NASA quota) and cover a year, so there is nothing for that button to
@@ -1124,16 +1211,24 @@ window.addEventListener('resize', () => {
 
 function animate() {
   requestAnimationFrame(animate)
-  const nowMs = Date.now()
-  // Recomputed fresh from wall-clock time every frame (not accumulated per
-  // frame) so it's exactly right regardless of frame rate or a backgrounded
-  // tab, with no drift to correct for.
-  globe.rotation.y = (getGreenwichSiderealTime(new Date(nowMs)) * Math.PI) / 180
-  // Same discipline for the clouds: a function of wall-clock time, not a
-  // per-frame increment, so a backgrounded tab comes back where it should be.
+  const wallMs = Date.now()
+  // The simulated clock, read once: every placement of the frame shares it.
+  const nowMs = clock.nowMs(wallMs)
+  const now = new Date(nowMs)
+  // Recomputed fresh from the clock every frame (not accumulated per frame) so
+  // it's exactly right regardless of frame rate or a backgrounded tab, with no
+  // drift to correct for.
+  globe.rotation.y = (getGreenwichSiderealTime(now) * Math.PI) / 180
+  // Same discipline for the clouds: a function of the clock, not a per-frame
+  // increment, so a backgrounded tab comes back where it should be.
   // It adds to the globe's rotation rather than replacing it — the layer is a
   // child of the sphere (scene/bodies.js).
-  globeClouds.rotation.y = cloudDriftAt(new Date(nowMs))
+  globeClouds.rotation.y = cloudDriftAt(now)
+
+  stepAstronomy(nowMs, wallMs)
+  // Real time is rendered on events only; a running fast clock changes its
+  // text every frame (renderTime skips the DOM when nothing differs).
+  if (!clock.isRealTime()) renderTimePanel(nowMs, wallMs)
 
   stepScaleTransition(performance.now())
   stepRecenter(performance.now())

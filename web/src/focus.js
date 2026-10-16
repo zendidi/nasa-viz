@@ -101,6 +101,9 @@ const PLANET_AU = {
   saturn: 9.5388,
   uranus: 19.1819,
   neptune: 30.058,
+  // Dwarf planet shown as a planet (user's call, 2026-10-16). Mean a, not the
+  // current distance (29,7 to 49,3 au, e = 0,25) - see the note above.
+  pluto: 39.48,
 }
 
 /** French labels, in the order the backend lists them (outward from the Sun). */
@@ -112,6 +115,7 @@ const PLANET_LABELS = {
   saturn: 'Saturne',
   uranus: 'Uranus',
   neptune: 'Neptune',
+  pluto: 'Pluton',
 }
 
 /**
@@ -135,6 +139,7 @@ const PLANET_MOON_ANCHOR = {
   saturn: 1_221_870, // Titan
   uranus: 436_300, // Titania
   neptune: 354_759, // Triton
+  pluto: 19_591, // Charon
 }
 
 /**
@@ -193,6 +198,21 @@ for (const id of PLANET_FOCUS_IDS) {
  * then the planets outward from the Sun.
  */
 export const FOCUS_IDS = ['earth', 'sun', ...PLANET_FOCUS_IDS]
+
+/**
+ * Whether this point of view hides the planets (and every planetary orbit line)
+ * below 100 % réel. Every pivot but the Sun: the Earth since 2026-09-29, and the
+ * planets themselves since 2026-10-16 (user's call, replacing "centred on Mars
+ * the scene draws the planets at every scale") — the compressed curves of a
+ * pivot-centred view interleave the planets with the NEOs. The Sun's view keeps
+ * them at every scale (`SUN_CURVE` is built for that range). The pivot planet
+ * itself is never hidden: planets.js exempts it, this only says "the others".
+ *
+ * @param {string} focusId
+ */
+export function hidesPlanets(focusId) {
+  return focusId !== 'sun'
+}
 
 /**
  * Whether the NEO ellipses (the selected one's and the opt-in bundle) are drawn.

@@ -30,6 +30,15 @@ export const MOON_RADIUS = MOON_RADIUS_KM * KM_TO_UNITS
 const WHITE_PIXEL = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
 WHITE_PIXEL.needsUpdate = true
 
+/**
+ * The default ring band of a ringed planet's shader: one fully transparent texel.
+ * `WHITE_PIXEL` would be wrong here — its alpha is 1, so until the real band
+ * decoded the planet would wear a ring shadow cast by a solid disc. Alpha 0 means
+ * "no ring yet, no shadow", with no extra uniform and no branch.
+ */
+const CLEAR_PIXEL = new THREE.DataTexture(new Uint8Array([255, 255, 255, 0]), 1, 1)
+CLEAR_PIXEL.needsUpdate = true
+
 /** @type {Map<string, Promise<THREE.Texture>>} */
 const colorMaps = new Map()
 
@@ -459,9 +468,20 @@ const absoluteRingMaterial = new THREE.LineBasicMaterial({
  *
  * `uOpacity` rather than `material.opacity`: a hand-written ShaderMaterial gets
  * no automatic opacity, the fragment has to write the alpha itself.
+ *
+ * **`ringShadow: true` compiles the ring-shadow variant** (a `#define`, so a
+ * second program for Saturn only; the other bodies keep the lean one and pay
+ * nothing). The fragment finds its local position (the mesh is a unit sphere, so
+ * that is also its normal), walks the ray to the Sun until it crosses the
+ * equatorial plane y = 0 (the ring plane after `makeRing`'s rotateX), and if the
+ * crossing lies between the ring's radii it reads the band's alpha at that radius
+ * and darkens the daylight by it. The three ring uniforms are filled by
+ * `planets.js`: `uRingRadii` (inner, outer in planet radii) when the ring is built,
+ * `uRingMap` when the band decodes. Until then it is `CLEAR_PIXEL`, alpha 0, no shadow.
  */
-export function makeLitBodyMaterial(color, map = null) {
+export function makeLitBodyMaterial(color, map = null, { ringShadow = false } = {}) {
   return new THREE.ShaderMaterial({
+    defines: ringShadow ? { RING_SHADOW: '' } : {},
     uniforms: {
       uColor: { value: new THREE.Color(color) },
       uSunDir: { value: new THREE.Vector3(1, 0, 0) },
@@ -469,6 +489,13 @@ export function makeLitBodyMaterial(color, map = null) {
       // Swappable at any time — see `WHITE_PIXEL`. A body gets its map when it
       // arrives, not when the mesh is built.
       uMap: { value: map ?? WHITE_PIXEL },
+      // Slides the map's u, in turns, for maps whose left edge is not 180 deg
+      // (the USGS Pluto/Charon ones: 0 deg) - see `mapUShift` in geo.js. 0 for
+      // everything else, so the SSS maps are sampled exactly as before.
+      uMapShift: { value: 0 },
+      // Only read under RING_SHADOW; declared always so planets.js needs no branch.
+      uRingMap: { value: CLEAR_PIXEL },
+      uRingRadii: { value: new THREE.Vector2(1, 2) },
     },
     // Required by the renderer's logarithmicDepthBuffer — a hand-written
     // ShaderMaterial doesn't get these chunks automatically, and without them a
@@ -479,11 +506,23 @@ export function makeLitBodyMaterial(color, map = null) {
       #include <logdepthbuf_pars_vertex>
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      #ifdef RING_SHADOW
+        uniform vec3 uSunDir;
+        varying vec3 vLocalPos;
+        varying vec3 vSunLocal;
+      #endif
       void main() {
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         // uv needs no declaration: three.js prepends it for a ShaderMaterial,
         // and SphereGeometry already carries the attribute.
         vUv = uv;
+        #ifdef RING_SHADOW
+          vLocalPos = position;
+          // World -> local for a rotation times a uniform scale is the transpose
+          // (the scale cancels in the normalize). No inverse() needed, and no new
+          // uniform fed from JS: the Sun direction stays the one planets.js writes.
+          vSunLocal = normalize(transpose(mat3(modelMatrix)) * uSunDir);
+        #endif
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         #include <logdepthbuf_vertex>
       }
@@ -493,8 +532,15 @@ export function makeLitBodyMaterial(color, map = null) {
       uniform vec3 uSunDir;
       uniform float uOpacity;
       uniform sampler2D uMap;
+      uniform float uMapShift;
+      uniform sampler2D uRingMap;
+      uniform vec2 uRingRadii;
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      #ifdef RING_SHADOW
+        varying vec3 vLocalPos;
+        varying vec3 vSunLocal;
+      #endif
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
@@ -503,7 +549,30 @@ export function makeLitBodyMaterial(color, map = null) {
         // night side stays a dark disc instead of a hole in the starfield — a
         // planet is never truly unlit here, and at a few pixels across a hard
         // black half would just read as the wrong shape.
-        float lit = 0.12 + 0.88 * smoothstep(-0.15, 0.6, sunFacing);
+        float day = 0.88 * smoothstep(-0.15, 0.6, sunFacing);
+        #ifdef RING_SHADOW
+          // Ring shadow: from this surface point, t to the plane y = 0 along the
+          // Sun ray. t > 0 means the ring plane lies between us and the Sun; a ray
+          // parallel to the plane (|S.y| tiny) has no crossing. Measured 2026: the
+          // Sun is ~7 degrees off the plane, so a point at latitude phi crosses at
+          // r ~ cos(phi) + sin(phi)/tan(7 deg), inside 1,15..2,34 (Saturn's 69 289..141 055 km
+          // over 60 268) only within ~10 degrees of the equator: a thin band, on the
+          // hemisphere AWAY from the Sun (the ring sits between that ground and the Sun).
+          vec3 p = normalize(vLocalPos);
+          vec3 s = normalize(vSunLocal);
+          float t = -p.y / (abs(s.y) < 1e-4 ? 1e-4 : s.y);
+          float r = length(p.xz + t * s.xz);
+          float u = (r - uRingRadii.x) / (uRingRadii.y - uRingRadii.x);
+          float inside = step(0.0, t) * step(0.0, u) * step(u, 1.0);
+          // Sampled unconditionally (outside the ring the clamped edge texel is
+          // read, then multiplied by 0), to avoid a divergent texture fetch.
+          float ringAlpha = texture2D(uRingMap, vec2(clamp(u, 0.0, 1.0), 0.5)).a * inside;
+          // 0,85 and not 1: a visual choice, a pitch-black stripe would look drawn
+          // on, and the thin C ring / Cassini division already carry alpha well below 1.
+          // Applied to the day term only, so the night floor is not darkened twice.
+          day *= 1.0 - 0.85 * ringAlpha;
+        #endif
+        float lit = 0.12 + day;
         // A plain multiply, and the caller decides what it means: an untextured
         // body samples white and keeps its flat uColor; a textured one is given
         // uColor white (TEXTURED_TINT in planets.js) so the multiply becomes a
@@ -511,7 +580,7 @@ export function makeLitBodyMaterial(color, map = null) {
         // photograph by a legend hue was the other option and it saturates
         // twice - Mars is already rust.
         // (No backticks in here: this is inside a template literal.)
-        vec3 albedo = uColor * texture2D(uMap, vUv).rgb;
+        vec3 albedo = uColor * texture2D(uMap, vec2(vUv.x + uMapShift, vUv.y)).rgb;
         gl_FragColor = vec4(albedo * lit, uOpacity);
         // Custom fragment shaders don't get the automatic linear->output
         // colorspace encode that built-in materials do.
@@ -592,11 +661,21 @@ function makeRingMaterial() {
     vertexShader: `
       #include <common>
       #include <logdepthbuf_pars_vertex>
+      uniform vec3 uSunDir;
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      varying vec3 vLocalPos;
+      varying vec3 vSunLocal;
       void main() {
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         vUv = uv;
+        // The ring is a child of the planet mesh, so its local space IS the planet's:
+        // the planet is the unit sphere at the origin (SphereGeometry(1), uniform
+        // scale, no flattening: one radiusKm per planet), and the ring's radii are
+        // already in planet radii. World -> local = transpose (rotation x uniform
+        // scale, the scale cancels in the normalize).
+        vLocalPos = position;
+        vSunLocal = normalize(transpose(mat3(modelMatrix)) * uSunDir);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         #include <logdepthbuf_vertex>
       }
@@ -607,12 +686,26 @@ function makeRingMaterial() {
       uniform float uOpacity;
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      varying vec3 vLocalPos;
+      varying vec3 vSunLocal;
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
         vec4 texel = texture2D(uMap, vUv);
         float facing = abs(dot(normalize(vWorldNormal), normalize(uSunDir)));
         float lit = 0.30 + 0.70 * facing;
+        // The planet's shadow: this fragment is in it if the Sun lies behind the
+        // planet as seen from here (dot(d, S) < 0) and the line d + tS passes
+        // closer to the centre than one radius. The smoothstep (+-1,5 % of a
+        // radius) only hides the 48-segment sphere / aliasing at the edge; the
+        // real penumbra at Saturn (Sun 0,055 deg wide) is thinner than a pixel.
+        vec3 s = normalize(vSunLocal);
+        float along = dot(vLocalPos, s);
+        float miss = length(vLocalPos - s * along);
+        float shadow = (along < 0.0 ? 1.0 : 0.0) * (1.0 - smoothstep(0.985, 1.015, miss));
+        // Down to 12 % of the lit value, the same floor as a planet's night side,
+        // and not to 0: the rings stay faintly visible in their own shadow.
+        lit *= 1.0 - 0.88 * shadow;
         gl_FragColor = vec4(texel.rgb * lit, texel.a * uOpacity);
         // The alpha channel is what carries the gaps. Discarding the empty
         // texels rather than blending them keeps the Cassini division from

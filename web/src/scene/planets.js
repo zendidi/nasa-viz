@@ -17,8 +17,8 @@ import * as THREE from 'three'
 import { fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
-import { icrfToScene } from './geo.js'
-import { sampleCatmullRom, subdivideClosedLoop } from '../interpolate.js'
+import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift } from './geo.js'
+import { polylinePointAt, sampleCatmullRom, subdivideClosedLoop } from '../interpolate.js'
 import { orientBody } from './orientation.js'
 import { pivotRadius, planetRadius } from '../scale.js'
 
@@ -84,7 +84,27 @@ const PLANETS = {
   },
   uranus: { label: 'Uranus', color: 0x8fd8e0, map: '/textures/2k_uranus.jpg' },
   neptune: { label: 'Neptune', color: 0x5b7ce8, map: '/textures/2k_neptune.jpg' },
+  // A dwarf planet, drawn as a planet because the user likes it (2026-10-16).
+  // Its map is the USGS/New Horizons mosaic: greyscale, left edge at 0 deg E
+  // (the SSS maps start at 180), south of ~-25 deg black because it was in polar
+  // night in 2015 - an absence of data, left as is.
+  //
+  // `tint` is what the grey map is multiplied by (the shader's uColor), tweak it
+  // here: #e8cfb0 is a pale orange-beige, a hint of the tholin-stained real
+  // colour without the saturation of the legend swatch (`color`, which also
+  // names the orbit). Greyscale x tint darkens the disc to ~half; the
+  // 0,12 + 0,88 lighting floor is unchanged.
+  pluto: {
+    label: 'Pluton',
+    color: 0xd2a77c,
+    map: '/textures/1k_pluto.jpg',
+    tint: 0xe8cfb0,
+    mapLeftEdgeLon: 0,
+  },
 }
+
+/** Legend colour of the Earth (not a `PLANETS` entry): ocean blue, apart from Neptune's 0x5b7ce8. */
+const EARTH_SWATCH = 0x3f8fd8
 
 const PLANET_IDS = Object.keys(PLANETS)
 
@@ -115,7 +135,7 @@ const planetGeometry = new THREE.SphereGeometry(1, 48, 48)
  * sub-pixel at true scale — Neptune's real radius is 7,7 units seen from 1,41
  * million of them — so the floor is not a nicety: it is the only reason a
  * planet is visible at all in the 100 % réel view, which since 2026-09-29 is
- * the *only* place the geocentric view shows one (`planetFade` below).
+ * the *only* place a pivot-centred view shows another planet (`planetFade` below).
  *
  * 3,5 px, deliberately under `MIN_RADIUS_PX.sun` in main.js: once both bodies
  * are on their floors the pixel sizes are all the scene says about size, and a
@@ -125,8 +145,11 @@ const planetGeometry = new THREE.SphereGeometry(1, 48, 48)
 const PLANET_MIN_RADIUS_PX = 3.5
 
 /**
- * The scale below which the geocentric view draws no planet at all — the
- * user's call, 2026-09-29: keep them at 100 % réel only.
+ * The scale below which a pivot-centred view (the Earth, or any planet) draws no
+ * *other* planet and no planetary orbit line — the user's call, 2026-09-29 for
+ * the Earth, extended on 2026-10-16 to the planets (it replaces the 2026-09-29
+ * rule "centred on Mars, draw the planets at every scale"): keep them at
+ * 100 % réel only. The pivot planet itself is never faded.
  *
  * Why: that view compresses distance through `EARTH_CURVE`, which is
  * `a + b·log10(d)`. Measured across it, the whole solar system lands between
@@ -139,7 +162,7 @@ const PLANET_MIN_RADIUS_PX = 3.5
  * geocentric view is metrically true, so that is where a planet belongs and
  * nowhere else.
  *
- * The heliocentric view keeps them at every scale: `SUN_CURVE` is built for
+ * The Sun's view keeps them at every scale: `SUN_CURVE` is built for
  * exactly this range, and a planet around the Sun reads correctly there.
  *
  * Faded rather than switched, so the move animates instead of popping.
@@ -149,10 +172,9 @@ const PLANET_MIN_RADIUS_PX = 3.5
 const GEOCENTRIC_FADE_FROM = 0.875
 
 /**
- * How much of a planet is drawn: 0 not at all, 1 fully. `hidden` is asked of the
- * point of view — and it is specifically *the Earth's* view, not "anything but
- * the Sun's": centred on Mars, the scene must obviously draw the planets at
- * every scale, Mars included.
+ * How much of a planet (or of its orbit line) is drawn: 0 not at all, 1 fully.
+ * `hidden` is asked of the point of view (`hidesPlanets` in focus.js: every
+ * pivot but the Sun). The pivot planet's own *body* is exempt, see `update`.
  */
 function planetFade(t, hidden) {
   if (!hidden) return 1
@@ -196,6 +218,8 @@ const ORBIT_OPACITY = 0.35
 /** Whether a stored table still brackets "now" with room to spare. */
 function covers(record) {
   if (!record?.positions?.length) return false
+  // Wall clock on purpose (here and in orbitCovers): cache validity is a fact
+  // about the real world, whatever date the simulated clock is showing.
   const nowMs = Date.now()
   const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
   return nowMs >= record.start * 1000 && nowMs < endMs - TABLE_MARGIN_MS
@@ -255,7 +279,7 @@ function orbitSamplesKm(record) {
  * @param {object} options.traces  scene/orbitTrace.js
  * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} options.placeKm
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
- * @param {() => boolean} options.hidesPlanets  does the pivot hide planets below 100 % reel?
+ * @param {() => boolean} options.hidesPlanets  does the pivot hide the other planets below 100 % reel?
  * @param {() => string | null} options.focusPlanetId  which planet is the pivot, if any
  * @param {THREE.Vector3} options.sunPositionKm  live geocentric Sun, mutated in place by
  *   main.js's `updateAstronomy()` — held by reference on purpose, so the lighting
@@ -305,7 +329,7 @@ export function createPlanets({
 
   /** @type {PlanetBody[]} */
   const bodies = PLANET_IDS.map((id) => {
-    const mesh = new THREE.Mesh(planetGeometry, makeLitBodyMaterial(PLANETS[id].color))
+    const mesh = new THREE.Mesh(planetGeometry, makeLitBodyMaterial(PLANETS[id].color, null, { ringShadow: !!PLANETS[id].ring }))
     // Nothing to place until a table arrives — and there is no fallback
     // position for a planet the way an approach distance is one for a NEO.
     mesh.visible = false
@@ -359,7 +383,8 @@ export function createPlanets({
     return loadColorMap(url).then((map) => {
       if (mapUrlFor(body.id) !== url) return
       body.mesh.material.uniforms.uMap.value = map
-      body.mesh.material.uniforms.uColor.value.setHex(TEXTURED_TINT)
+      body.mesh.material.uniforms.uColor.value.setHex(PLANETS[body.id].tint ?? TEXTURED_TINT)
+      body.mesh.material.uniforms.uMapShift.value = mapUShift(PLANETS[body.id].mapLeftEdgeLon ?? SSS_MAP_LEFT_EDGE_LON)
       // No `on.changed()`: that redraws the *panel*, and a texture changes
       // nothing it says. The render loop is a plain rAF, so the new map is on
       // screen on the next frame by itself.
@@ -432,17 +457,20 @@ export function createPlanets({
     })
     body.ring = ring
     body.mesh.add(ring)
+    // The planet's own shader casts the ring's shadow on itself: it needs the
+    // same radii (in planet radii) and, once decoded, the same band.
+    body.mesh.material.uniforms.uRingRadii.value.set(spec.innerKm / body.radiusKm, spec.outerKm / body.radiusKm)
     loadColorMap(spec.map, { wrapS: THREE.ClampToEdgeWrapping })
       .then((map) => {
         ring.material.uniforms.uMap.value = map
+        body.mesh.material.uniforms.uRingMap.value = map
       })
       .catch(() => {
         // A ring with no band is a white annulus, which is worse than no ring:
         // it would read as a solid disc. Dropped entirely, and rebuilt on the
         // next visit to this pivot.
         body.mesh.remove(ring)
-        body.ring = null
-      })
+        body.ring = null      })
   }
 
   // --- position ------------------------------------------------------------
@@ -498,6 +526,42 @@ export function createPlanets({
     }
   }
 
+  /**
+   * Pluto's line is shifted so that Pluto is ON it: offset = (Pluto's
+   * heliocentric position, as it is placed) - (the point of the drawn polyline
+   * at the same instant, f * ORBIT_SMOOTHING with f = (t - start) / step).
+   * Applied through `trace.offsetKm` only while Pluto is the pivot.
+   *
+   * Two errors in one vector, both measured 2026-10-16:
+   * - the line is the Pluto-Charon barycentre's (backend/API.md: plu060 for the
+   *   body `999` ends in 2199): Pluto is 0,1085 * 19 591 = ~2 126 km from it,
+   *   1,79 Pluto radii;
+   * - the line's own interpolation (361 samples 251,56 d apart, x8 Catmull-Rom,
+   *   chords), on a Keplerian Pluto (a = 39,48 au, e = 0,249): 0 km on a sample,
+   *   ~340 km a month later, mean 2 400, worst 6 400 km (5,4 radii).
+   * Together: a few hundred to ~8 500 km, on an orbit 5,9e9 km across - invisible
+   * anywhere but at the body, which is the point. Neptune with the same method
+   * (a = 30,07 au, 167 d step): mean 1 800, worst 2 850 km, 0,12 of its
+   * 24 622 km radius, so it is left alone. Measured from `trace.km`, the Float32 vertices really
+   * drawn (ulp 512 km at 5e9 km), so that quantisation is absorbed too.
+   */
+  const plutoOffset = new THREE.Vector3()
+  const plutoLinePoint = new THREE.Vector3()
+  function plutoOrbitOffset(body, pivotId, nowSeconds) {
+    if (body.id !== 'pluto') return
+    const record = orbitTables.pluto
+    const trace = body.orbit
+    if (pivotId !== 'pluto' || !record || !trace.km || !body.known) {
+      trace.offsetKm = null
+      return
+    }
+    const step = (record.stop - record.start) / (record.positions.length - 1)
+    polylinePointAt(trace.km, ((nowSeconds - record.start) / step) * ORBIT_SMOOTHING, plutoLinePoint)
+    // Heliocentric = geocentric - Sun: the inverse of `placeHeliocentricKm`.
+    plutoOffset.subVectors(body.positionKm, sunPositionKm).sub(plutoLinePoint)
+    trace.offsetKm = plutoOffset
+  }
+
   /** Places and sizes every planet that has a table, for the current scale and camera. */
   function update(nowSeconds, t) {
     const fade = planetFade(t, hidesPlanets())
@@ -508,9 +572,12 @@ export function createPlanets({
       // camera's reach reads (`updateCameraLimits` in main.js), and it costs
       // two table lookups.
       updatePositionKm(body, nowSeconds)
-      body.mesh.visible = body.known && fade > 0.001
+      // The pivot is always drawn in full; the others, and every orbit line
+      // (the pivot's own included, as in the Earth's view), follow `fade`.
+      const bodyFade = body.id === pivotId ? 1 : fade
+      body.mesh.visible = body.known && bodyFade > 0.001
       if (body.mesh.visible) {
-        applyFade(body, fade)
+        applyFade(body, bodyFade)
         placeKm(body.mesh.position, body.positionKm, t)
         orientBody(body.mesh.quaternion, body.id, nowSeconds)
         // The real direction from this planet to the Sun, in scene axes. Both
@@ -535,10 +602,13 @@ export function createPlanets({
       // The centred planet's own orbit is included, and passes through the
       // pivot at the origin: that is the picture the backlog entry asked for.
       //
-      // Tied to the same fade as the planet, not drawn unconditionally: in the
-      // geocentric view a planet only exists at 100 % réel, and an orbit with
-      // no planet on it would be the one line here pointing at nothing.
+      // Tied to the same fade as the planets, not drawn unconditionally: from a
+      // pivot that hides planets they only exist at 100 % réel, and an orbit
+      // with no planet on it would be the one line here pointing at nothing.
+      // That includes the pivot's own line, as the Earth's disappears from the
+      // Earth's view (2026-10-16).
       if (fade > 0.001) {
+        plutoOrbitOffset(body, pivotId, nowSeconds)
         traces.update(body.orbit, t)
         // Opacity only — `transparent` was set true at construction and must
         // stay a constructor-time property, see docs/agent/decisions.md.
@@ -662,8 +732,8 @@ export function createPlanets({
       return PLANET_IDS.filter((id) => tables[id] !== undefined)
     },
     /**
-     * Whether a planet is drawn at all at scale `t` and the current point of
-     * view. Exposed so the zoom reach agrees with what is on screen instead of
+     * Whether the planets other than the pivot (and the orbit lines) are drawn
+     * at scale `t` and the current point of view. Exposed so the zoom reach agrees with what is on screen instead of
      * re-deriving the rule: an invisible Neptune must not be what decides how
      * far the camera may pull back (`updateCameraLimits` in main.js).
      */
@@ -698,12 +768,20 @@ export function createPlanets({
         loadingOrbits,
       }
     },
-    /** Swatches for the panel — the scene's own colours, as CSS. */
+    /**
+     * Swatches for the panel — the scene's own colours, as CSS. The Earth is
+     * slotted in after Venus: it is not a body of this module (the globe is the
+     * origin of the geocentric tables) but it is one of the eight planets the
+     * panel counts, and a legend that skips it reads as a missing swatch.
+     */
     legend() {
-      return bodies.map((body) => ({
+      const swatches = bodies.map((body) => ({
         label: body.label,
         color: `#${PLANETS[body.id].color.toString(16).padStart(6, '0')}`,
       }))
+      const afterVenus = swatches.findIndex((s) => s.label === PLANETS.venus.label) + 1
+      swatches.splice(afterVenus, 0, { label: 'Terre', color: `#${EARTH_SWATCH.toString(16).padStart(6, '0')}` })
+      return swatches
     },
   }
 }

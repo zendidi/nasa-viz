@@ -146,6 +146,8 @@ final class MoonClient
         'thalassa' => ['804', 'neptune', 'Thalassa', 40.7, 0.311485, 50075],
         'naiad' => ['803', 'neptune', 'Naiad', 33.0, 0.294396, 48227],
         'halimede' => ['809', 'neptune', 'Halimede', 31.0, 1879.08, 16611000],
+        // Pluto - Charon only; Nix, Hydra, Kerberos, Styx are 5 to 20 km.
+        'charon' => ['901', 'pluto', 'Charon', 606.0, 6.387, 19591],
     ];
 
     /** Horizons id of each planet a moon can belong to — its CENTER. */
@@ -155,6 +157,7 @@ final class MoonClient
         'saturn' => '699',
         'uranus' => '799',
         'neptune' => '899',
+        'pluto' => '999',
     ];
 
     public function __construct(private readonly HorizonsClient $horizons)
@@ -217,7 +220,7 @@ final class MoonClient
 
     /**
      * Whether one table spans a whole orbit, i.e. whether a closed loop can be
-     * drawn from it. True for 34 of the 38; false for Pasiphae, Phoebe, Sycorax
+     * drawn from it. True for 35 of the 39; false for Pasiphae, Phoebe, Sycorax
      * and Halimede, whose periods (2 to 5 years) outrun the one-year cap.
      */
     public static function coversFullOrbit(string $id): bool

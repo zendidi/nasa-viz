@@ -76,7 +76,7 @@ export function fetchSolarSystemOrbit(id) {
  * longitude and the light-time correction — 29,8° on Jupiter — are settled once
  * server-side instead of in every client (backend/API.md).
  *
- * @param {string} id one of the seven planets; not `sun`, which has no rigid surface
+ * @param {string} id one of the seven planets (Earth excluded), `pluto` or `moon`; not `sun`, which has no rigid surface
  * @returns {Promise<{frame:string, epoch:number, bodies:{id:string, name:string,
  *   radius_km:number, pole:?number[], prime_meridian:?number[],
  *   rotation_deg_per_day:?number}[]}>}

@@ -29,6 +29,7 @@ import {
   julianDate,
 } from '../orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
+import { sampleCatmullRom } from '../interpolate.js'
 import { neoEllipsesVisible } from '../focus.js'
 import { NEO_FLOOR_PX, neoFloorFactor, neoFloorPx, neoRadius } from '../scale.js'
 
@@ -132,7 +133,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   const details = {}
   {
     const cached = loadCached('neo-details')
-    const now = Date.now()
+    const now = Date.now() // wall clock: age of a cached sheet
     for (const [designation, record] of Object.entries(cached?.data ?? {})) {
       if (now - record.fetchedAt < NEO_DETAILS_MAX_AGE_MS) details[designation] = record
     }
@@ -187,27 +188,30 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   }
 
   /**
-   * Current position of a NEO, in km, scene axes. Linear interpolation in the
-   * hourly Horizons table (a NEO's path is nearly straight over an hour); clamped
-   * to the table's ends if "now" is outside the feed's date range (old cached
-   * feed). Without a table: arbitrary but stable direction at the close-approach
-   * distance — flagged 'approx' and said so in the modal.
+   * Current position of a NEO, in km, scene axes. Cubic Catmull-Rom in the
+   * hourly Horizons table (interpolate.js, ICRF km, then one conversion to scene
+   * axes — as planets.js). A NEO's path bends fastest at a close flyby, exactly
+   * when it matters, and a chord between hourly samples cuts the bend. Synthetic
+   * circles, 3 600 s step, interior max error (measured 2026-10-16): 400 000 km
+   * at 5 km/s — linear 101 km, cubic 0,6; 60 000 km at 15 km/s (a tight bend,
+   * 0,9 rad per step) — linear 5 973, cubic 888. Past ~1 rad per step no
+   * interpolation of hourly samples recovers the path; that is the table's
+   * limit, not this function's. Clamped to the table's ends if "now" is outside
+   * the feed's date range (old cached feed): `sampleCatmullRom` clamps `f`
+   * itself, `source` records that it did. Without a table: arbitrary but stable
+   * direction at the close-approach distance — flagged 'approx' and said so in
+   * the modal.
    */
-  const interpA = new THREE.Vector3()
-  const interpB = new THREE.Vector3()
+  const interpIcrf = [0, 0, 0]
 
   function updatePositionKm(entry, nowSeconds) {
     const table = positions.objects[entry.designation]
     if (table && table.positions.length > 0) {
       const rows = table.positions
       const f = (nowSeconds - table.start) / positions.stepSeconds
+      sampleCatmullRom(rows, f, interpIcrf)
+      icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], entry.positionKm)
       const clamped = THREE.MathUtils.clamp(f, 0, rows.length - 1)
-      const i = Math.min(Math.floor(clamped), Math.max(rows.length - 2, 0))
-      const a = rows[i]
-      const b = rows[Math.min(i + 1, rows.length - 1)]
-      icrfToScene(a[0], a[1], a[2], interpA)
-      icrfToScene(b[0], b[1], b[2], interpB)
-      entry.positionKm.lerpVectors(interpA, interpB, clamped - i)
       entry.source = clamped === f ? 'horizons' : 'horizons-clamped'
       return
     }
@@ -219,18 +223,24 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     entry.source = null
   }
 
-  function describePosition(entry) {
-    updatePositionKm(entry, Date.now() / 1000)
+  /**
+   * @param {number} nowSeconds  the simulated clock's time, not the wall's
+   * @param {boolean} simulated  true when that is not the real time: "actuelle" would lie then
+   */
+  function describePosition(entry, nowSeconds, simulated = false) {
+    updatePositionKm(entry, nowSeconds)
     const km = Math.round(entry.positionKm.length()).toLocaleString('fr-FR')
+    const format = (seconds) => new Date(seconds * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
     switch (entry.source) {
       case 'horizons':
-        return `<p><strong>Distance actuelle</strong> ${km} km <span class="muted">(position réelle, JPL Horizons)</span></p>`
+        return simulated
+          ? `<p><strong>Distance au ${format(nowSeconds)}</strong> ${km} km <span class="muted">(temps simulé, position réelle JPL Horizons)</span></p>`
+          : `<p><strong>Distance actuelle</strong> ${km} km <span class="muted">(position réelle, JPL Horizons)</span></p>`
       case 'horizons-clamped': {
         const table = positions.objects[entry.designation]
-        const f = (Date.now() / 1000 - table.start) / positions.stepSeconds
+        const f = (nowSeconds - table.start) / positions.stepSeconds
         const edge = f < 0 ? table.start : table.start + (table.positions.length - 1) * positions.stepSeconds
-        const when = new Date(edge * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
-        return `<p><strong>Distance au ${when}</strong> ${km} km <span class="muted">(hors de la période du flux — clic sur « Mettre à jour »)</span></p>`
+        return `<p><strong>Distance au ${format(edge)}</strong> ${km} km <span class="muted">(hors de la semaine couverte par les positions)</span></p>`
       }
       case 'approx':
         return '<p class="muted">Position approximative : direction arbitraire, placée à sa distance d\'approche la plus proche.</p>'
@@ -319,17 +329,20 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
 
   /**
    * Puts the arrow on the NEO and aims it along the hourly segment "now" falls
-   * in (the nearest end's segment when "now" is outside the table). Position
-   * comes from the interpolated km vector through `placeKm`, like the dot; the
-   * direction from the two placed samples, so it follows the scale's bending.
+   * in (the nearest end's segment when "now" is outside the table). Position is
+   * the entry's own cubic `positionKm` through `placeKm`, exactly like the dot,
+   * so the arrow stays glued to it (the chord between two hourly samples can sit
+   * ~100 km off the cubic path, more on a tight bend). Direction stays on the
+   * chord: it is only a heading, within a degree or so of the true tangent at
+   * hourly steps, and taken from the two placed samples it follows the scale's
+   * bending.
    */
   function updateArrow(nowIndex, count, t) {
     const clamped = THREE.MathUtils.clamp(nowIndex, 0, count - 1)
     const i = Math.min(Math.floor(clamped), count - 2)
     arrowFrom.fromArray(trajectoryKm, i * 3)
     arrowTo.fromArray(trajectoryKm, (i + 1) * 3)
-    arrowDir.copy(arrowFrom).lerp(arrowTo, clamped - i)
-    placeKm(trajectoryArrow.position, arrowDir, t)
+    placeKm(trajectoryArrow.position, selected.positionKm, t)
     placeKm(arrowFrom, arrowFrom, t)
     placeKm(arrowTo, arrowTo, t)
     arrowDir.subVectors(arrowTo, arrowFrom)
@@ -664,7 +677,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
       const batch = missing.slice(i, i + NEO_DETAILS_BATCH)
       try {
         const { objects } = await fetchNeoDetails(batch)
-        const now = Date.now()
+        const now = Date.now() // wall clock: fetchedAt stamp
         for (const [designation, data] of Object.entries(objects)) {
           details[designation] = { data, fetchedAt: now }
           detailsErrors.delete(designation)
@@ -698,7 +711,12 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
    * without a position meanwhile show at their approximate (fallback) spot.
    */
   async function loadPositions(feed) {
-    const range = `${feed.start_date}_${feed.end_date}`
+    // A week from today (UTC wall date), whatever the feed's own dates: the
+    // simulated clock runs ahead at up to a day per second, so the table must
+    // outlast the 2-day default feed. end = start + 6 d, the table runs to start + 7 d.
+    const startDate = new Date().toISOString().slice(0, 10)
+    const endDate = new Date(Date.parse(startDate) + 6 * 86_400_000).toISOString().slice(0, 10)
+    const range = `${startDate}_${endDate}`
     const cached = loadCached('neo-positions')
     positions = cached && cached.data.range === range ? cached.data : { range, stepSeconds: 3600, objects: {} }
 
@@ -715,7 +733,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     for (let i = 0; i < fetchable.length; i += NEO_POSITIONS_BATCH) {
       let res
       try {
-        res = await fetchNeoPositions(feed.start_date, feed.end_date, fetchable.slice(i, i + NEO_POSITIONS_BATCH))
+        res = await fetchNeoPositions(startDate, endDate,fetchable.slice(i, i + NEO_POSITIONS_BATCH))
       } catch {
         break // leave the rest approximate; retried on next load
       }

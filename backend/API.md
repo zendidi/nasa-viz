@@ -266,7 +266,7 @@ place each NEO of the feed on its real path rather than on a schematic one.
 
 One planet's real geocentric positions, from JPL Horizons — keyless, not on
 the NASA quota. `body` is required and must be one of `mercury`, `venus`,
-`mars`, `jupiter`, `saturn`, `uranus`, `neptune`; anything else is a 400
+`mars`, `jupiter`, `saturn`, `uranus`, `neptune`, `pluto`, `sun`; anything else is a 400
 listing them. Cached server-side 40 days per planet.
 
 ```json
@@ -368,13 +368,20 @@ per planet.
   0,55 au away and sweeps ~4° a day. Only a finer positions step would help it.
 - Neptune's 165-year orbit fits in one request because Horizons reads a
   *unitless* `STEP_SIZE` as a number of intervals, not a duration.
+- **Pluto (248 years, step 251,6 days)** goes through the same path — 361 samples,
+  90 560 d, `stop` in 2274 for a 2026 start — but is drawn from the **Pluto-system
+  barycentre** (Horizons id `9`, DE441) and not from the body (`999`): the body's
+  ephemeris (plu060) ends on 2199-12-29 and Horizons answers *"No ephemeris for
+  target Pluto after A.D. 2199"* for a full period. The two differ by Pluto's
+  wobble around the Pluto-Charon barycentre, ~2 100 km, against a chord error
+  of the order of 10^5 km: invisible. Positions stay on `999`.
 - The curve does **not** close exactly: the orbit precesses between the first
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.
 
 ## `GET /api/solar-system/orientation?body=mars`
 
-How one body is turned in space. `body` takes the seven planets **and `moon`** —
+How one body is turned in space. `body` takes the nine planets (Pluto included) **and `moon`** —
 not `sun`, which is not a rigid body and whose surface rotates differentially.
 
 The Moon is here rather than in the moons route because what it needs is exactly
@@ -404,7 +411,10 @@ position table no client reads.
 - `prime_meridian` — where the body's zero of longitude pointed at `epoch`, also
   an ICRF unit vector, and perpendicular to `pole` to 1e-16.
 - `rotation_deg_per_day` — **signed**. Negative for Venus (−1,48) and Uranus
-  (−501,16), which turn backwards.
+  (−501,16), which turn backwards. **Pluto is +56,3625** although it also turns
+  backwards against its orbit: the IAU pole it is given (RA 132,993°, Dec −6,163°)
+  is the one it rotates prograde about, so that is already in `pole`. Rotate
+  `prime_meridian` about `pole` by the signed rate, as for any body.
 - `epoch` — first of the current UTC month, the same anchor as the positions and
   orbit routes.
 
@@ -464,7 +474,7 @@ which is the truth and not an error. The Earth's Moon is **not** served here —
 the web client computes it locally and it costs no request at all.
 
 At most 9 moons per planet: all of them when the planet has 9 or fewer (Mars),
-otherwise the 9 largest. 38 bodies in all.
+otherwise the 9 largest. Pluto has Charon alone (the four small ones are 5 to 20 km). 39 bodies in all.
 
 ```json
 {
@@ -533,7 +543,7 @@ the moons of planets a visitor has actually centred on, before anyone asks.
 - **Lazy fill, eager refresh.** The route records which planets get looked at; the
   command refreshes only those. A moon nobody has ever looked at is never fetched,
   and a planet untouched for 90 days drops off on its own. `--all-moons` forces
-  all 38 (use once after a deploy, not on a cron); `--dry-run` lists and fetches
+  all 39 (use once after a deploy, not on a cron); `--dry-run` lists and fetches
   nothing.
 - **It is a CLI command on purpose.** `max_execution_time` is 0 here against 30 s
   for a web request, so the one-body-per-call rule does not apply and it can work
@@ -616,7 +626,7 @@ knowing:
   such problem — `bodies` is a plain array, so `JsonUtility` handles it.
 - `/api/solar-system/positions` is the one route worth calling on startup and
   then leaving alone: its tables cover a year and cost nothing in quota, so a
-  VR client can fetch the seven planets once, keep them, and interpolate
+  VR client can fetch the nine planets once, keep them, and interpolate
   locally rather than polling.
 - A VR client can ignore `comparison` entirely; it only says how the three
   sources agree. `sources` on an object is the cheap version: an object with a
