@@ -765,6 +765,7 @@ const panels = createPanels({
     },
     timeRate: (rate) => setTimeRate(rate),
     timeReset: () => resetTime(),
+    timePlayPause: () => togglePause(),
     scaleStep: (step) => setScaleStep(step),
     scaleStepBy: (direction) => setScaleStep(scaleStep + direction),
     focus: (id) => setFocus(id),
@@ -832,7 +833,20 @@ function afterTimeJump() {
   if (modalNeo) renderNeoModal()
 }
 
+/**
+ * The speed "Lecture" goes back to: the last non-zero one, ×1 until another is
+ * picked. Pausing from the slider's own pause stop counts too, so the button
+ * always resumes whatever was running before — without the hard reset of
+ * "Maintenant", the simulated date stays where it was paused.
+ */
+let resumeRate = 1
+
+function togglePause() {
+  setTimeRate(clock.rate === 0 ? resumeRate : 0)
+}
+
 function setTimeRate(rate) {
+  if (clock.rate !== 0 && rate === 0) resumeRate = clock.rate
   const wallMs = Date.now()
   clock.setRate(rate, wallMs)
   refreshClockBounds(wallMs)
@@ -840,6 +854,7 @@ function setTimeRate(rate) {
 }
 
 function resetTime() {
+  resumeRate = 1
   clock.reset(Date.now())
   afterTimeJump()
   refreshIss() // keyless; the marker reappears at once, on a fresh position rather than one up to 60 s old

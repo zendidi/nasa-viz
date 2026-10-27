@@ -205,6 +205,7 @@ export function createPanels({ app, wheelTarget, on }) {
       </div>
       <div class="scale-row">
         <span id="time-rate-label"></span>
+        <button id="time-play-btn" title="Pause / reprise, à la vitesse d'avant la pause">⏸ Pause</button>
         <button id="time-now-btn">Maintenant</button>
       </div>
       <p id="time-label"></p>
@@ -217,6 +218,7 @@ export function createPanels({ app, wheelTarget, on }) {
   const timeLabel = scalePanel.querySelector('#time-label')
   const timeLimit = scalePanel.querySelector('#time-limit')
   const timeNowBtn = scalePanel.querySelector('#time-now-btn')
+  const timePlayBtn = scalePanel.querySelector('#time-play-btn')
 
   const viewPanel = document.createElement('div')
   viewPanel.id = 'view-panel'
@@ -385,9 +387,11 @@ export function createPanels({ app, wheelTarget, on }) {
     #scale-panel .time-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(79,168,255,.25); }
     #time-slider { width: 260px; accent-color: #4fa8ff; }
     #time-rate-label { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 130px; }
-    #time-now-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
+    #time-play-btn { min-width: 84px; }
+    #time-now-btn, #time-play-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
                   border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; text-shadow: none; }
-    #time-now-btn:hover { background: #24608f; }
+    #time-now-btn:hover, #time-play-btn:hover { background: #24608f; }
+    #time-play-btn.paused { background: #4fa8ff; color: #0e2233; }
     #time-now-btn:disabled { opacity: 0.35; cursor: default; }
     #time-label { margin: 6px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
     #time-label.muted { opacity: 0.6; }
@@ -794,6 +798,8 @@ export function createPanels({ app, wheelTarget, on }) {
     timeSlider.value = String(rateIndex(rate))
     timeRateLabel.textContent = rateLabel(rate)
     timeNowBtn.disabled = realTime
+    timePlayBtn.textContent = rate === 0 ? '▶ Lecture' : '⏸ Pause'
+    timePlayBtn.classList.toggle('paused', rate === 0)
     timeLabel.textContent = realTime ? 'temps réel' : `Simulé : ${stamp}`
     timeLabel.classList.toggle('muted', realTime)
     timeLimit.classList.toggle('hidden', !atLimit)
@@ -912,6 +918,7 @@ export function createPanels({ app, wheelTarget, on }) {
   }
   timeSlider.addEventListener('input', (event) => on.timeRate(RATE_STOPS[Number(event.target.value)]))
   timeNowBtn.addEventListener('click', () => on.timeReset())
+  timePlayBtn.addEventListener('click', () => on.timePlayPause())
   viewPanel.querySelector('#recenter-btn').addEventListener('click', () => on.recenter())
   // Static markup, never re-rendered: a direct listener is enough here.
   viewPanel.querySelector('#rings-toggle').addEventListener('change', (event) => on.rings(event.target.checked))
