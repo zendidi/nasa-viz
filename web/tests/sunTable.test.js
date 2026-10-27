@@ -10,13 +10,15 @@ import { createMoonTable, createSunTable } from '../src/sunTable.js'
 
 const NOW = Date.UTC(2026, 9, 15, 12) // 2026-10-15T12:00Z
 const STEP = 86_400
-const DAYS = 60
+const DAYS = 160
+// Une table servie depuis 2026-10-27 commence 3 mois avant le 1er du mois.
+const HISTORY_START = Date.UTC(2026, 6, 1) / 1000
 
-/** Table de 60 jours démarrant 10 jours avant NOW ; valeurs distinctes sur chaque axe. */
+/** Table de 160 jours démarrant le 1er juillet (jusqu'au 7 décembre) ; valeurs distinctes sur chaque axe. */
 function makeRecord(overrides = {}) {
   return {
     timeScale: 'UTC',
-    start: NOW / 1000 - 10 * STEP,
+    start: HISTORY_START,
     stepSeconds: STEP,
     positions: Array.from({ length: DAYS }, (_, i) => [1.0e8 + 1.0e5 * i, 2.0e7 + 3.0e4 * i, 5.0e6 - 1.0e4 * i]),
     ...overrides,
@@ -76,7 +78,7 @@ describe('createSunTable — table en cache', () => {
   it('hors fenêtre de la table, retombe sur la série (~1 UA), pas sur l’origine ni sur la table', () => {
     stubStorage(seed(makeRecord()))
     const sun = make()
-    const before = sun.positionKmAt(new Date(NOW - 30 * 86_400_000), new THREE.Vector3())
+    const before = sun.positionKmAt(new Date(HISTORY_START * 1000 - 30 * 86_400_000), new THREE.Vector3())
     const after = sun.positionKmAt(new Date(NOW + 200 * 86_400_000), new THREE.Vector3())
     for (const p of [before, after]) {
       expect(p.length()).toBeGreaterThan(1.46e8)
@@ -111,11 +113,18 @@ describe('createSunTable — sans table utilisable', () => {
   })
 
   it('cache expiré, trop proche de sa fin (marge 30 j) ou pas commencé : ignoré', () => {
-    stubStorage(seed(makeRecord({ start: NOW / 1000 - 100 * STEP }))) // finie depuis 41 j
+    stubStorage(seed(makeRecord({ start: NOW / 1000 - 200 * STEP }))) // finie depuis 41 j
     expect(make().known).toBe(false)
-    stubStorage(seed(makeRecord({ start: NOW / 1000 - 40 * STEP }))) // fin dans 19 j < 30 j
+    stubStorage(seed(makeRecord({ start: NOW / 1000 - 140 * STEP }))) // fin dans 19 j < 30 j
     expect(make().known).toBe(false)
     stubStorage(seed(makeRecord({ start: NOW / 1000 + STEP }))) // commence demain
+    expect(make().known).toBe(false)
+  })
+
+  // Une table stockée avant l'historique de 3 mois couvre bien « maintenant »,
+  // mais bloquerait la marche arrière au 1er du mois : elle doit être refaite.
+  it('cache qui ne remonte pas 3 mois avant le 1er du mois : ignoré', () => {
+    stubStorage(seed(makeRecord({ start: Date.UTC(2026, 9, 1) / 1000 })))
     expect(make().known).toBe(false)
   })
 

@@ -176,7 +176,8 @@ final class SpaceDataController
         }
 
         $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
-        $item = $pool->getItem('solar_system_'.$id.'_'.$start->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE);
+        // `_h<n>`: a table from before HISTORY_MONTHS started at the window, not before it.
+        $item = $pool->getItem('solar_system_'.$id.'_'.$start->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE.'_h'.SolarSystemClient::HISTORY_MONTHS);
 
         if ($item->isHit()) {
             $positions = $item->get();
@@ -196,7 +197,7 @@ final class SpaceDataController
             'frame' => 'ICRF geocentric',
             'time_scale' => HorizonsClient::TIME_SCALE,
             'units' => 'km',
-            'start' => $start->getTimestamp(),
+            'start' => SolarSystemClient::positionsStart($start)->getTimestamp(),
             'step_seconds' => SolarSystemClient::stepSeconds($id),
             'bodies' => [SolarSystemClient::describe($id) + ['positions' => $positions]],
         ]);

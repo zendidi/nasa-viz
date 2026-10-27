@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CLOCK_RATES, RATE_STOPS, createClock, defaultMaxMs, defaultMinMs } from '../src/clock.js'
+import { CLOCK_RATES, HISTORY_MONTHS, RATE_STOPS, createClock, defaultMaxMs, defaultMinMs } from '../src/clock.js'
 
 // Ce qui est épinglé ici : les invariants que l'œil ne voit pas au moment où ils
 // cassent. Un changement de vitesse qui fait sauter le temps, c'est une planète
@@ -153,8 +153,14 @@ describe('marche arrière et pause (2026-10-27)', () => {
 })
 
 describe('defaultMinMs', () => {
-  it('= le 1er du mois UTC, là où commencent les tables', () => {
-    expect(defaultMinMs(Date.UTC(2026, 9, 31, 23, 59))).toBe(Date.UTC(2026, 9, 1))
+  it('= 3 mois avant le 1er du mois UTC, là où commencent les tables de positions', () => {
+    expect(HISTORY_MONTHS).toBe(3)
+    expect(defaultMinMs(Date.UTC(2026, 9, 31, 23, 59))).toBe(Date.UTC(2026, 6, 1))
+  })
+
+  // Janvier − 3 mois doit tomber en octobre de l'année d'avant, pas sur un mois −2.
+  it('passe correctement le changement d\'année', () => {
+    expect(defaultMinMs(Date.UTC(2027, 0, 15))).toBe(Date.UTC(2026, 9, 1))
   })
 })
 

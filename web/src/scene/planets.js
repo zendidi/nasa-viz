@@ -20,6 +20,7 @@ import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift } from './geo.js'
 import { polylinePointAt, sampleCatmullRom, subdivideClosedLoop } from '../interpolate.js'
 import { orientBody } from './orientation.js'
+import { defaultMinMs } from '../clock.js'
 import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../scale.js'
 
 /**
@@ -247,7 +248,8 @@ function covers(record) {
   // about the real world, whatever date the simulated clock is showing.
   const nowMs = Date.now()
   const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
-  return nowMs >= record.start * 1000 && nowMs < endMs - TABLE_MARGIN_MS
+  // Must reach HISTORY_MONTHS back, or the clock could not run back on it (see sunTable.js).
+  return record.start * 1000 <= defaultMinMs(nowMs) && nowMs < endMs - TABLE_MARGIN_MS
 }
 
 /**

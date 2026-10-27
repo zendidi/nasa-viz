@@ -57,6 +57,17 @@ final class SolarSystemClient
     private const WINDOW_DAYS = 365;
 
     /**
+     * How far before the window's start the position tables reach back
+     * (2026-10-27): the web clock can run backwards, and without this it was
+     * stopped at the 1st of the current month — a single day back on the 2nd.
+     * Three months was the user's call, the compromise between reach and the
+     * size of the tables a browser keeps (15 months instead of 12). Only the
+     * position tables move: the window start itself stays the shared anchor of
+     * every cache key, orbit and orientation epoch.
+     */
+    public const HISTORY_MONTHS = 3;
+
+    /**
      * How many intervals one drawn orbit is cut into — so 361 samples. Note
      * this is passed to Horizons as a **unitless** STEP_SIZE, which means "this
      * many intervals between the two dates", not a duration: that is what puts
@@ -233,6 +244,12 @@ final class SolarSystemClient
         return $now->setTimezone(new \DateTimeZone('UTC'))->modify('first day of this month')->setTime(0, 0);
     }
 
+    /** Where a position table starts: HISTORY_MONTHS before the window, still a 1st of the month. */
+    public static function positionsStart(\DateTimeImmutable $windowStart): \DateTimeImmutable
+    {
+        return $windowStart->modify(sprintf('-%d months', self::HISTORY_MONTHS));
+    }
+
     /**
      * One table per requested planet, all on the window's clock. A null entry
      * means Horizons didn't answer for that body — a reason to keep it
@@ -244,8 +261,11 @@ final class SolarSystemClient
      *
      * @throws ExceptionInterface on transport failure (nothing is known about any planet then)
      */
-    public function getPositions(array $ids, \DateTimeImmutable $start): array
+    public function getPositions(array $ids, \DateTimeImmutable $windowStart): array
     {
+        // From HISTORY_MONTHS back to a year past the window's start.
+        $start = self::positionsStart($windowStart);
+
         // One Horizons batch per step: a day for everything but the Moon.
         $byStep = [];
         foreach ($ids as $id) {
@@ -257,7 +277,7 @@ final class SolarSystemClient
             $tables = $this->horizons->getMajorBodyVectors(
                 $commands,
                 $start,
-                $start->modify(sprintf('+%d days', self::WINDOW_DAYS)),
+                $windowStart->modify(sprintf('+%d days', self::WINDOW_DAYS)),
                 self::STEP_SECONDS === $stepSeconds ? self::STEP_SIZE : sprintf('%dm', intdiv($stepSeconds, 60)),
             );
             foreach ($tables as $id => $table) {

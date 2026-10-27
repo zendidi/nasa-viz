@@ -53,8 +53,10 @@ final class SolarSystemClientTest extends TestCase
         self::assertStringNotContainsString('DES', $urls[0]);
         self::assertStringContainsString('STEP_SIZE=%271d%27', $urls[0]);
         self::assertStringContainsString('CENTER=%27500%40399%27', $urls[0]);
-        // The window is a year from the given start, not a few days.
+        // The window is a year from the given start, not a few days...
         self::assertStringContainsString('STOP_TIME=%272027-09-01', $urls[0]);
+        // ...and the table reaches HISTORY_MONTHS before it, so the clock can run back.
+        self::assertStringContainsString('START_TIME=%272026-06-01', $urls[0]);
         self::assertCount(2, $urls);
 
         self::assertSame(

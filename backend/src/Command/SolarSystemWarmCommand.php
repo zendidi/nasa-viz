@@ -81,7 +81,7 @@ final class SolarSystemWarmCommand extends Command
         $planetStart = SolarSystemClient::windowStart($now);
 
         foreach (SolarSystemClient::ids() as $id) {
-            $item = $this->pool->getItem('solar_system_'.$id.'_'.$planetStart->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE);
+            $item = $this->pool->getItem('solar_system_'.$id.'_'.$planetStart->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE.'_h'.SolarSystemClient::HISTORY_MONTHS);
             if ($item->isHit()) {
                 ++$skipped;
                 continue;

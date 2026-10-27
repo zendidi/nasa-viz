@@ -297,12 +297,15 @@ listing them. Cached server-side 40 days per planet.
 
 - `positions` is a table of `[x, y, z]` in km, ICRF equatorial, Earth-centred
   — the same frame as `/api/neo/positions`. Sample *n* is at
-  `start + n * step_seconds` (Unix seconds, **UTC**). 366 samples: a
-  daily step over a year (the Moon: 1 461 samples, every 6 h — see `body=moon`). Interpolate linearly between the two samples around
+  `start + n * step_seconds` (Unix seconds, **UTC**). About 458 samples: a
+  daily step from three months back to a year ahead (the Moon, Mercury and Venus
+  every 6 h, about 1 830 samples — see `body=moon`). Interpolate linearly between the two samples around
   "now" — measured worst case on Mars is 5 645 km, 0.002 % of its distance.
-- `start` is **the first of the current UTC month**, not the day of the call.
-  Planets are fetched one at a time, and this is what makes their tables line
-  up sample for sample anyway. A table therefore always covers "now"; it does
+- `start` is **the first of the UTC month three months back** (since 2026-10-27,
+  `SolarSystemClient::HISTORY_MONTHS`, so a client clock can run backwards), and
+  the table ends a year after the first of the *current* month. Never the day of
+  the call: planets are fetched one at a time, and this is what makes their
+  tables line up sample for sample anyway. A table therefore always covers "now"; it does
   not need refetching until it nears its end, roughly eleven months later.
 - **One body per call**, on purpose: a Horizons ephemeris request costs 5 to
   16 s whatever its size (measured 2026-09-22), so asking for several at once

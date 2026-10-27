@@ -25,6 +25,7 @@ import { loadCached, saveCached } from './cache.js'
 import { sampleCatmullRom, subdivideTable } from './interpolate.js'
 import { getMoonEquatorial, getSunEquatorial } from './astronomy.js'
 import { icrfToScene, latLngToVector3 } from './scene/geo.js'
+import { defaultMinMs } from './clock.js'
 
 /** Refetched once "now" comes within this of the table's end — same rule as the planets'. */
 /** Curve points per daily sample in the Earth's orbit line — same factor as the planets' orbits. */
@@ -39,7 +40,10 @@ function covers(record, marginMs = 0) {
   // keeping, a fact about the real world — not about the simulated date.
   const nowMs = Date.now()
   const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
-  return nowMs >= record.start * 1000 && nowMs < endMs - marginMs
+  // A table that starts later than HISTORY_MONTHS back is one stored before
+  // the history existed (2026-10-27): still valid going forward, but it would
+  // stop the clock at the 1st of the month going back. Refetched once.
+  return record.start * 1000 <= defaultMinMs(nowMs) && nowMs < endMs - marginMs
 }
 
 /**
