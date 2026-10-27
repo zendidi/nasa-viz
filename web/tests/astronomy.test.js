@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { getGreenwichSiderealTime, getMoonEquatorial, getSunEquatorial } from '../src/astronomy.js'
+import { getEarthPoleJ2000, getEarthRotationAngle, getGreenwichSiderealTime, getMoonEquatorial, getSunEquatorial } from '../src/astronomy.js'
 
 // astronomy.js est une série analytique basse précision (docblock : "accurate
 // to a few degrees"). Ces tests n'épinglent donc pas ses formules internes --
@@ -178,5 +178,51 @@ describe('getGreenwichSiderealTime', () => {
     // 366 * 0.9856736629 mod 360 ≈ 0.7565
     expect(advance).toBeGreaterThan(0.5)
     expect(advance).toBeLessThan(1.0)
+  })
+})
+
+describe('getEarthRotationAngle', () => {
+  // Ce qui est épinglé : l'écart ERA ↔ GMST, c'est-à-dire la raison même du
+  // changement (2026-10-21). Nul à J2000 par construction des deux formules, il
+  // croît avec la précession en ascension droite (~46″/an) : 0,34° en 2026. Un
+  // retour au GMST, ou une ERA mal calée, le ferait sortir de ces bornes.
+  const gap = (date) => {
+    const d = getGreenwichSiderealTime(date) - getEarthRotationAngle(date)
+    return ((d + 540) % 360) - 180
+  }
+
+  it('coïncide avec le GMST à J2000 (à 0,01° près)', () => {
+    expect(Math.abs(gap(new Date(Date.UTC(2000, 0, 1, 12))))).toBeLessThan(0.01)
+  })
+
+  it('le GMST a 0,30 à 0,40° d’avance en 2026 : la précession depuis J2000', () => {
+    const g = gap(new Date('2026-10-21T00:00:00Z'))
+    expect(g).toBeGreaterThan(0.3)
+    expect(g).toBeLessThan(0.4)
+  })
+
+  it('valeur de référence IERS : ERA(J2000,0 UT1) = 280,46061837504°', () => {
+    // 2π·0,7790572732640 rad, la constante de la définition IAU 2000.
+    expect(getEarthRotationAngle(new Date(Date.UTC(2000, 0, 1, 12)))).toBeCloseTo(280.4606184, 6)
+  })
+})
+
+describe('getEarthPoleJ2000', () => {
+  // Épinglé : l'écart au pôle J2000, qui est tout l'objet de la fonction
+  // (2026-10-21) -- nul à J2000, ~20″/an ensuite : 0,149° fin 2026 -- et sa
+  // direction, vers l'ascension droite 0 h (le pôle précesse vers l'équinoxe).
+  const angleDeg = ([x, y, z]) => (Math.acos(Math.min(1, z / Math.hypot(x, y, z))) * 180) / Math.PI
+
+  it('confondu avec le pôle J2000 à J2000', () => {
+    expect(angleDeg(getEarthPoleJ2000(new Date(Date.UTC(2000, 0, 1, 12))))).toBeLessThan(1e-9)
+  })
+
+  it('à 0,14–0,16° du pôle J2000 en octobre 2026, vers α ≈ 0 h, vecteur unitaire', () => {
+    const p = getEarthPoleJ2000(new Date('2026-10-21T00:00:00Z'))
+    expect(angleDeg(p)).toBeGreaterThan(0.14)
+    expect(angleDeg(p)).toBeLessThan(0.16)
+    expect(p[0]).toBeGreaterThan(0)
+    expect(Math.abs(p[1])).toBeLessThan(p[0] / 100)
+    expect(Math.hypot(...p)).toBeCloseTo(1, 12)
   })
 })

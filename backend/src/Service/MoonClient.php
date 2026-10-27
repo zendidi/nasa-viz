@@ -197,7 +197,13 @@ final class MoonClient
      */
     public static function stepSeconds(string $id): int
     {
-        $minutes = max(1, (int) round(self::MOONS[$id][4] * 86400 / self::SAMPLES_PER_ORBIT / 60));
+        // A 45th of the period, or — for a moon whose window the year caps — the
+        // step that spends the whole sample budget on that year, whichever is
+        // finer (2026-10-21). The cap used to leave those moons on a 45th of a
+        // period they never complete: Nereid (e ≈ 0,75) on an 8-day step, 41 000 km
+        // off at periapsis, using 46 of its 500 samples.
+        $seconds = min(self::MOONS[$id][4] * 86400 / self::SAMPLES_PER_ORBIT, self::MAX_WINDOW_SECONDS / (self::SAMPLE_BUDGET - 1));
+        $minutes = max(1, (int) round($seconds / 60));
 
         return $minutes * 60;
     }
@@ -231,7 +237,9 @@ final class MoonClient
     /** Samples spanning exactly one orbit, for the drawn loop. Meaningless unless coversFullOrbit(). */
     public static function orbitSampleCount(string $id): int
     {
-        return min(self::sampleCount($id), self::SAMPLES_PER_ORBIT + 1);
+        // One period in steps, not SAMPLES_PER_ORBIT: a year-capped moon now has a
+        // finer step than a 45th of its period (see stepSeconds).
+        return min(self::sampleCount($id), (int) round(self::MOONS[$id][4] * 86400 / self::stepSeconds($id)) + 1);
     }
 
     /**

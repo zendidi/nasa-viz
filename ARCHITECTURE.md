@@ -98,7 +98,7 @@ formes de réponse, pas ce fichier.
     quatre cartes three.js correspondantes ne sont plus référencées, voir
     `public/textures/CREDITS.md`). Nuages enfants de `globeSphere` (dérive vers l'est,
     `7°/jour`, convention visuelle assumée) et uniforme `sunDirection` partagé par référence avec le
-    shader du globe. Rotation réelle par le GMST, et son axe *est* le +Y de la scène puisque
+    shader du globe. Rotation réelle par l’ERA (le GMST jusqu’au 2026-10-21), et son axe *est* le +Y de la scène puisque
     celle-ci est équatoriale
   - Ciel réel (`public/stars.json`, catalogue Hipparcos tronqué à mag ≤ 5 via d3-celestial ;
     couleur dérivée de l'indice B-V, taille dérivée de la magnitude — voir
@@ -135,6 +135,7 @@ formes de réponse, pas ce fichier.
     relativement). Les orbites planétaires et l'orbite terrestre se tracent depuis n'importe lequel
     de ces pivots (`placeHeliocentricKm`, 2026-10-12). En vue héliocentrée, le NEO sélectionné voit
     son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
+  - `src/sunTable.js` — tables Horizons du Soleil et, depuis le 2026-10-21, de la Lune (`createMoonTable`, pas de 6 h), avec la série d’`astronomy.js` en repli.
   - `src/clock.js` — horloge simulée unique (module pur, testé par `tests/clock.test.js`) : `createClock`, vitesses ×1 / 1 h/s / 1 j/s, `setRate` sans saut, `reset`, bornes (fin de la table Soleil ou 1er du mois UTC + 365 j), `atLimit` ; le temps réel n'est jamais borné. Les caches restent sur l'horloge murale.
   - `src/neoInfo.js` — textes de comparaison des sources et de la fiche, couleurs par taxonomie
   - Badge de quota (`GET /api/usage`)

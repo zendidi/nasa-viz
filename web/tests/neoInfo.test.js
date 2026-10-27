@@ -14,6 +14,7 @@ import {
   sourcesPanelHtml,
   taxonomyKey,
 } from '../src/neoInfo.js'
+import { diameterHtml } from '../src/neoInfo.js'
 
 // neoInfo.js met en forme des donnees qui viennent de trois catalogues (JPL,
 // NASA NeoWs, ESA NEOCC) et deux fiches (JPL SBDB, IMCCE ssoCard) qui ne
@@ -822,5 +823,29 @@ describe('NEO_CREDITS', () => {
     expect(NEO_CREDITS).toMatch(/ESA NEOCC/)
     expect(NEO_CREDITS).toMatch(/IMCCE/)
     expect(NEO_CREDITS).toMatch(/NASA NeoWs/)
+  })
+})
+
+describe('diameterHtml', () => {
+  // Épinglé : qu'un diamètre mesuré porte son incertitude quand la source la
+  // donne, et qu'un diamètre estimé dise pour quel albédo -- la première
+  // question d'un professionnel (audit du 2026-10-21).
+  const estimated = { min: 0.1, max: 0.3 }
+
+  it('mesuré avec sigma : « 340 m ± 40 m », et la source', () => {
+    const html = diameterHtml({ value: 0.34, sigma: 0.04, source: 'ssocard' }, estimated)
+    expect(html).toContain('340 m ± 40 m')
+    expect(html).toContain('IMCCE')
+  })
+
+  it('mesuré sans sigma : pas de « ± » inventé', () => {
+    expect(diameterHtml({ value: 0.34, sigma: null, source: 'sbdb' }, estimated)).not.toContain('±')
+  })
+
+  it('estimé : la fourchette, l’hypothèse d’albédo et la taille réellement dessinée (le milieu)', () => {
+    const html = diameterHtml(null, estimated)
+    expect(html).toContain('100 m – 300 m')
+    expect(html).toContain('albédo supposé')
+    expect(html).toContain('dessiné à 200 m')
   })
 })

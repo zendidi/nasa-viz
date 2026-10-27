@@ -2,9 +2,10 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
 import { loadCached, saveCached } from './cache.js'
-import { getMoonEquatorial, getGreenwichSiderealTime } from './astronomy.js'
-import { createClock, defaultMaxMs } from './clock.js'
-import { createSunTable } from './sunTable.js'
+import { getEarthPoleJ2000, getEarthRotationAngle } from './astronomy.js'
+import { issAt } from './iss.js'
+import { createClock, defaultMaxMs, defaultMinMs } from './clock.js'
+import { createMoonTable, createSunTable } from './sunTable.js'
 import { orbitSchematicSvg } from './orbit.js'
 import { FOCUSES, hidesPlanets, neoEllipsesVisible } from './focus.js'
 import { createPanels } from './ui/panels.js'
@@ -13,7 +14,7 @@ import { createPicking } from './picking.js'
 import { createOrbitTraces } from './scene/orbitTrace.js'
 import { createNeoScene, designationOf } from './neo/scene.js'
 import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
-import { latLngToVector3 } from './scene/geo.js'
+import { icrfToScene, latLngToVector3 } from './scene/geo.js'
 import {
   MOON_RADIUS,
   makeGlobe,
@@ -36,6 +37,7 @@ import {
   escapeHtml,
   sourcesBlockHtml,
   detailsBlockHtml,
+  diameterHtml,
 } from './neoInfo.js'
 import {
   AU_KM,
@@ -44,6 +46,7 @@ import {
   ISS_READABLE_RADIUS,
   SUN_READABLE_RADIUS,
   SCALE_STEPS,
+  stepToT,
   lerpLog,
   sceneDistance,
   sceneDistanceToKm,
@@ -54,6 +57,7 @@ import {
   pivotRadius,
   worldPerPixel,
   describeScale,
+  isRealScale,
   remapCameraDistance,
 } from './scale.js'
 
@@ -130,7 +134,7 @@ const distanceRings = createDistanceRings(scene)
  * as star placement) drives the light, the visible Sun marker, and (via the
  * globe's shader uniform, in world space) the day/night terminator. This is a
  * fixed-stars-style frame, deliberately NOT tied to the globe's own real
- * rotation (set from GMST in animate(), see docs/agent/decisions.md) — the
+ * rotation (set from the ERA in animate(), see docs/agent/decisions.md) — the
  * shader transforms its own normal into world space via modelMatrix each
  * fragment, so the globe's spin sweeps the terminator across the texture with
  * no extra per-frame JS work needed.
@@ -169,6 +173,19 @@ const sunTable = createSunTable({
   },
 })
 
+// The Moon, on the Sun's exact terms (2026-10-21): Horizons table, series as
+// stand-in. The series alone was 0,38° (2 500 km) off on median — more than the
+// Moon's own apparent radius on an eclipse day.
+const moonTable = createMoonTable({
+  on: {
+    changed: () => {
+      const simMs = clock.nowMs(Date.now())
+      updateAstronomy(new Date(simMs))
+      rebuildBodyOrbits(simMs, { earth: false })
+    },
+  },
+})
+
 /** Sim time of the last updateAstronomy(), to know when the next one is due (stepAstronomy). */
 let astronomySimMs = NaN
 
@@ -181,16 +198,15 @@ function updateAstronomy(now) {
   sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
   // The globe shader reads sunDirection in world space and does its own
   // modelMatrix transform per-fragment, so the globe's real rotation (set
-  // from GMST in animate()) sweeps the terminator across the texture with
+  // from the ERA in animate()) sweeps the terminator across the texture with
   // no extra per-frame work here.
   globeMaterial.uniforms.sunDirection.value.copy(sunDirWorld)
 
   // Real direction and distance only — where that lands in the scene depends
   // on the current scale, applied per frame in applyScale().
-  const moonPos = getMoonEquatorial(now)
-  moonDirWorld.copy(latLngToVector3(moonPos.dec, moonPos.ra, 1))
-  moonDistanceKm = moonPos.distanceKm
-  moonPositionKm.copy(moonDirWorld).multiplyScalar(moonDistanceKm)
+  moonTable.positionKmAt(now, moonPositionKm)
+  moonDistanceKm = moonPositionKm.length()
+  moonDirWorld.copy(moonPositionKm).divideScalar(moonDistanceKm)
 }
 
 // --- point de vue (le corps au centre de la scène) ----------------------------
@@ -325,6 +341,7 @@ const neoScene = createNeoScene({
   placeRelativeKm,
   minRadiusAt,
   focusId: () => focusId,
+  sunPositionKmAt: (date, out) => sunTable.positionKmAt(date, out),
   on: {
     // A sheet arriving changes what the modal can show, then what the legend
     // and the scale label know about diameters.
@@ -375,10 +392,9 @@ function sampleBodyOrbit(startMs, count, days, positionAt) {
 function rebuildBodyOrbits(startMs, { earth = true } = {}) {
   traces.setKm(
     moonOrbitTrace,
-    sampleBodyOrbit(startMs, MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) => {
-      const { ra, dec, distanceKm } = getMoonEquatorial(date)
-      return latLngToVector3(dec, ra, distanceKm)
-    }),
+    sampleBodyOrbit(startMs, MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) =>
+      moonTable.positionKmAt(date, new THREE.Vector3()),
+    ),
     () => true,
   )
   // Straight from the Sun table when there is one — the Earth seen from the Sun
@@ -429,8 +445,11 @@ function applyIssPosition(position) {
 
 // --- scale ("réalisme") ------------------------------------------------------------
 
-let scaleStep = 0 // slider position, 0..SCALE_STEPS
-let scaleT = 0 // current value, animated toward scaleStep / SCALE_STEPS
+// The session opens on 100 % réel (2026-10-27), centred on the Sun — see the
+// setFocus('sun') at start-up below. Set here rather than animated in: there is
+// nothing on screen yet to transition from.
+let scaleStep = SCALE_STEPS // slider position, 0..SCALE_STEPS
+let scaleT = stepToT(SCALE_STEPS) // current value, animated toward stepToT(scaleStep)
 let scaleTransition = null // { from, to, startMs }
 const SCALE_TRANSITION_MS = 1500
 
@@ -438,7 +457,7 @@ function setScaleStep(step) {
   const next = THREE.MathUtils.clamp(Math.round(step), 0, SCALE_STEPS)
   if (next === scaleStep && !scaleTransition) return
   scaleStep = next
-  scaleTransition = { from: scaleT, to: next / SCALE_STEPS, startMs: performance.now() }
+  scaleTransition = { from: scaleT, to: stepToT(next), startMs: performance.now() }
   renderScalePanel()
   renderPlanetsPanel() // the cran decides whether the geocentric view shows planets
   // The ellipses (and the "all orbits" box that gates them) only exist at 100 % réel.
@@ -693,6 +712,10 @@ function applyScale(nowSeconds) {
   orientBody(moon.quaternion, 'moon', nowSeconds)
 
   placeKm(sunMarker.position, sunPositionKm, t)
+  // The halo is legibility, not photosphere: gone at true scale, where it made
+  // the Sun 1,67 times too wide.
+  sunMarker.userData.glow.material.opacity = 0.25 * (1 - t)
+  sunMarker.userData.glow.visible = !isRealScale(t)
   sunMarker.scale.setScalar(
     Math.max(sunRadius(t, focusId === 'sun'), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
   )
@@ -702,12 +725,14 @@ function applyScale(nowSeconds) {
   // only add noise.
   // Hidden the moment the simulated time is not the real time: the ISS is a live
   // position with no table behind it, so at any other date it would be a lie.
-  const issShown = issPosition !== null && isEarthFocus && clock.isRealTime()
+  // Placed at the real "now" from the ten-minute track, not on the last poll's
+  // reading (up to ~460 km behind until 2026-10-21) — and not at all once the
+  // track has run out: a stale cached reading is no longer drawn as live.
+  const issNow = isEarthFocus && clock.isRealTime() ? issAt(issPosition?.track, nowSeconds) : null
+  const issShown = issNow !== null
   issMarker.visible = issShown
   if (issShown) {
-    issMarker.position.copy(
-      latLngToVector3(issPosition.latitude, issPosition.longitude, issOrbitRadius(issPosition.altitude_km, t)),
-    )
+    issMarker.position.copy(latLngToVector3(issNow.latitude, issNow.longitude, issOrbitRadius(issNow.altitude_km, t)))
     issMarker.getWorldPosition(tmpWorldPos)
     issMarker.scale.setScalar(
       Math.max(issRadius(t), minRadiusAt(tmpWorldPos, MIN_RADIUS_PX.iss)) / ISS_READABLE_RADIUS,
@@ -775,13 +800,13 @@ const { sceneLabels } = panels
 // --- simulated clock (UI side) -------------------------------------------------------
 
 /**
- * The upper bound: the end of the Sun table (the planets' tables share its
- * window, `SolarSystemClient::windowStart` + 365 d), or the same date computed by
- * hand while none is loaded. The lower bound is wherever the clock stands when
- * it starts running fast — there is no reverse, so it can never be crossed anyway.
+ * The bounds are the Sun table's window (the planets' tables share it,
+ * `SolarSystemClient::windowStart` + 365 d), or the same dates computed by hand
+ * while none is loaded. Both ends matter since time can run backwards
+ * (2026-10-27): reversed, it stops at the 1st of the month, where the tables start.
  */
 function refreshClockBounds(wallMs) {
-  clock.setBounds(clock.nowMs(wallMs), sunTable.endMs ?? defaultMaxMs(wallMs), wallMs)
+  clock.setBounds(sunTable.startMs ?? defaultMinMs(wallMs), sunTable.endMs ?? defaultMaxMs(wallMs), wallMs)
 }
 
 function renderTimePanel(simMs, wallMs) {
@@ -790,7 +815,7 @@ function renderTimePanel(simMs, wallMs) {
     realTime: clock.isRealTime(),
     simMs,
     atLimit: clock.atLimit(wallMs),
-    limitMs: clock.maxMs,
+    limitMs: clock.rate < 0 ? clock.minMs : clock.maxMs,
   })
 }
 
@@ -839,7 +864,7 @@ function renderNeoPanel(feed, error, fetchedAt) {
   panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend(), {
     ...neoScene.allOrbitsStatus(),
     // Ticked or not, the box can do nothing from the Sun below 100 % réel.
-    scaleLocked: focusId === 'sun' && !neoEllipsesVisible(focusId, scaleStep / SCALE_STEPS),
+    scaleLocked: focusId === 'sun' && !neoEllipsesVisible(focusId, stepToT(scaleStep)),
   })
 }
 
@@ -853,7 +878,7 @@ function renderPlanetsPanel() {
   panels.renderPlanets(
     planets.status(),
     planets.legend(),
-    planets.drawnAt(scaleStep / SCALE_STEPS),
+    planets.drawnAt(stepToT(scaleStep)),
     moons.status(),
     focusId === 'venus' ? { surface: venusSurface } : null,
   )
@@ -864,7 +889,7 @@ function renderScalePanel() {
   panels.renderScale({
     step: scaleStep,
     frame: focus.frame,
-    description: describeScale(scaleStep / SCALE_STEPS, {
+    description: describeScale(stepToT(scaleStep), {
       curve: focus.curve,
       references: focusReferences(),
       neoDistancesKm: neoDistancesKm(),
@@ -896,9 +921,7 @@ function renderNeoModal() {
   const designation = entry ? entry.designation : designationOf(neo)
   const sheet = neoScene.sheet(designation)
   const details = sheet.data
-  const diameter = details?.diameter_km
-    ? `${(details.diameter_km.value * 1000).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} m <span class="muted">(mesuré)</span>`
-    : `${neo.estimated_diameter_km.min.toFixed(3)} – ${neo.estimated_diameter_km.max.toFixed(3)} km <span class="muted">(estimé d'après sa luminosité)</span>`
+  const diameter = diameterHtml(details?.diameter_km, neo.estimated_diameter_km)
 
   panels.openDetail(
     neo.name,
@@ -917,7 +940,7 @@ function renderNeoModal() {
         : '<p class="muted">Pas de données d\'approche disponibles</p>'
     }
     ${entry ? neoScene.describeTrajectory(entry) : ''}
-    ${entry ? neoScene.describeOrbit(entry, scaleStep / SCALE_STEPS) : ''}
+    ${entry ? neoScene.describeOrbit(entry, stepToT(scaleStep)) : ''}
     ${sourcesBlockHtml(neo)}
     ${detailsBlockHtml(details, {
       loading: sheet.loading,
@@ -1039,7 +1062,7 @@ function updateSceneLabels() {
     },
     {
       el: bodyLabels.iss,
-      worldPos: issPosition ? issMarker.getWorldPosition(issLabelPos) : null,
+      worldPos: issMarker.visible ? issMarker.getWorldPosition(issLabelPos) : null,
       radius: issRadius(scaleT),
       occludable: true,
       show: issMarker.visible && scaleT > 0.001,
@@ -1162,6 +1185,14 @@ async function refreshApod() {
   }
 }
 
+// The session opens centred on the Sun at 100 % réel (2026-10-27, user's
+// call). Through setFocus, so the Sun's texture, the rings and every panel
+// follow as on a click; then the camera is backed off to frame the Earth's
+// orbit, the yardstick of that view — setFocus alone would keep the start-up
+// distance, which at this scale is a close-up of the photosphere.
+setFocus('sun')
+camera.position.setLength(Math.min(controls.maxDistance, sceneDistance(focusReferences()[0].km, scaleT, focusOf().curve) * 1.8))
+
 refreshUsage()
 renderScalePanel()
 renderViewPanel()
@@ -1171,6 +1202,7 @@ renderTimePanel(simNowMs(), Date.now())
 // no NASA quota) and cover a year, so there is nothing for that button to
 // refresh. They load themselves once, then come back from localStorage.
 sunTable.load()
+moonTable.load()
 planets.load()
 // Unlike a planet's, this one is not waited for: the Moon is drawn from the
 // first frame in every view, so there is no "centre on it" moment to hang the
@@ -1209,6 +1241,11 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
 })
 
+const SCENE_UP = new THREE.Vector3(0, 1, 0)
+const earthPole = new THREE.Vector3()
+const earthTilt = new THREE.Quaternion()
+const earthSpin = new THREE.Quaternion()
+
 function animate() {
   requestAnimationFrame(animate)
   const wallMs = Date.now()
@@ -1218,7 +1255,13 @@ function animate() {
   // Recomputed fresh from the clock every frame (not accumulated per frame) so
   // it's exactly right regardless of frame rate or a backgrounded tab, with no
   // drift to correct for.
-  globe.rotation.y = (getGreenwichSiderealTime(now) * Math.PI) / 180
+  // Tilted onto the pole of date, then spun by the ERA about it (astronomy.js):
+  // the scene's axes are J2000, and the J2000 pole is 0,15° off the real one in
+  // 2026; GMST, used until 2026-10-21, turned the globe 0,34° too far.
+  const [px, py, pz] = getEarthPoleJ2000(now)
+  earthTilt.setFromUnitVectors(SCENE_UP, icrfToScene(px, py, pz, earthPole))
+  earthSpin.setFromAxisAngle(SCENE_UP, (getEarthRotationAngle(now) * Math.PI) / 180)
+  globe.quaternion.multiplyQuaternions(earthTilt, earthSpin)
   // Same discipline for the clouds: a function of the clock, not a per-frame
   // increment, so a backgrounded tab comes back where it should be.
   // It adds to the globe's rotation rather than replacing it — the layer is a

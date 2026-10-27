@@ -20,7 +20,20 @@ export const KM_TO_UNITS = EARTH_RADIUS / EARTH_RADIUS_KM
 export const AU_KM = 149_597_870.7
 export const LUNAR_DISTANCE_KM = 384_400
 
-export const SCALE_STEPS = 8 // slider positions 0..8 → t = k / 8
+export const SCALE_STEPS = 8 // slider positions 0..8 → t = stepToT(k)
+
+/**
+ * Where the slider starts: t = 0,5, the old "Intermédiaire" cran (2026-10-27,
+ * user's call). Everything between the old readable end and it distorted the
+ * picture too much to be worth offering — so that half of the range is gone
+ * from the slider, and the eight crans now split the remaining half. The
+ * curves themselves still run from t = 0: only what the slider can reach
+ * changed, so every formula and every invariant below holds unchanged.
+ */
+export const SCALE_MIN_T = 0.5
+
+/** The t a slider position stands for: SCALE_MIN_T at cran 0, 1 at cran SCALE_STEPS. */
+export const stepToT = (step) => SCALE_MIN_T + ((1 - SCALE_MIN_T) * step) / SCALE_STEPS
 
 /**
  * Whether `t` is the "100 % réel" end of the slider. `t` is animated, so it
@@ -31,12 +44,12 @@ export const isRealScale = (t) => t >= 1 - 1e-6
 
 export const SCALE_PRESETS = [
   { label: 'Lisible', step: 0 },
-  { label: 'Intermédiaire', step: 4 },
-  { label: '100 % réel', step: 8 },
+  { label: 'Intermédiaire', step: SCALE_STEPS / 2 },
+  { label: '100 % réel', step: SCALE_STEPS },
 ]
 
 export const MOON_RADIUS_KM = 1737.4
-export const SUN_RADIUS_KM = 696_340
+export const SUN_RADIUS_KM = 695_700 // IAU 2015 nominal; 696 340 until 2026-10-21
 export const ISS_RADIUS_KM = 0.0545 // ~109 m truss span
 
 const ISS_ALTITUDE_EXAGGERATION = 8
@@ -288,6 +301,17 @@ function formatFactor(x) {
 }
 
 /**
+ * What the size part of the label says once sizes are real. Not a bare
+ * "tailles 1:1" any more (2026-10-21): at t = 1 every radius *in the scene* is
+ * real, but anything that would be drawn under a few pixels is drawn at a pixel
+ * floor instead (NEO_FLOOR_PX here, MIN_RADIUS_PX in main.js and its siblings in
+ * planets.js and moons.js) — the planets seen from the Earth ×19 to ×530, the
+ * NEOs ×10⁴, the ISS always. A label claiming 1:1 for what is on screen is the
+ * first thing a professional reads, and it was false.
+ */
+export const REAL_SIZES_LABEL = 'tailles 1:1 (sauf taille mini à l’écran)'
+
+/**
  * Human label for the current t: how far each thing is from real proportions.
  * `references` are the pivot's yardsticks ({ label, km } — the Moon when the
  * scene is centred on the Earth, the Earth when it is centred on the Sun);
@@ -312,7 +336,7 @@ export function describeScale(t, { curve, references, neoDistancesKm, neoDiamete
     diameterKm !== null
       ? neoRadius(diameterKm, t) / ((diameterKm / 2) * KM_TO_UNITS)
       : issRadius(t) / (ISS_RADIUS_KM * KM_TO_UNITS)
-  parts.push(sizeFactor < 1.05 ? 'tailles 1:1' : `tailles ×${formatFactor(sizeFactor)}`)
+  parts.push(sizeFactor < 1.05 ? REAL_SIZES_LABEL : `tailles ×${formatFactor(sizeFactor)}`)
 
   return parts.join(' · ')
 }

@@ -19,10 +19,31 @@
  * and the result is the wall time exactly, not "close to it".
  */
 
-/** The three speeds offered. No reverse: the ephemeris tables start at the 1st of the month. */
+/** Named speeds, in simulated seconds per real second. */
 export const CLOCK_RATES = Object.freeze({ REAL: 1, HOUR_PER_SECOND: 3600, DAY_PER_SECOND: 86_400 })
 
+/**
+ * The speed slider's stops (2026-10-27), from fast backwards to fast forwards,
+ * pause in the middle. Notched rather than continuous: these are rates a person
+ * can name ("un jour par seconde"), and a continuous log slider lands on 3 712 s/s.
+ * Reverse goes as far as the ephemeris tables do — the 1st of the current month
+ * (`defaultMinMs`) — and stops there like the forward end does.
+ */
+export const RATE_STOPS = Object.freeze([
+  -604_800, -86_400, -21_600, -3600, -60, 0, 1, 60, 3600, 21_600, 86_400, 604_800,
+])
+
 const DAY_MS = 86_400_000
+
+/**
+ * Where reversed time stops when no table says otherwise: the 1st of the
+ * current UTC month, which is where the planet and Sun tables start
+ * (`SolarSystemClient::windowStart`).
+ */
+export function defaultMinMs(wallMs) {
+  const now = new Date(wallMs)
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+}
 
 /**
  * Where simulated time stops when no table says otherwise: a year from the 1st
@@ -30,8 +51,7 @@ const DAY_MS = 86_400_000
  * fetched on (`SolarSystemClient::windowStart` + 365 days).
  */
 export function defaultMaxMs(wallMs) {
-  const now = new Date(wallMs)
-  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) + 365 * DAY_MS
+  return defaultMinMs(wallMs) + 365 * DAY_MS
 }
 
 /**
@@ -73,7 +93,11 @@ export function createClock({ wallMs, minMs = -Infinity, maxMs = Infinity }) {
       rate = nextRate
     },
 
-    /** "Maintenant": back to the wall time, at ×1. */
+    /**
+     * "Maintenant": a hard reset — back to the wall time, at ×1, as if the
+     * clock had just been created. Nothing of the previous run survives: the
+     * next speed change starts from the wall time.
+     */
     reset(wall) {
       anchorSim = wall
       anchorWall = wall
@@ -91,9 +115,12 @@ export function createClock({ wallMs, minMs = -Infinity, maxMs = Infinity }) {
     /** True while the sim time is the wall time — the ISS (a live position) is only valid then. */
     isRealTime,
 
-    /** True when the time has run into the upper bound and stays there. */
+    /** True when the time has run into the bound it is heading for, and stays there. */
     atLimit(wall) {
-      return !isRealTime() && rate > 0 && unclamped(wall) >= max
+      if (isRealTime()) return false
+      if (rate > 0) return unclamped(wall) >= max
+      if (rate < 0) return unclamped(wall) <= min
+      return false
     },
 
     get rate() {

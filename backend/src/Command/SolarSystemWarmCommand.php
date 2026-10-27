@@ -2,6 +2,7 @@
 
 namespace App\Command;
 
+use App\Service\HorizonsClient;
 use App\Service\MoonClient;
 use App\Service\SolarSystemClient;
 use Psr\Cache\CacheItemPoolInterface;
@@ -80,7 +81,7 @@ final class SolarSystemWarmCommand extends Command
         $planetStart = SolarSystemClient::windowStart($now);
 
         foreach (SolarSystemClient::ids() as $id) {
-            $item = $this->pool->getItem('solar_system_'.$id.'_'.$planetStart->format('Y-m-d'));
+            $item = $this->pool->getItem('solar_system_'.$id.'_'.$planetStart->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE);
             if ($item->isHit()) {
                 ++$skipped;
                 continue;
@@ -102,7 +103,7 @@ final class SolarSystemWarmCommand extends Command
         }
 
         foreach (SolarSystemClient::planetIds() as $id) {
-            $item = $this->pool->getItem('solar_system_orbit_'.$id.'_'.$planetStart->format('Y-m-d'));
+            $item = $this->pool->getItem('solar_system_orbit_'.$id.'_'.$planetStart->format('Y-m-d').'_'.HorizonsClient::TIME_SCALE);
             if ($item->isHit()) {
                 ++$skipped;
                 continue;
@@ -133,7 +134,7 @@ final class SolarSystemWarmCommand extends Command
         foreach ($planets as $planet) {
             foreach (MoonClient::forPlanet($planet) as $id) {
                 $start = MoonClient::windowStart($id, $now);
-                $item = $this->pool->getItem('moon_'.$id.'_'.$start->getTimestamp());
+                $item = $this->pool->getItem('moon_'.$id.'_'.$start->getTimestamp().'_'.MoonClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE);
                 if ($item->isHit()) {
                     ++$skipped;
                     continue;

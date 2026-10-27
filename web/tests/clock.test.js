@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CLOCK_RATES, createClock, defaultMaxMs } from '../src/clock.js'
+import { CLOCK_RATES, RATE_STOPS, createClock, defaultMaxMs, defaultMinMs } from '../src/clock.js'
 
 // Ce qui est épinglé ici : les invariants que l'œil ne voit pas au moment où ils
 // cassent. Un changement de vitesse qui fait sauter le temps, c'est une planète
@@ -98,6 +98,63 @@ describe('createClock', () => {
     clock.setBounds(T0, T0 + 200 * 86_400_000, T0 + 3000)
     expect(clock.nowMs(T0 + 3000)).toBe(before)
     expect(clock.nowMs(T0 + 4000)).toBe(before + 86_400_000)
+  })
+})
+
+describe('marche arrière et pause (2026-10-27)', () => {
+  it('une vitesse négative fait reculer le temps, sans saut au changement', () => {
+    const clock = createClock({ wallMs: T0 })
+    clock.setRate(-DAY_PER_SECOND, T0)
+    expect(clock.nowMs(T0 + 2000)).toBe(T0 - 2 * 86_400_000)
+    clock.setRate(DAY_PER_SECOND, T0 + 2000)
+    expect(clock.nowMs(T0 + 2000)).toBe(T0 - 2 * 86_400_000)
+  })
+
+  it('s\'arrête à la butée basse en marche arrière, et le dit', () => {
+    const minMs = T0 - 3 * 86_400_000
+    const clock = createClock({ wallMs: T0, minMs })
+    clock.setRate(-DAY_PER_SECOND, T0)
+    expect(clock.atLimit(T0 + 2000)).toBe(false)
+    for (const wall of [T0 + 3000, T0 + 10_000]) {
+      expect(clock.nowMs(wall)).toBe(minMs)
+      expect(clock.atLimit(wall)).toBe(true)
+    }
+  })
+
+  it('la pause fige le temps, sans se dire en butée', () => {
+    const clock = createClock({ wallMs: T0 })
+    clock.setRate(DAY_PER_SECOND, T0)
+    clock.setRate(0, T0 + 1000)
+    expect(clock.nowMs(T0 + 60_000)).toBe(T0 + 86_400_000)
+    expect(clock.atLimit(T0 + 60_000)).toBe(false)
+    expect(clock.isRealTime()).toBe(false)
+  })
+
+  // Le « Maintenant » est un reset dur : la course précédente ne doit rien
+  // laisser derrière elle. Réaccélérer repart de l'heure murale, pas de la date
+  // où l'on s'était arrêté.
+  it('après Maintenant, réaccélérer repart de maintenant', () => {
+    const clock = createClock({ wallMs: T0 })
+    clock.setRate(DAY_PER_SECOND, T0)
+    clock.reset(T0 + 10_000) // la course était arrivée à +10 jours
+    clock.setRate(DAY_PER_SECOND, T0 + 11_000)
+    expect(clock.nowMs(T0 + 12_000)).toBe(T0 + 11_000 + 86_400_000)
+  })
+
+  it('les crans du slider : symétriques autour de la pause, ×1 et les deux vitesses historiques inclus', () => {
+    const pause = RATE_STOPS.indexOf(0)
+    expect(pause).toBeGreaterThan(0)
+    expect(RATE_STOPS[pause + 1]).toBe(CLOCK_RATES.REAL)
+    expect(RATE_STOPS).toContain(HOUR_PER_SECOND)
+    expect(RATE_STOPS).toContain(DAY_PER_SECOND)
+    for (let i = 1; i < RATE_STOPS.length; i++) expect(RATE_STOPS[i]).toBeGreaterThan(RATE_STOPS[i - 1])
+    for (const rate of RATE_STOPS) if (rate > 1) expect(RATE_STOPS).toContain(-rate)
+  })
+})
+
+describe('defaultMinMs', () => {
+  it('= le 1er du mois UTC, là où commencent les tables', () => {
+    expect(defaultMinMs(Date.UTC(2026, 9, 31, 23, 59))).toBe(Date.UTC(2026, 9, 1))
   })
 })
 

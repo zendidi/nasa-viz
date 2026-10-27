@@ -28,8 +28,8 @@ import { AU_KM } from '../scale.js'
  * the body's frame, so the prime meridian is its local +X and the pole its
  * local +Y. That is the frame `setBodyOrientation` builds, and it is what this
  * function has returned since lot 1 — the ISS is placed with it, and the
- * globe's `rotation.y = GMST` says the same thing a third time, since the
- * result is RA = GMST + east longitude.
+ * globe's `rotation.y = ERA` says the same thing a third time, since the
+ * result is RA = ERA + east longitude (in the J2000 axes; GMST until 2026-10-21).
  */
 export function latLngToVector3(lat, lng, radius) {
   const phi = (90 - lat) * (Math.PI / 180)

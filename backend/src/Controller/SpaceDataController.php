@@ -115,7 +115,7 @@ final class SpaceDataController
         $items = [];
         $missing = [];
         foreach ($designations as $designation) {
-            $item = $pool->getItem('horizons_'.md5($designation.'|'.$start->format('Y-m-d').'|'.$stop->format('Y-m-d')));
+            $item = $pool->getItem('horizons_'.md5($designation.'|'.$start->format('Y-m-d').'|'.$stop->format('Y-m-d')).'_'.HorizonsClient::TIME_SCALE);
             if ($item->isHit()) {
                 $objects[$designation] = $item->get();
             } else {
@@ -142,6 +142,7 @@ final class SpaceDataController
 
         return new JsonResponse([
             'frame' => 'ICRF geocentric',
+            'time_scale' => HorizonsClient::TIME_SCALE,
             'units' => 'km',
             'step_seconds' => HorizonsClient::STEP_SECONDS,
             'objects' => $objects,
@@ -175,7 +176,7 @@ final class SpaceDataController
         }
 
         $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
-        $item = $pool->getItem('solar_system_'.$id.'_'.$start->format('Y-m-d'));
+        $item = $pool->getItem('solar_system_'.$id.'_'.$start->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE);
 
         if ($item->isHit()) {
             $positions = $item->get();
@@ -193,9 +194,10 @@ final class SpaceDataController
 
         return new JsonResponse([
             'frame' => 'ICRF geocentric',
+            'time_scale' => HorizonsClient::TIME_SCALE,
             'units' => 'km',
             'start' => $start->getTimestamp(),
-            'step_seconds' => SolarSystemClient::STEP_SECONDS,
+            'step_seconds' => SolarSystemClient::stepSeconds($id),
             'bodies' => [SolarSystemClient::describe($id) + ['positions' => $positions]],
         ]);
     }
@@ -237,7 +239,7 @@ final class SpaceDataController
 
         foreach (MoonClient::forPlanet($planet) as $id) {
             $start = MoonClient::windowStart($id, $now);
-            $item = $pool->getItem('moon_'.$id.'_'.$start->getTimestamp());
+            $item = $pool->getItem('moon_'.$id.'_'.$start->getTimestamp().'_'.MoonClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE);
 
             if ($item->isHit()) {
                 $table = $item->get();
@@ -285,6 +287,7 @@ final class SpaceDataController
 
         return new JsonResponse([
             'frame' => 'ICRF, centred on the planet',
+            'time_scale' => HorizonsClient::TIME_SCALE,
             'units' => 'km',
             'planet' => $planet,
             // Non-zero means "call me again": either a moon is still unfetched,
@@ -384,7 +387,7 @@ final class SpaceDataController
         }
 
         $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
-        $item = $pool->getItem('solar_system_orbit_'.$id.'_'.$start->format('Y-m-d'));
+        $item = $pool->getItem('solar_system_orbit_'.$id.'_'.$start->format('Y-m-d').'_'.HorizonsClient::TIME_SCALE);
 
         if ($item->isHit()) {
             $orbit = $item->get();
@@ -406,6 +409,7 @@ final class SpaceDataController
             // server cache in between drew every planet ringed by its own
             // retrograde loops. Change the centre, change this, in one go.
             'frame' => 'ICRF heliocentric',
+            'time_scale' => HorizonsClient::TIME_SCALE,
             'units' => 'km',
             'body' => SolarSystemClient::describe($id) + ['period_days' => SolarSystemClient::periodDays($id)],
             'start' => $orbit['start'] ?? $start->getTimestamp(),

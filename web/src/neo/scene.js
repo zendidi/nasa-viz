@@ -16,7 +16,7 @@
  */
 
 import * as THREE from 'three'
-import { fetchNeoDetails, fetchNeoPositions } from '../api.js'
+import { TIME_SCALE, fetchNeoDetails, fetchNeoPositions } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { NEO_DEFAULT_COLOR, NEO_HAZARD_COLOR, TAXONOMY, taxonomyKey } from '../neoInfo.js'
 import {
@@ -27,6 +27,7 @@ import {
   orbitNodes,
   orbitPosition,
   julianDate,
+  edgeBlendWeight,
 } from '../orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
 import { sampleCatmullRom } from '../interpolate.js'
@@ -99,7 +100,7 @@ export function designationOf(neo) {
  * @typedef {{
  *   neo: object, designation: string, diameterKm: number,
  *   fallbackDir: THREE.Vector3, group: THREE.Group, mesh: THREE.Mesh, hit: THREE.Mesh,
- *   positionKm: THREE.Vector3, source: 'horizons'|'horizons-clamped'|'approx'|null,
+ *   positionKm: THREE.Vector3, source: 'horizons'|'kepler'|'horizons-clamped'|'approx'|null,
  * }} NeoEntry
  */
 
@@ -112,9 +113,12 @@ export function designationOf(neo) {
  * @param {(out: THREE.Vector3, relativeKm: any, t: number) => void} options.placeRelativeKm
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
  * @param {() => string} options.focusId  which body the scene is centred on
+ * @param {(date: Date, out: THREE.Vector3) => THREE.Vector3} options.sunPositionKmAt
+ *   the Sun's geocentric position, km, scene axes — turns a heliocentric
+ *   Kepler position into the geocentric one every NEO is placed from
  * @param {{detailsProgress: Function, detailsApplied: Function, positionsChanged: (settled: boolean) => void}} options.on
  */
-export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm, minRadiusAt, focusId, on }) {
+export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm, minRadiusAt, focusId, sunPositionKmAt, on }) {
   const group = new THREE.Group()
   scene.add(group)
 
@@ -196,13 +200,27 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
    * at 5 km/s — linear 101 km, cubic 0,6; 60 000 km at 15 km/s (a tight bend,
    * 0,9 rad per step) — linear 5 973, cubic 888. Past ~1 rad per step no
    * interpolation of hourly samples recovers the path; that is the table's
-   * limit, not this function's. Clamped to the table's ends if "now" is outside
-   * the feed's date range (old cached feed): `sampleCatmullRom` clamps `f`
-   * itself, `source` records that it did. Without a table: arbitrary but stable
-   * direction at the close-approach distance — flagged 'approx' and said so in
-   * the modal.
+   * limit, not this function's.
+   *
+   * Outside the table's week (the clock run either way, or an old cached feed),
+   * the object follows its SBDB elements instead — two-body Kepler, 'kepler'
+   * (2026-10-27). The gap between the two at the table's edge is added back and
+   * faded out over a week (`edgeBlendWeight`), so crossing the edge never makes
+   * the point jump. Without elements yet (sheet not landed, or no ellipse), the
+   * position stays clamped to the table's end, as before: 'horizons-clamped'.
+   * Without a table: arbitrary but stable direction at the close-approach
+   * distance — flagged 'approx' and said so in the modal.
    */
   const interpIcrf = [0, 0, 0]
+  const keplerSunKm = new THREE.Vector3()
+  const keplerGapKm = new THREE.Vector3()
+
+  /** Geocentric position from the elements alone: heliocentric Kepler, plus the Sun's geocentric position. */
+  function keplerGeocentricKm(orbit, seconds, out) {
+    const date = new Date(seconds * 1000)
+    eclipticAuToSceneKm(orbitPosition(orbit, julianDate(date)), out)
+    return out.add(sunPositionKmAt(date, keplerSunKm))
+  }
 
   function updatePositionKm(entry, nowSeconds) {
     const table = positions.objects[entry.designation]
@@ -212,7 +230,21 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
       sampleCatmullRom(rows, f, interpIcrf)
       icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], entry.positionKm)
       const clamped = THREE.MathUtils.clamp(f, 0, rows.length - 1)
-      entry.source = clamped === f ? 'horizons' : 'horizons-clamped'
+      if (clamped === f) {
+        entry.source = 'horizons'
+        return
+      }
+      const orbit = ellipseElements(entry.designation)
+      if (!orbit) {
+        entry.source = 'horizons-clamped'
+        return
+      }
+      // entry.positionKm is the table's edge here: the gap is Horizons − Kepler there.
+      const edgeSeconds = table.start + clamped * positions.stepSeconds
+      keplerGeocentricKm(orbit, edgeSeconds, keplerGapKm).negate().add(entry.positionKm)
+      keplerGeocentricKm(orbit, nowSeconds, entry.positionKm)
+      entry.positionKm.addScaledVector(keplerGapKm, edgeBlendWeight((nowSeconds - edgeSeconds) / 86_400))
+      entry.source = 'kepler'
       return
     }
     if (entry.neo.close_approach) {
@@ -236,6 +268,8 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
         return simulated
           ? `<p><strong>Distance au ${format(nowSeconds)}</strong> ${km} km <span class="muted">(temps simulé, position réelle JPL Horizons)</span></p>`
           : `<p><strong>Distance actuelle</strong> ${km} km <span class="muted">(position réelle, JPL Horizons)</span></p>`
+      case 'kepler':
+        return `<p><strong>Distance au ${format(nowSeconds)}</strong> ${km} km <span class="muted">(hors de la semaine JPL Horizons : calculée depuis l'orbite, sans perturbations des planètes)</span></p>`
       case 'horizons-clamped': {
         const table = positions.objects[entry.designation]
         const f = (nowSeconds - table.start) / positions.stepSeconds
@@ -718,7 +752,11 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     const endDate = new Date(Date.parse(startDate) + 6 * 86_400_000).toISOString().slice(0, 10)
     const range = `${startDate}_${endDate}`
     const cached = loadCached('neo-positions')
-    positions = cached && cached.data.range === range ? cached.data : { range, stepSeconds: 3600, objects: {} }
+    // Same range *and* same clock: a table stored before 2026-10-21 is TDB, 69 s late.
+    positions =
+      cached && cached.data.range === range && cached.data.timeScale === TIME_SCALE
+        ? cached.data
+        : { range, timeScale: TIME_SCALE, stepSeconds: 3600, objects: {} }
 
     const missing = [...new Set(entries.map((e) => e.designation))].filter((d) => !(d in positions.objects))
     // The backend rejects anything outside this pattern for the whole batch.

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 
-import { createSunTable } from '../src/sunTable.js'
+import { createMoonTable, createSunTable } from '../src/sunTable.js'
 
 // Ce qui est épinglé ici : les conventions que l'œil ne voit pas. Une table
 // ICRF [x, y, z] devient des axes de scène (x, z, -y) -- un signe ou un axe
@@ -15,6 +15,7 @@ const DAYS = 60
 /** Table de 60 jours démarrant 10 jours avant NOW ; valeurs distinctes sur chaque axe. */
 function makeRecord(overrides = {}) {
   return {
+    timeScale: 'UTC',
     start: NOW / 1000 - 10 * STEP,
     stepSeconds: STEP,
     positions: Array.from({ length: DAYS }, (_, i) => [1.0e8 + 1.0e5 * i, 2.0e7 + 3.0e4 * i, 5.0e6 - 1.0e4 * i]),
@@ -122,12 +123,22 @@ describe('createSunTable — sans table utilisable', () => {
     stubStorage(seed(makeRecord({ positions: [] })))
     expect(make().known).toBe(false)
   })
+
+  // Avant le 2026-10-21 le backend servait du TDB, lu comme de l'UTC : 69 s de
+  // retard, ~2 000 km. Une table stockée alors n'a pas de timeScale -- elle doit
+  // être refusée, sinon elle survit jusqu'à un an dans localStorage.
+  it('cache sans timeScale UTC (table TDB d’avant le correctif) : ignoré', () => {
+    stubStorage(seed(makeRecord({ timeScale: undefined })))
+    expect(make().known).toBe(false)
+    stubStorage(seed(makeRecord({ timeScale: 'TDB' })))
+    expect(make().known).toBe(false)
+  })
 })
 
 describe('createSunTable — load', () => {
   const served = (record) => ({
     ok: true,
-    json: async () => ({ start: record.start, step_seconds: STEP, bodies: [{ positions: record.positions }] }),
+    json: async () => ({ time_scale: record.timeScale, start: record.start, step_seconds: STEP, bodies: [{ positions: record.positions }] }),
   })
 
   it('récupère la table, la met en cache et prévient on.changed', async () => {
@@ -160,5 +171,31 @@ describe('createSunTable — load', () => {
     await sun.load()
     expect(sun.known).toBe(false)
     expect(map.has('nasa-viz:sun')).toBe(false)
+  })
+})
+
+describe('createMoonTable', () => {
+  it('sa propre clé de cache, et un repli sur la série lunaire (~384 000 km), pas solaire', () => {
+    stubStorage(seed(makeRecord())) // une table *Soleil* en cache ne doit pas servir la Lune
+    const moon = createMoonTable({ on: { changed: vi.fn() } })
+    expect(moon.known).toBe(false)
+    const len = moon.positionKmAt(new Date(NOW), new THREE.Vector3()).length()
+    expect(len).toBeGreaterThan(356_000)
+    expect(len).toBeLessThan(407_000)
+  })
+
+  it('demande ?body=moon et range sous nasa-viz:moon', async () => {
+    const map = stubStorage()
+    const urls = []
+    const record = makeRecord()
+    vi.stubGlobal('fetch', async (url) => {
+      urls.push(url)
+      return { ok: true, json: async () => ({ time_scale: 'UTC', start: record.start, step_seconds: STEP, bodies: [{ positions: record.positions }] }) }
+    })
+    const moon = createMoonTable({ on: { changed: vi.fn() } })
+    await moon.load()
+    expect(moon.known).toBe(true)
+    expect(urls[0]).toContain('body=moon')
+    expect(map.has('nasa-viz:moon')).toBe(true)
   })
 })

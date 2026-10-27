@@ -37,7 +37,7 @@ Copier le dossier du projet sur la machine, puis :
    dans le presse-papiers et ouvre le navigateur. Un seul processus PHP sert la page *et* l'API.
 
 Arguments : `Lancer-NASA-Viz.bat 8010 --no-open`, ou `--dev` pour lancer aussi le serveur Vite
-(demande Node). Détails et limites : `DEPLOYMENT.md`.
+(demande Node).
 
 ### Backend (proxy)
 ```bash
@@ -73,6 +73,3 @@ web/        → Vitrine web Three.js (ISS + astéroïdes)
 unity-vr/   → Projet Unity VR (Quest, OpenXR)
 ```
 
-## Mise en prod
-Voir `DEPLOYMENT.md` (checklist et guide, pas encore exécuté — le projet est encore en
-développement).

@@ -18,7 +18,7 @@
  */
 
 import * as THREE from 'three'
-import { fetchMoons } from '../api.js'
+import { TIME_SCALE, fetchMoons } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { loadColorMap, makeLitBodyMaterial } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift, setBodyOrientation } from './geo.js'
@@ -124,6 +124,7 @@ const ORBIT_SMOOTHING = 8
 /** A stored table is usable while "now" sits inside the window it covers. */
 function covers(record) {
   if (!record?.positions?.length) return false
+  if (record.timeScale !== TIME_SCALE) return false // a TDB table from before 2026-10-21: 69 s late
   // Wall clock on purpose: cache validity, not scene time.
   const nowMs = Date.now()
   const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
@@ -320,6 +321,7 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
       for (const moon of res.moons ?? []) {
         const record = {
           planet: planetId,
+          timeScale: res.time_scale,
           start: moon.start,
           stepSeconds: moon.step_seconds,
           radiusKm: moon.radius_km,

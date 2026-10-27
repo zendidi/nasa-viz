@@ -134,7 +134,7 @@ final class SolarSystemClientTest extends TestCase
         // (at most 31 days past a monthly anchor) always falls inside it.
         self::assertSame($start->getTimestamp(), $orbit['start']);
         self::assertEqualsWithDelta(686.980 * 86400, $orbit['stop'] - $orbit['start'], 60.0);
-        self::assertStringContainsString('STOP_TIME=%272028-07-18%2023%3A31%27', $urls[0]);
+        self::assertStringContainsString('STOP_TIME=%272028-07-18%2023%3A31%3A00%27', $urls[0]);
 
         // The `stop` reported is the one actually sent: Horizons reads minutes,
         // and the client dates each sample from this value to subtract the
@@ -155,23 +155,54 @@ final class SolarSystemClientTest extends TestCase
         self::assertNull($client->getOrbit('neptune', new \DateTimeImmutable('2026-09-01', new \DateTimeZone('UTC'))));
     }
 
+    public function testTheMoonIsAskedAtASixHourStepAndTheRestStaysDaily(): void
+    {
+        // A daily Moon table cost 320 km at worst under Catmull-Rom (3′ seen from
+        // the Earth, measured 2026-10-21); the Moon alone gets 6 h. Mixed in one
+        // call, each body must still get its own step, in the caller's order.
+        [$client, $urls] = $this->clientRecording(
+            static fn (string $url) => new MockResponse(json_encode(['result' => self::MARS_RESULT])),
+        );
+        $start = new \DateTimeImmutable('2026-09-01', new \DateTimeZone('UTC'));
+
+        $tables = $client->getPositions(['moon', 'mars'], $start);
+
+        self::assertSame(['moon', 'mars'], array_keys($tables));
+        self::assertSame(21600, SolarSystemClient::stepSeconds('moon'));
+        self::assertSame(SolarSystemClient::STEP_SECONDS, SolarSystemClient::stepSeconds('mars'));
+        self::assertSame(21600, SolarSystemClient::stepSeconds('mercury'));
+        $moonUrl = array_values(array_filter($urls->getArrayCopy(), static fn (string $u) => str_contains($u, 'COMMAND=%27301%27')))[0];
+        $marsUrl = array_values(array_filter($urls->getArrayCopy(), static fn (string $u) => str_contains($u, 'COMMAND=%27499%27')))[0];
+        self::assertStringContainsString('STEP_SIZE=%27360m%27', $moonUrl);
+        self::assertStringContainsString('STEP_SIZE=%271d%27', $marsUrl);
+    }
+
     public function testEveryKnownIdDescribesItself(): void
     {
-        // The Sun rides along in BODIES because its table has exactly a planet's
-        // shape, but it is not a planet and `planetIds()` must keep it out — it
-        // has no moons and no orbit to draw.
+        // The Sun and the Moon ride along in BODIES because their tables have
+        // exactly a planet's shape, but neither is a planet and `planetIds()` must
+        // keep them out — no moons and no orbit route.
         self::assertSame(
-            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto', 'sun'],
+            ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto', 'sun', 'moon'],
             SolarSystemClient::ids(),
         );
         self::assertSame(
             ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'],
             SolarSystemClient::planetIds(),
         );
-        self::assertSame(['id' => 'sun', 'name' => 'Sun', 'radius_km' => 696340.0], SolarSystemClient::describe('sun'));
+        self::assertSame(['id' => 'sun', 'name' => 'Sun', 'radius_km' => 695700.0, 'equatorial_radius_km' => 695700.0, 'polar_radius_km' => 695700.0], SolarSystemClient::describe('sun'));
+        self::assertSame('301', SolarSystemClient::horizonsId('moon'));
         // The Earth is the frame's origin — a table of zeroes, deliberately absent.
         self::assertFalse(SolarSystemClient::isKnown('earth'));
-        self::assertSame(['id' => 'jupiter', 'name' => 'Jupiter', 'radius_km' => 69911.0], SolarSystemClient::describe('jupiter'));
+        self::assertSame(['id' => 'jupiter', 'name' => 'Jupiter', 'radius_km' => 69911.0, 'equatorial_radius_km' => 71492.0, 'polar_radius_km' => 66854.0], SolarSystemClient::describe('jupiter'));
+        // Every shape brackets its own mean radius: a polar radius above the
+        // equatorial one, or a mean outside the pair, is a typo in the table.
+        foreach (SolarSystemClient::ids() as $id) {
+            $d = SolarSystemClient::describe($id);
+            self::assertGreaterThanOrEqual($d['polar_radius_km'], $d['equatorial_radius_km'], $id);
+            self::assertGreaterThanOrEqual($d['polar_radius_km'], $d['radius_km'], $id);
+            self::assertLessThanOrEqual($d['equatorial_radius_km'], $d['radius_km'], $id);
+        }
     }
 
     /**
@@ -197,7 +228,7 @@ final class SolarSystemClientTest extends TestCase
         // 90 560 d is 247,9 years, a window Horizons serves in one request.
         self::assertEqualsWithDelta(90560 * 86400, $orbit['stop'] - $orbit['start'], 60.0);
         self::assertSame(
-            ['id' => 'pluto', 'name' => 'Pluto', 'radius_km' => 1188.3],
+            ['id' => 'pluto', 'name' => 'Pluto', 'radius_km' => 1188.3, 'equatorial_radius_km' => 1188.3, 'polar_radius_km' => 1188.3],
             SolarSystemClient::describe('pluto'),
         );
         self::assertSame('999', SolarSystemClient::horizonsId('pluto'));

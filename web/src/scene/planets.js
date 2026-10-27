@@ -14,13 +14,13 @@
  */
 
 import * as THREE from 'three'
-import { fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
+import { TIME_SCALE, fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift } from './geo.js'
 import { polylinePointAt, sampleCatmullRom, subdivideClosedLoop } from '../interpolate.js'
 import { orientBody } from './orientation.js'
-import { pivotRadius, planetRadius } from '../scale.js'
+import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../scale.js'
 
 /**
  * French label and colour per body, in the order the backend lists them
@@ -73,7 +73,9 @@ const PLANETS = {
      *
      * So the band runs 1,150 to 2,340 Saturn equatorial radii: it starts inside
      * the D ring, too faint to have been drawn at all (alpha is flat zero over
-     * the first 110 columns), and stops short of the F ring.
+     * the first 110 columns), and ends 1 229 km **past** the F ring (139 826 km,
+     * NSSDCA) — the F ring itself is not in the band, but the band does not stop
+     * short of it (an older note here said it did; corrected 2026-10-21).
      *
      * In km on purpose. The mesh is scaled by the body's **mean** radius, which
      * is not the equatorial one a ring table counts in, so dividing by
@@ -131,6 +133,26 @@ const TEXTURED_TINT = 0xffffff
 const planetGeometry = new THREE.SphereGeometry(1, 48, 48)
 
 /**
+ * A planet's flattening, as the factors its unit sphere is stretched by: the
+ * equator to `equatorial / mean`, the pole (local +Y, see scene/geo.js) to
+ * `polar / mean`. [1, 1] — the shared sphere — for a body the backend gives no
+ * shape for. Saturn comes out 1,035 × 0,934, an ellipse of 0,90 against the
+ * round ball it was until 2026-10-21; Jupiter 0,935.
+ *
+ * Baked into the geometry, not into `mesh.scale`: the ring is the mesh's child
+ * and must not be squashed with it, and the scale already carries the pixel
+ * floor. The mean radius stays the unit, so ring radii in km / mean still land
+ * at the right absolute distance.
+ *
+ * @param {{radiusKm: number, equatorialKm?: number, polarKm?: number} | undefined} record
+ * @returns {[number, number]}
+ */
+export function shapeOf(record) {
+  if (!record?.radiusKm || !record.equatorialKm || !record.polarKm) return [1, 1]
+  return [record.equatorialKm / record.radiusKm, record.polarKm / record.radiusKm]
+}
+
+/**
  * Screen floor for a planet, in pixels of radius. Everything out here is
  * sub-pixel at true scale — Neptune's real radius is 7,7 units seen from 1,41
  * million of them — so the floor is not a nicety: it is the only reason a
@@ -166,10 +188,12 @@ const PLANET_MIN_RADIUS_PX = 3.5
  * exactly this range, and a planet around the Sun reads correctly there.
  *
  * Faded rather than switched, so the move animates instead of popping.
- * 0,875 is slider step 7 of `SCALE_STEPS` = 8 — step 7 therefore already shows
- * nothing, and the whole fade happens inside the step 7 -> 8 transition.
+ * It starts at the slider's last-but-one cran, so that cran still shows
+ * nothing and the whole fade happens inside the transition to 100 % réel.
+ * Derived rather than written out: it was 0,875 (cran 7 of t = k/8) until the
+ * slider was cut to t ∈ [0,5 ; 1] on 2026-10-27, where cran 7 is 0,9375.
  */
-const GEOCENTRIC_FADE_FROM = 0.875
+const GEOCENTRIC_FADE_FROM = stepToT(SCALE_STEPS - 1)
 
 /**
  * How much of a planet (or of its orbit line) is drawn: 0 not at all, 1 fully.
@@ -218,6 +242,7 @@ const ORBIT_OPACITY = 0.35
 /** Whether a stored table still brackets "now" with room to spare. */
 function covers(record) {
   if (!record?.positions?.length) return false
+  if (record.timeScale !== TIME_SCALE) return false // a TDB table from before 2026-10-21: 69 s late
   // Wall clock on purpose (here and in orbitCovers): cache validity is a fact
   // about the real world, whatever date the simulated clock is showing.
   const nowMs = Date.now()
@@ -237,6 +262,7 @@ function orbitCovers(record) {
   // wrong or missing frame costs one refetch and self-heals, where renaming the
   // cache key would have orphaned the old data for good.
   if (record.frame !== ORBIT_FRAME) return false
+  if (record.timeScale !== TIME_SCALE) return false
   const nowMs = Date.now()
   return nowMs >= record.start * 1000 && nowMs <= record.stop * 1000
 }
@@ -328,6 +354,14 @@ export function createPlanets({
   let loadingOrbits = false
 
   /** @type {PlanetBody[]} */
+  /** Gives a body its own ellipsoid once its record says how flat it is (see `shapeOf`). */
+  function applyShape(body, record) {
+    const [equator, pole] = shapeOf(record)
+    body.shape = [equator, pole]
+    if (body.mesh.geometry !== planetGeometry) body.mesh.geometry.dispose()
+    body.mesh.geometry = equator === 1 && pole === 1 ? planetGeometry : planetGeometry.clone().scale(equator, pole, equator)
+  }
+
   const bodies = PLANET_IDS.map((id) => {
     const mesh = new THREE.Mesh(planetGeometry, makeLitBodyMaterial(PLANETS[id].color, null, { ringShadow: !!PLANETS[id].ring }))
     // Nothing to place until a table arrives — and there is no fallback
@@ -356,8 +390,14 @@ export function createPlanets({
       fade: 1,
       // Saturn's, once it has been centred on; null everywhere else.
       ring: null,
+      // [equator, pole] stretch of the unit sphere, see `shapeOf`.
+      shape: [1, 1],
     }
   })
+
+  for (const body of bodies) {
+    if (tables[body.id]) applyShape(body, tables[body.id])
+  }
 
   for (const body of bodies) {
     if (orbitTables[body.id]) traces.setKm(body.orbit, orbitSamplesKm(orbitTables[body.id]), () => true)
@@ -454,6 +494,8 @@ export function createPlanets({
     const ring = makeRing({
       innerRadius: spec.innerKm / body.radiusKm,
       outerRadius: spec.outerKm / body.radiusKm,
+      // So the planet's shadow on the ring is the ellipsoid's, not a ball's.
+      shape: body.shape,
     })
     body.ring = ring
     body.mesh.add(ring)
@@ -647,11 +689,15 @@ export function createPlanets({
       const served = res.bodies[0]
       body.radiusKm = served.radius_km
       const record = {
+        timeScale: res.time_scale,
         start: res.start,
         stepSeconds: res.step_seconds,
         radiusKm: served.radius_km,
+        equatorialKm: served.equatorial_radius_km,
+        polarKm: served.polar_radius_km,
         positions: served.positions ?? [],
       }
+      applyShape(body, record)
       // Held to the same test as a table read back from localStorage: one that
       // doesn't bracket "now" would be interpolated past its own end, which
       // would place the planet somewhere it never was.
@@ -689,7 +735,7 @@ export function createPlanets({
       }
       if (!res.positions) continue
       // The server's own word for the frame, not ours — see ORBIT_FRAME.
-      const record = { frame: res.frame, start: res.start, stop: res.stop, positions: res.positions }
+      const record = { frame: res.frame, timeScale: res.time_scale, start: res.start, stop: res.stop, positions: res.positions }
       if (!orbitCovers(record)) continue
       orbitTables[body.id] = record
       saveCached('solar-system-orbits', orbitTables)

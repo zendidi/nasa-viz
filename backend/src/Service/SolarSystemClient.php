@@ -41,6 +41,19 @@ final class SolarSystemClient
      */
     public const STEP_SECONDS = 86400;
     private const STEP_SIZE = '1d';
+
+    /**
+     * The exceptions to the daily rule, on a 6-hour step: the bodies whose
+     * geocentric motion is fast enough for a daily Catmull-Rom to show (measured
+     * 2026-10-21, worst of 50 instants over the year). The Moon turns 13° a day:
+     * 320 km at worst (3′, a fifth of its apparent radius) → 1,9 km. Mercury,
+     * near inferior conjunction, sweeps ~4° a day at 0,55 au: 818 km → the only
+     * planet above 100 km. Venus next at 140 km. Six hours costs nothing that
+     * matters — one Horizons request either way, priced per request not per
+     * point — and the table grows from 366 to 1 461 rows (~40 ko).
+     */
+    private const FINE_STEP_SECONDS = 21600;
+    private const FINE_STEP_BODIES = ['moon', 'mercury', 'venus'];
     private const WINDOW_DAYS = 365;
 
     /**
@@ -70,6 +83,11 @@ final class SolarSystemClient
      * across the sky, where a daily step costs R·θ²/8 ≈ 50 000 km. Sharpening
      * the orbit cannot touch that; only a finer step for its *positions* would,
      * which is a different lever and a different request (see the backlog).
+     *
+     * That lever was pulled on 2026-10-21 — Mercury's positions are on a 6-hour
+     * step (FINE_STEP_BODIES), and its placement has been cubic since
+     * 2026-10-15 — so the 55 722 km above is stale for Mercury and wants
+     * remeasuring; the other rows are chord error proper and still stand.
      *
      * A first measurement at a single instant said Mercury *worsened* from
      * 19 066 to 24 469 km. That was noise — the chord miss is zero at a sample
@@ -106,7 +124,15 @@ final class SolarSystemClient
         // scene's axes are J2000: 951 057 km (0,363°) apart in 2026, the
         // precession accumulated since J2000, and growing. That error sat under
         // the terminator, the Moon, the NEOs and the whole heliocentric view.
-        'sun' => ['10', 'Sun', 696340.0, 365.256],
+        'sun' => ['10', 'Sun', 695700.0, 365.256], // IAU 2015 nominal (Resolution B3); 696 340 until 2026-10-21
+        // The Moon, for the very same reason as the Sun and on the same terms
+        // (2026-10-21): the web client drew it from a low-precision series in the
+        // equinox of date, 0,38° (2 500 km) from DE441 on median and 0,67° at
+        // worst over a year — three quarters of it precession, as for the Sun.
+        // Geocentric like the rest, but on a 6-hour step (FINE_STEP_SECONDS). Not
+        // a planet either, so `planetIds()` leaves it out; its period is the
+        // sidereal month.
+        'moon' => ['301', 'Moon', 1737.4, 27.321661],
     ];
 
     /**
@@ -121,11 +147,31 @@ final class SolarSystemClient
      */
     private const ORBIT_COMMAND = ['pluto' => '9'];
 
+    /**
+     * Equatorial and polar radii, km (IAU WGCCRE 2015, Archinal et al. 2018), for
+     * the bodies whose flattening shows: Saturn's is 0,098, Jupiter's 0,065 — a
+     * Saturn drawn as a ball of its mean radius is the first thing an astronomer
+     * notices in a close-up (2026-10-21). Absent = drawn as a sphere of the mean
+     * radius (Venus, Pluto, the Sun: flattening nil or unmeasured).
+     */
+    private const SHAPES = [
+        'mercury' => [2440.53, 2438.26],
+        'mars' => [3396.19, 3376.20],
+        'jupiter' => [71492.0, 66854.0],
+        'saturn' => [60268.0, 54364.0],
+        'uranus' => [25559.0, 24973.0],
+        'neptune' => [24764.0, 24341.0],
+        'moon' => [1738.1, 1736.0],
+    ];
+
+    /** Served a position like a planet, but no moons and no orbit route. */
+    private const NOT_PLANETS = ['sun', 'moon'];
+
     public function __construct(private readonly HorizonsClient $horizons)
     {
     }
 
-    /** @return list<string> every body this service serves a position for, the Sun included */
+    /** @return list<string> every body this service serves a position for, the Sun and the Moon included */
     public static function ids(): array
     {
         return array_keys(self::BODIES);
@@ -134,12 +180,12 @@ final class SolarSystemClient
     /**
      * @return list<string> the planets only, outward from the Sun
      *
-     * Wherever the answer would be nonsense for the Sun: which bodies have moons,
+     * Wherever the answer would be nonsense for the Sun or the Moon: which bodies have moons,
      * and which have an orbit to draw.
      */
     public static function planetIds(): array
     {
-        return array_values(array_filter(array_keys(self::BODIES), static fn (string $id) => 'sun' !== $id));
+        return array_values(array_filter(array_keys(self::BODIES), static fn (string $id) => !in_array($id, self::NOT_PLANETS, true)));
     }
 
     public static function isKnown(string $id): bool
@@ -147,12 +193,22 @@ final class SolarSystemClient
         return isset(self::BODIES[$id]);
     }
 
-    /** @return array{id: string, name: string, radius_km: float} the constants a client needs to draw it */
+    /**
+     * @return array{id: string, name: string, radius_km: float, equatorial_radius_km: float, polar_radius_km: float}
+     *   the constants a client needs to draw it; equatorial = polar = mean for a body drawn as a sphere
+     */
     public static function describe(string $id): array
     {
         [, $name, $radiusKm] = self::BODIES[$id];
+        [$equatorialKm, $polarKm] = self::SHAPES[$id] ?? [$radiusKm, $radiusKm];
 
-        return ['id' => $id, 'name' => $name, 'radius_km' => $radiusKm];
+        return ['id' => $id, 'name' => $name, 'radius_km' => $radiusKm, 'equatorial_radius_km' => $equatorialKm, 'polar_radius_km' => $polarKm];
+    }
+
+    /** Seconds between two samples of `$id`'s position table — a day, except FINE_STEP_BODIES. */
+    public static function stepSeconds(string $id): int
+    {
+        return in_array($id, self::FINE_STEP_BODIES, true) ? self::FINE_STEP_SECONDS : self::STEP_SECONDS;
     }
 
     public static function periodDays(string $id): float
@@ -190,19 +246,27 @@ final class SolarSystemClient
      */
     public function getPositions(array $ids, \DateTimeImmutable $start): array
     {
-        $commands = [];
+        // One Horizons batch per step: a day for everything but the Moon.
+        $byStep = [];
         foreach ($ids as $id) {
-            $commands[$id] = self::BODIES[$id][0];
+            $byStep[self::stepSeconds($id)][$id] = self::BODIES[$id][0];
         }
 
-        $tables = $this->horizons->getMajorBodyVectors(
-            $commands,
-            $start,
-            $start->modify(sprintf('+%d days', self::WINDOW_DAYS)),
-            self::STEP_SIZE,
-        );
+        $result = [];
+        foreach ($byStep as $stepSeconds => $commands) {
+            $tables = $this->horizons->getMajorBodyVectors(
+                $commands,
+                $start,
+                $start->modify(sprintf('+%d days', self::WINDOW_DAYS)),
+                self::STEP_SECONDS === $stepSeconds ? self::STEP_SIZE : sprintf('%dm', intdiv($stepSeconds, 60)),
+            );
+            foreach ($tables as $id => $table) {
+                $result[$id] = $table['positions'] ?? null;
+            }
+        }
 
-        return array_map(static fn (?array $table) => $table['positions'] ?? null, $tables);
+        // Back in the caller's order, whatever the grouping did.
+        return array_replace(array_fill_keys($ids, null), $result);
     }
 
     /**
@@ -234,10 +298,10 @@ final class SolarSystemClient
      */
     public function getOrbit(string $id, \DateTimeImmutable $start): ?array
     {
-        // Truncated to the minute *here*, not on the way out: Horizons only
-        // reads minutes, so sending one value and reporting another would
-        // shift every sample's date by up to a minute against the Sun the
-        // client subtracts from it. One value, used and returned.
+        // Truncated to the minute *here*, not on the way out: one value, used
+        // and returned. HorizonsClient now sends seconds too (2026-10-21), so
+        // this is no longer forced — kept because the minute is all a drawn
+        // orbit needs, and the value sent and the value reported stay one.
         $stop = $start->modify(sprintf('+%d seconds', (int) round(self::periodDays($id) * 86400)));
         $stop = $stop->setTime((int) $stop->format('G'), (int) $stop->format('i'));
 

@@ -12,6 +12,7 @@
 import { sourcesPanelHtml } from '../neoInfo.js'
 import { FOCUSES, FOCUS_IDS } from '../focus.js'
 import { SCALE_PRESETS, SCALE_STEPS } from '../scale.js'
+import { RATE_STOPS } from '../clock.js'
 
 /**
  * Wording of the "point de vue" panel. The two frames of reference get a line
@@ -32,11 +33,34 @@ const VIEW_DESCRIPTIONS = {
 const viewDescription = (id) =>
   VIEW_DESCRIPTIONS[id] ??
   `Scène centrée sur ${FOCUSES[id].label} · autres planètes et orbites planétaires à l’échelle réelle`
-/** Speeds of the simulated clock, in simulated seconds per real second (clock.js). */
-const TIME_RATES = [
-  { rate: 1, label: '×1' },
-  { rate: 3600, label: '1 h/s' },
-  { rate: 86_400, label: '1 j/s' },
+/** How a speed of the simulated clock reads, in simulated time per real second (clock.js). */
+const RATE_UNITS = [
+  { seconds: 604_800, label: 'sem' },
+  { seconds: 86_400, label: 'j' },
+  { seconds: 3600, label: 'h' },
+  { seconds: 60, label: 'min' },
+]
+function rateLabel(rate) {
+  if (rate === 0) return 'pause'
+  if (rate === 1) return 'temps réel (×1)'
+  const unit = RATE_UNITS.find((u) => Math.abs(rate) >= u.seconds) ?? { seconds: 1, label: 's' }
+  const amount = Math.abs(rate) / unit.seconds
+  return `${rate < 0 ? '−' : ''}${amount.toLocaleString('fr-FR')} ${unit.label}/s${rate < 0 ? ' (arrière)' : ''}`
+}
+/** The slider position of a rate: its stop, or the nearest one for a rate set from elsewhere. */
+function rateIndex(rate) {
+  let best = 0
+  for (let i = 1; i < RATE_STOPS.length; i++) {
+    if (Math.abs(RATE_STOPS[i] - rate) < Math.abs(RATE_STOPS[best] - rate)) best = i
+  }
+  return best
+}
+
+/** The left column's three tabs, one section each (2026-10-27). */
+const INFO_TABS = [
+  { id: 'iss', label: 'ISS' },
+  { id: 'neo', label: 'Astéroïdes' },
+  { id: 'planets', label: 'Planètes' },
 ]
 
 // One formatter for the whole session: this is called every frame while the
@@ -119,9 +143,12 @@ export function createPanels({ app, wheelTarget, on }) {
       <span id="usage-badge" class="muted" title="Requêtes envoyées à api.nasa.gov (NeoWs + APOD) depuis minuit UTC — les autres sources (JPL, ESA, IMCCE, ISS) sont sans quota">…</span>
       <button id="ui-style-btn" class="header-toggle" title="Panneau encadré, ou texte brut posé sur la scène">Panneau</button>
       <button id="apod-btn" class="header-toggle" aria-pressed="true" title="Afficher ou masquer l'image du jour, pour dégager la vue">APOD</button>
-      <button id="time-btn" class="header-toggle" aria-pressed="false" title="Afficher le panneau du temps simulé — le masquer remet l'heure réelle">Temps</button>
+      <button id="scale-btn" class="header-toggle" aria-pressed="true" title="Afficher ou masquer le panneau échelle et temps — le masquer remet l'heure réelle">Échelle et temps</button>
     </div>
     <div id="info-panel">
+      <div id="info-tabs" role="tablist">
+        ${INFO_TABS.map((tab) => `<button class="info-tab" role="tab" data-tab="${tab.id}">${tab.label}</button>`).join('')}
+      </div>
       <section id="iss-panel">
         ${ISS_HEADING}
         <p class="muted">chargement…</p>
@@ -165,8 +192,31 @@ export function createPanels({ app, wheelTarget, on }) {
     </div>
     <p id="scale-label"></p>
     <p class="muted scale-hint">Shift + molette : un cran d'échelle</p>
+    <div class="time-section">
+      <div class="scale-row">
+        <label for="time-slider">Temps</label>
+        <span class="scale-end">◀ passé</span>
+        <input id="time-slider" type="range" min="0" max="${RATE_STOPS.length - 1}" step="1"
+               value="${RATE_STOPS.indexOf(1)}" list="time-ticks">
+        <span class="scale-end">futur ▶</span>
+        <datalist id="time-ticks">
+          ${RATE_STOPS.map((_, i) => `<option value="${i}"></option>`).join('')}
+        </datalist>
+      </div>
+      <div class="scale-row">
+        <span id="time-rate-label"></span>
+        <button id="time-now-btn">Maintenant</button>
+      </div>
+      <p id="time-label"></p>
+      <p id="time-limit" class="hidden"></p>
+    </div>
   `
   bottomBar.appendChild(scalePanel)
+  const timeSlider = scalePanel.querySelector('#time-slider')
+  const timeRateLabel = scalePanel.querySelector('#time-rate-label')
+  const timeLabel = scalePanel.querySelector('#time-label')
+  const timeLimit = scalePanel.querySelector('#time-limit')
+  const timeNowBtn = scalePanel.querySelector('#time-now-btn')
 
   const viewPanel = document.createElement('div')
   viewPanel.id = 'view-panel'
@@ -187,25 +237,6 @@ export function createPanels({ app, wheelTarget, on }) {
   `
   bottomBar.appendChild(viewPanel)
 
-  // The simulated clock: three speeds (no reverse) and the way back to real time.
-  const timePanel = document.createElement('div')
-  timePanel.id = 'time-panel'
-  timePanel.classList.add('hidden') // off by default; the header's "Temps" toggle shows it
-  timePanel.innerHTML = `
-    <div class="scale-row">
-      <label>Temps</label>
-      ${TIME_RATES.map((r) => `<button class="time-rate" data-rate="${r.rate}">${r.label}</button>`).join('')}
-    </div>
-    <div class="scale-row">
-      <button id="time-now-btn">Maintenant</button>
-    </div>
-    <p id="time-label"></p>
-    <p id="time-limit" class="hidden"></p>
-  `
-  bottomBar.appendChild(timePanel)
-  const timeLabel = timePanel.querySelector('#time-label')
-  const timeLimit = timePanel.querySelector('#time-limit')
-  const timeNowBtn = timePanel.querySelector('#time-now-btn')
 
   const sceneLabels = document.createElement('div')
   sceneLabels.id = 'scene-labels'
@@ -287,6 +318,17 @@ export function createPanels({ app, wheelTarget, on }) {
     #info-panel.card .neo-toggle { margin-top: 6px; }
     #info-panel.card #planets-panel .legend { max-width: none; }
 
+    /* One section at a time behind three tabs (2026-10-27): the column used to
+       stack ISS, NEO and planets, and ran tall enough to crowd the scene. */
+    #info-panel { max-width: 360px; }
+    #info-tabs { display: flex; gap: 4px; margin-top: 10px; pointer-events: auto; }
+    .info-tab { flex: 1; background: none; color: #eaf4ff; border: 1px solid #1c4d7a; border-radius: 4px;
+                padding: 3px 8px; font-size: 12px; cursor: pointer; text-shadow: none; opacity: 0.75; }
+    .info-tab:hover { opacity: 1; border-color: #4fa8ff; }
+    .info-tab[aria-selected="true"] { background: #1c4d7a; border-color: #4fa8ff; opacity: 1; }
+    #info-panel section.hidden { display: none; }
+    #info-panel.card section + section { margin-top: 0; border-top: none; }
+
     .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
     #iss-panel h2 .dot { margin-bottom: 2px; }
     .dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
@@ -335,22 +377,25 @@ export function createPanels({ app, wheelTarget, on }) {
     #bottom-bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2;
                   display: flex; align-items: stretch; justify-content: center; flex-wrap: wrap; gap: 12px;
                   max-width: calc(100vw - 40px); }
-    #scale-panel, #view-panel, #time-panel { background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px;
+    #scale-panel, #view-panel { background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px;
                    padding: 10px 16px; color: #eaf4ff; font-family: system-ui, sans-serif; text-align: center; }
-    #view-panel, #time-panel { display: flex; flex-direction: column; justify-content: center; }
-    #time-panel.hidden { display: none; }
-    .time-rate, #time-now-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
+    #view-panel { display: flex; flex-direction: column; justify-content: center; }
+    #scale-panel.hidden { display: none; }
+    /* The clock lives in the scale panel since 2026-10-27, under a rule. */
+    #scale-panel .time-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(79,168,255,.25); }
+    #time-slider { width: 260px; accent-color: #4fa8ff; }
+    #time-rate-label { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 130px; }
+    #time-now-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
                   border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; text-shadow: none; }
-    .time-rate:hover, #time-now-btn:hover { background: #24608f; }
-    .time-rate.active { background: #4fa8ff; color: #0e2233; }
+    #time-now-btn:hover { background: #24608f; }
     #time-now-btn:disabled { opacity: 0.35; cursor: default; }
-    #time-label { margin: 8px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; max-width: 220px; }
+    #time-label { margin: 6px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
     #time-label.muted { opacity: 0.6; }
-    #time-limit { margin: 4px 0 0; font-size: 12px; color: #ffbf66; max-width: 220px; }
+    #time-limit { margin: 4px 0 0; font-size: 12px; color: #ffbf66; }
     #time-limit.hidden { display: none; }
-    #scale-panel .scale-row, #view-panel .scale-row, #time-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
-    #scale-panel .scale-row + .scale-row, #view-panel .scale-row + .scale-row, #time-panel .scale-row + .scale-row { margin-top: 8px; }
-    #scale-panel label, #view-panel label, #time-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
+    #scale-panel .scale-row, #view-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    #scale-panel .scale-row + .scale-row, #view-panel .scale-row + .scale-row { margin-top: 8px; }
+    #scale-panel label, #view-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
     #scale-panel .scale-end { font-size: 11px; opacity: 0.6; }
     #scale-slider { width: 260px; accent-color: #4fa8ff; }
     .scale-preset.active, .focus-btn.active { background: #4fa8ff; color: #0e2233; }
@@ -468,15 +513,44 @@ export function createPanels({ app, wheelTarget, on }) {
     apodBtn.setAttribute('aria-pressed', String(shown))
   })
 
-  // The time panel is hidden at every start (not remembered). Putting it away
-  // also puts the clock back on the real time: a hidden panel must not leave a
-  // simulated date running with no control in sight.
-  const timeBtn = ui.querySelector('#time-btn')
-  timeBtn.addEventListener('click', () => {
-    const shown = timePanel.classList.toggle('hidden') === false
-    timeBtn.setAttribute('aria-pressed', String(shown))
+  // The scale-and-time panel is shown at every start (not remembered). Putting
+  // it away also puts the clock back on the real time: a hidden panel must not
+  // leave a simulated date running with no control in sight.
+  const scaleBtn = ui.querySelector('#scale-btn')
+  scaleBtn.addEventListener('click', () => {
+    const shown = scalePanel.classList.toggle('hidden') === false
+    scaleBtn.setAttribute('aria-pressed', String(shown))
     if (!shown) on.timeReset()
   })
+
+  // Left column tabs: which one is open is a per-viewer preference, remembered
+  // like the card style, and read under try/catch for the same reason.
+  const tabSections = {
+    iss: ui.querySelector('#iss-panel'),
+    neo: ui.querySelector('#neo-panel'),
+    planets: ui.querySelector('#planets-panel'),
+  }
+  function setInfoTab(id) {
+    for (const [tabId, section] of Object.entries(tabSections)) section.classList.toggle('hidden', tabId !== id)
+    for (const button of ui.querySelectorAll('.info-tab')) {
+      button.setAttribute('aria-selected', String(button.dataset.tab === id))
+    }
+    try {
+      localStorage.setItem('ui-tab', id)
+    } catch {
+      // not remembered, still applied
+    }
+  }
+  let savedTab = null
+  try {
+    savedTab = localStorage.getItem('ui-tab')
+  } catch {
+    // default below
+  }
+  setInfoTab(tabSections[savedTab] ? savedTab : 'neo')
+  for (const button of ui.querySelectorAll('.info-tab')) {
+    button.addEventListener('click', () => setInfoTab(button.dataset.tab))
+  }
 
   const issPanel = ui.querySelector('#iss-panel')
   const neoPanel = ui.querySelector('#neo-panel')
@@ -717,14 +791,16 @@ export function createPanels({ app, wheelTarget, on }) {
     const key = `${rate}|${realTime}|${stamp}|${atLimit}`
     if (key === lastTimeKey) return
     lastTimeKey = key
-    for (const button of timePanel.querySelectorAll('.time-rate')) {
-      button.classList.toggle('active', Number(button.dataset.rate) === rate)
-    }
+    timeSlider.value = String(rateIndex(rate))
+    timeRateLabel.textContent = rateLabel(rate)
     timeNowBtn.disabled = realTime
     timeLabel.textContent = realTime ? 'temps réel' : `Simulé : ${stamp}`
     timeLabel.classList.toggle('muted', realTime)
     timeLimit.classList.toggle('hidden', !atLimit)
-    if (atLimit) timeLimit.textContent = `Butée : fin des tables JPL (${formatSimDate(limitMs)}) — le temps s'arrête ici`
+    if (atLimit) {
+      const end = rate < 0 ? 'début' : 'fin'
+      timeLimit.textContent = `Butée : ${end} des tables JPL (${formatSimDate(limitMs)}) — le temps s'arrête ici`
+    }
   }
 
   // --- modal -------------------------------------------------------------
@@ -834,9 +910,7 @@ export function createPanels({ app, wheelTarget, on }) {
   for (const button of viewPanel.querySelectorAll('.focus-btn')) {
     button.addEventListener('click', () => on.focus(button.dataset.focus))
   }
-  for (const button of timePanel.querySelectorAll('.time-rate')) {
-    button.addEventListener('click', () => on.timeRate(Number(button.dataset.rate)))
-  }
+  timeSlider.addEventListener('input', (event) => on.timeRate(RATE_STOPS[Number(event.target.value)]))
   timeNowBtn.addEventListener('click', () => on.timeReset())
   viewPanel.querySelector('#recenter-btn').addEventListener('click', () => on.recenter())
   // Static markup, never re-rendered: a direct listener is enough here.

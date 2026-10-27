@@ -1,5 +1,7 @@
 /**
- * Where the Sun is, from JPL Horizons rather than from a series.
+ * Where the Sun — and since 2026-10-21 the Moon — is, from JPL Horizons rather
+ * than from a series. Written for the Sun; the Moon reuses it whole
+ * (`createMoonTable`).
  *
  * `astronomy.js` still computes a Sun, and it is still what this falls back to
  * before the table lands — but it works in the **equinox of date** where the
@@ -18,10 +20,10 @@
  */
 
 import * as THREE from 'three'
-import { fetchSolarSystemBody } from './api.js'
+import { TIME_SCALE, fetchSolarSystemBody } from './api.js'
 import { loadCached, saveCached } from './cache.js'
 import { sampleCatmullRom, subdivideTable } from './interpolate.js'
-import { getSunEquatorial } from './astronomy.js'
+import { getMoonEquatorial, getSunEquatorial } from './astronomy.js'
 import { icrfToScene, latLngToVector3 } from './scene/geo.js'
 
 /** Refetched once "now" comes within this of the table's end — same rule as the planets'. */
@@ -32,6 +34,7 @@ const TABLE_MARGIN_MS = 30 * 86_400_000
 
 function covers(record, marginMs = 0) {
   if (!record?.positions?.length) return false
+  if (record.timeScale !== TIME_SCALE) return false
   // Wall clock on purpose: this decides whether a *cached* table is still worth
   // keeping, a fact about the real world — not about the simulated date.
   const nowMs = Date.now()
@@ -40,11 +43,37 @@ function covers(record, marginMs = 0) {
 }
 
 /**
+ * The Sun's table. See `createBodyTable` for the machinery shared with the Moon.
+ *
  * @param {{changed: Function}} on  fired when the table lands, so the caller can
  *   redraw anything it derived from the fallback Sun
  */
 export function createSunTable({ on }) {
-  const stored = loadCached('sun')?.data ?? null
+  return createBodyTable({ body: 'sun', fallback: getSunEquatorial, on })
+}
+
+/**
+ * The Moon's table, on exactly the Sun's terms (2026-10-21). Its series stood
+ * in alone until then: 0,38° (2 500 km) from DE441 on median and 0,67° at worst
+ * over a year — three quarters of it the precession since J2000, the very error
+ * the Sun's table was brought in to remove. Daily Catmull-Rom costs 94 km at
+ * worst (measured), against 4 150 for the series.
+ *
+ * @param {{changed: Function}} on  fired when the table lands
+ */
+export function createMoonTable({ on }) {
+  return createBodyTable({ body: 'moon', fallback: getMoonEquatorial, on })
+}
+
+/**
+ * A geocentric daily Horizons table for one body (`?body=` on the planets'
+ * route), with its low-precision series standing in until it lands.
+ *
+ * @param {{body: string, fallback: (date: Date) => {ra: number, dec: number, distanceKm: number},
+ *   on: {changed: Function}}} options
+ */
+function createBodyTable({ body, fallback, on }) {
+  const stored = loadCached(body)?.data ?? null
   /** @type {{start: number, stepSeconds: number, positions: number[][]} | null} */
   let table = covers(stored, TABLE_MARGIN_MS) ? stored : null
   let loading = false
@@ -73,7 +102,7 @@ export function createSunTable({ on }) {
         return icrfToScene(interpKm[0], interpKm[1], interpKm[2], out)
       }
     }
-    const { ra, dec, distanceKm } = getSunEquatorial(date)
+    const { ra, dec, distanceKm } = fallback(date)
     return out.copy(latLngToVector3(dec, ra, distanceKm))
   }
 
@@ -106,12 +135,12 @@ export function createSunTable({ on }) {
     if (table || loading) return
     loading = true
     try {
-      const res = await fetchSolarSystemBody('sun')
+      const res = await fetchSolarSystemBody(body)
       const served = res.bodies[0]
-      const record = { start: res.start, stepSeconds: res.step_seconds, positions: served.positions ?? [] }
+      const record = { timeScale: res.time_scale, start: res.start, stepSeconds: res.step_seconds, positions: served.positions ?? [] }
       if (covers(record, TABLE_MARGIN_MS)) {
         table = record
-        saveCached('sun', record)
+        saveCached(body, record)
         on.changed()
       }
     } catch {
@@ -124,6 +153,10 @@ export function createSunTable({ on }) {
     positionKmAt,
     earthOrbitSamplesKm,
     load,
+    /** Start of the loaded window in ms (the first sample), null without a table — the simulated clock's lower bound. */
+    get startMs() {
+      return table ? table.start * 1000 : null
+    },
     /** End of the loaded window in ms (the last sample), null without a table — the simulated clock's upper bound. */
     get endMs() {
       return table ? (table.start + (table.positions.length - 1) * table.stepSeconds) * 1000 : null

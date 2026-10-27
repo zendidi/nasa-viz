@@ -105,6 +105,21 @@ export function sampleOrbitBetween(orbit, jdFrom, jdTo, count = 120) {
   return Array.from({ length: count + 1 }, (_, i) => orbitPosition(orbit, jdFrom + ((jdTo - jdFrom) * i) / count))
 }
 
+/**
+ * Past the ends of a NEO's Horizons table, the scene falls back on these
+ * elements (2026-10-27, so the clock can run a NEO months either way). The two
+ * disagree at the seam — two-body motion ignores the planets, Horizons does
+ * not — so the gap measured at the table's edge is carried over and faded out
+ * with this weight: 1 at the edge (no jump), e^-1 after EDGE_BLEND_DAYS, then
+ * pure Kepler. Not kept forever: a fixed offset measured near the Earth means
+ * nothing once the object is half an orbit away.
+ */
+export const EDGE_BLEND_DAYS = 7
+
+export function edgeBlendWeight(daysFromEdge) {
+  return Math.exp(-Math.abs(daysFromEdge) / EDGE_BLEND_DAYS)
+}
+
 /** Closest and furthest points from the Sun (E = 0 and E = π). */
 export function orbitApsides(orbit) {
   return {

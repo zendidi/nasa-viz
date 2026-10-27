@@ -13,7 +13,9 @@ import {
   LUNAR_DISTANCE_KM,
   PLANET_READABLE_EXPONENT,
   SCALE_PRESETS,
+  SCALE_MIN_T,
   SCALE_STEPS,
+  stepToT,
   SUN_CURVE,
   SUN_READABLE_RADIUS,
   SUN_RADIUS_KM,
@@ -479,10 +481,26 @@ describe('SCALE_STEPS et SCALE_PRESETS', () => {
     expect(last.label).toBe('100 % réel')
   })
 
-  it('le premier preset est le cran 0 (t = 0, "Lisible")', () => {
+  it('le premier preset est le cran 0, "Lisible"', () => {
     const first = SCALE_PRESETS[0]
     expect(first.step).toBe(0)
     expect(first.label).toBe('Lisible')
+  })
+
+  // 2026-10-27 : tout ce qui était entre l'ancien « Lisible » (t = 0) et
+  // l'ancien « Intermédiaire » (t = 0,5) déformait trop la représentation. Le
+  // slider part donc de t = 0,5 — l'ancien intermédiaire devient le lisible —
+  // et garde ses 9 positions jusqu'au 100 % réel.
+  it('le cran 0 est l\'ancien « Intermédiaire » (t = 0,5), le dernier est t = 1', () => {
+    expect(SCALE_MIN_T).toBe(0.5)
+    expect(stepToT(0)).toBe(0.5)
+    expect(stepToT(SCALE_STEPS)).toBe(1)
+  })
+
+  it('les crans sont réguliers et croissants entre les deux', () => {
+    for (let k = 1; k <= SCALE_STEPS; k++) {
+      expect(stepToT(k) - stepToT(k - 1)).toBeCloseTo(0.5 / SCALE_STEPS, 12)
+    }
   })
 })
 
@@ -498,6 +516,9 @@ describe('describeScale', () => {
     expect(label).toContain('Lune 1:1')
     expect(label).toContain('NEO 1:1')
     expect(label).toContain('tailles 1:1')
+    // Les planchers en pixels grossissent tout ce qui serait sous le pixel : le
+    // libellé doit le dire, sinon il ment sur ce qui est à l'écran (2026-10-21).
+    expect(label).toContain('sauf taille mini')
   })
 
   it('affiche un facteur de compression a t = 0, pas 1:1', () => {
