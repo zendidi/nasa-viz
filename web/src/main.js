@@ -6,9 +6,9 @@ import { getEarthPoleJ2000, getEarthRotationAngle } from './astronomy.js'
 import { issAt } from './iss.js'
 import { createClock, defaultMaxMs, defaultMinMs } from './clock.js'
 import { createMoonTable, createSunTable } from './sunTable.js'
-import { orbitSchematicSvg } from './orbit.js'
 import { FOCUSES, hidesPlanets, neoEllipsesVisible } from './focus.js'
 import { createPanels } from './ui/panels.js'
+import { neoSheetHtml, trackButtonHtml, trackedSheetHtml } from './ui/sheets.js'
 import { createStarfield } from './scene/starfield.js'
 import { createPicking } from './picking.js'
 import { createOrbitTraces } from './scene/orbitTrace.js'
@@ -43,15 +43,9 @@ import { loadOrientationFor, orientBody } from './scene/orientation.js'
 import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
-  NEO_CREDITS,
-  trackedCredits,
   TAXONOMY,
   taxonomyKey,
   cssColor,
-  escapeHtml,
-  sourcesBlockHtml,
-  detailsBlockHtml,
-  diameterHtml,
 } from './neoInfo.js'
 import {
   AU_KM,
@@ -979,48 +973,26 @@ function showNeoModal(neo) {
 function renderNeoModal() {
   const neo = modalNeo
   if (!neo) return
-  const approach = neo.close_approach
   const entry = neoScene.entryOf(neo)
   const designation = entry ? entry.designation : designationOf(neo)
-  const sheet = neoScene.sheet(designation)
-  const details = sheet.data
-  const diameter = diameterHtml(details?.diameter_km, neo.estimated_diameter_km)
 
   panels.openDetail(
     neo.name,
-    `
-    <p><strong>Désignation</strong> ${escapeHtml(designation)}</p>
-    ${trackButtonHtml(designation)}
-    <p><strong>Diamètre</strong> ${diameter}</p>
-    <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
-    ${entry ? neoScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : ''}
-    ${
-      approach
-        ? `
-      <p><strong>Approche la plus proche</strong> ${approach.datetime ? new Date(approach.datetime).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : approach.date}</p>
-      <p><strong>Distance</strong> ${Math.round(approach.miss_distance_km).toLocaleString('fr-FR')} km</p>
-      <p><strong>Vitesse relative</strong> ${Math.round(approach.relative_velocity_kmh).toLocaleString('fr-FR')} km/h</p>
-    `
-        : '<p class="muted">Pas de données d\'approche disponibles</p>'
-    }
-    ${entry ? neoScene.describeTrajectory(entry) : ''}
-    ${entry ? neoScene.describeOrbit(entry, stepToT(scaleStep)) : ''}
-    ${sourcesBlockHtml(neo)}
-    ${detailsBlockHtml(details, {
-      loading: sheet.loading,
-      error: sheet.error,
-    })}
-    ${
-      details?.orbit
-        ? orbitSchematicSvg(details.orbit, {
-            now: new Date(simNowMs()),
-            approachAt: approach ? new Date(approach.datetime ?? `${approach.date}T12:00Z`) : null,
-            hazardous: neo.is_potentially_hazardous,
-          })
-        : ''
-    }
-    <p class="muted credits">${NEO_CREDITS}</p>
-  `,
+    neoSheetHtml({
+      neo,
+      designation,
+      sheet: neoScene.sheet(designation),
+      trackButton: trackButtonHtml({
+        designation,
+        tracked: isTrackedDesignation(trackedList, designation),
+        full: trackedList.length >= MAX_TRACKED,
+        neoTrack,
+      }),
+      positionHtml: entry ? neoScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : '',
+      trajectoryHtml: entry ? neoScene.describeTrajectory(entry) : '',
+      orbitHtml: entry ? neoScene.describeOrbit(entry, stepToT(scaleStep)) : '',
+      nowMs: simNowMs(),
+    }),
   )
 }
 
@@ -1064,9 +1036,6 @@ let showNeoWhileTracking = false
 let modalTracked = null
 /** The "Suivre" button of a weekly NEO's sheet: which designation is being resolved, and what it said. */
 let neoTrack = { designation: null, busy: false, message: '' }
-
-const formatUtc = (seconds) =>
-  `${new Date(seconds * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'UTC' })} UTC`
 
 const trackedScene = createTrackedScene({
   scene,
@@ -1224,26 +1193,6 @@ async function trackFromNeo(designation) {
   if (modalNeo) renderNeoModal()
 }
 
-/** The "Suivre" button and why it may be off. A button, not a link: it acts on the list. */
-function trackButtonHtml(designation) {
-  const tracked = isTrackedDesignation(trackedList, designation)
-  const full = trackedList.length >= MAX_TRACKED
-  const mine = neoTrack.designation === designation
-  const busy = mine && neoTrack.busy
-  const note = tracked
-    ? 'déjà suivi'
-    : full
-      ? `${MAX_TRACKED} objets au plus`
-      : busy
-        ? 'résolution (JPL SBDB)…'
-        : mine
-          ? escapeHtml(neoTrack.message)
-          : ''
-  return `<p><button class="sheet-action" data-action="track" data-designation="${escapeHtml(designation)}"${
-    tracked || full || busy ? ' disabled' : ''
-  }>Suivre</button> <span class="${mine && neoTrack.message && !busy ? 'error' : 'muted'}">${note}</span></p>`
-}
-
 /** Sets the clock on the next close approach of a tracked NEO — when it is inside the tables. */
 function goToNextApproach(spkid) {
   const entry = trackedScene.get(spkid)
@@ -1257,56 +1206,22 @@ function goToNextApproach(spkid) {
   afterTimeJump()
 }
 
-/** The close-approach lines of a tracked NEO's sheet. */
-function trackedApproachHtml(entry, nowSeconds) {
-  if (!entry.rec.neo || entry.status !== 'ready') return ''
-  const next = nextApproach(entry.object, nowSeconds)
-  switch (next.kind) {
-    case 'in_window': {
-      const { dist_km: dist, v_rel_km_s: speed } = next.approach
-      return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} · ${Math.round(dist).toLocaleString('fr-FR')} km${
-        typeof speed === 'number' ? ` · ${speed.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} km/s` : ''
-      } <button class="sheet-action" data-action="approach" data-spkid="${entry.rec.spkid}">Y aller</button></p>`
-    }
-    case 'after_window':
-      return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} <span class="muted">(après la plage de l'horloge : on ne peut pas s'y rendre)</span></p>`
-    case 'unavailable':
-      return `<p class="muted">Rapprochements indisponibles : JPL CAD n'a pas répondu pour cet objet.</p>`
-    default:
-      return '<p class="muted">Aucun rapprochement connu à moins de 0,05 ua.</p>'
-  }
-}
-
-/** The same sheet as a weekly NEO's, in the same place — only its lines differ (NEO or not, no NeoWs). */
+/** A tracked object's sheet (ui/sheets.js), in the detail panel a weekly NEO's uses. */
 function renderTrackedModal() {
   const entry = modalTracked ? trackedScene.get(modalTracked) : null
   if (!entry) return
   const { rec } = entry
   const nowSeconds = simNowMs() / 1000
-  const sheet = neoScene.sheet(rec.des)
-  const details = sheet.data
-  const next = rec.neo && entry.status === 'ready' ? nextApproach(entry.object, nowSeconds) : null
 
   panels.openDetail(
     rec.fullname,
-    `
-    <p><strong>Désignation</strong> ${escapeHtml(rec.des)}</p>
-    <p><strong>Type</strong> ${rec.neo ? 'NEO (astéroïde proche de la Terre)' : 'astéroïde, pas un NEO'}</p>
-    ${trackedScene.describePosition(entry, nowSeconds, !clock.isRealTime())}
-    ${trackedApproachHtml(entry, nowSeconds)}
-    <p class="muted">Trace dans la scène : trajectoire géocentrique sur toute la plage de l'horloge, dans la couleur de l'objet.</p>
-    ${detailsBlockHtml(details, { loading: sheet.loading, error: sheet.error }, { neo: rec.neo })}
-    ${
-      details?.orbit
-        ? orbitSchematicSvg(details.orbit, {
-            now: new Date(simNowMs()),
-            approachAt: next?.kind === 'in_window' ? new Date(next.time * 1000) : null,
-            hazardous: false,
-          })
-        : ''
-    }
-    <p class="muted credits">${trackedCredits(rec.neo)}</p>
-  `,
+    trackedSheetHtml({
+      rec,
+      sheet: neoScene.sheet(rec.des),
+      next: rec.neo && entry.status === 'ready' ? nextApproach(entry.object, nowSeconds) : null,
+      positionHtml: trackedScene.describePosition(entry, nowSeconds, !clock.isRealTime()),
+      nowMs: simNowMs(),
+    }),
   )
 }
 
