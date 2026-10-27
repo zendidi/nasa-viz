@@ -19,6 +19,7 @@ import {
   TRACKED_CACHE_KEY,
   addTracked,
   interpretSearch,
+  numberSearchHelp,
   isTrackedDesignation,
   nextApproach,
   readTrackedList,
@@ -420,7 +421,7 @@ function rebuildBodyOrbits(startMs, { earth = true } = {}) {
   if (!earth) return
   traces.setKm(
     earthOrbitTrace,
-    sunTable.earthOrbitSamplesKm() ??
+    sunTable.earthOrbitSamplesKm(startMs) ??
       sampleBodyOrbit(startMs, EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) =>
         sunTable.positionKmAt(date, new THREE.Vector3()).negate(),
       ),
@@ -797,7 +798,8 @@ const panels = createPanels({
       modalNeo = null
       modalTracked = null
     },
-    trackSearch: (q) => searchAndTrack(q),
+    trackSearch: (q, opts) => searchAndTrack(q, opts),
+    trackAdd: (record) => addResult(record),
     trackOpen: (spkid) => showTrackedModal(spkid),
     trackApproach: (spkid) => goToNextApproach(spkid),
     trackRemove: (spkid) => untrack(spkid),
@@ -1148,8 +1150,13 @@ function untrack(spkid) {
   applyNeoPolicy()
 }
 
-/** The panel's search: one answer, added when unambiguous, reported otherwise. */
-async function searchAndTrack(q) {
+/**
+ * The panel's search. A single match is *offered*, not added: SBDB reads "2017"
+ * as the number 2017, which is not what the user may have meant. Only a click on
+ * a candidate (`direct`, its designation is explicit) or on the result's button
+ * (`trackAdd`) adds.
+ */
+async function searchAndTrack(q, { direct = false } = {}) {
   let found
   try {
     found = interpretSearch(await searchSmallBody(q))
@@ -1157,8 +1164,22 @@ async function searchAndTrack(q) {
     return { kind: 'error', message: err.message }
   }
   if (found.kind !== 'match') return found
-  const outcome = trackRecord(found.record)
-  const name = found.record.fullname
+  if (!direct) {
+    const tracked = isTrackedDesignation(trackedList, found.record.des) || trackedList.some((r) => r.spkid === found.record.spkid)
+    return {
+      kind: 'match',
+      record: found.record,
+      help: numberSearchHelp(q),
+      state: tracked ? 'duplicate' : trackedList.length >= MAX_TRACKED ? 'full' : 'ok',
+    }
+  }
+  return addResult(found.record)
+}
+
+/** Adds a resolved record and says what came of it, in the panel's vocabulary. */
+function addResult(record) {
+  const outcome = trackRecord(record)
+  const name = record.fullname
   if (outcome.added) return { kind: 'added', name }
   return { kind: outcome.reason === 'full' ? 'full' : 'duplicate', name }
 }

@@ -370,6 +370,9 @@ export function createPanels({ app, wheelTarget, on }) {
     #track-message:empty { display: none; }
     #track-candidates { list-style: none; margin: 4px 0; padding: 0; max-height: 140px; overflow-y: auto; pointer-events: auto; }
     #track-candidates:empty { display: none; }
+    #track-candidates .track-offer { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+    #track-candidates .track-offer-name { flex: 1; min-width: 0; font-size: 13px; }
+    #track-candidates .track-offer button { display: inline-block; width: auto; }
     #track-candidates button { display: block; width: 100%; text-align: left; background: none; border: none;
                                border-bottom: 1px solid rgba(79,168,255,.15); color: #7fe0ff; font-size: 12px;
                                padding: 3px 2px; cursor: pointer; text-shadow: none; }
@@ -799,6 +802,7 @@ export function createPanels({ app, wheelTarget, on }) {
   // Purely of the overlay: whether a search is running and whether the list is full.
   let trackBusy = false
   let trackFull = false
+  let offered = null // the single search result awaiting a click on "Suivre"
 
   function setTrackMessage(text, kind = 'muted') {
     trackMessage.className = kind
@@ -817,16 +821,17 @@ export function createPanels({ app, wheelTarget, on }) {
    * ambiguous answer becomes a clickable list: a click is a new search on that
    * entry's own designation, which resolves to exactly one match.
    */
-  async function runTrackSearch(query) {
+  async function runTrackSearch(query, opts) {
     const q = query.trim().replace(/\s+/g, ' ')
     if (q === '' || trackBusy || trackFull) return
     trackBusy = true
+    offered = null
     trackCandidates.replaceChildren()
     setTrackMessage('recherche…')
     syncTrackControls()
     let result
     try {
-      result = await on.trackSearch(q)
+      result = await on.trackSearch(q, opts)
     } catch (err) {
       result = { kind: 'error', message: err.message }
     }
@@ -843,6 +848,16 @@ export function createPanels({ app, wheelTarget, on }) {
       case 'full':
         setTrackMessage(`${MAX_TRACKED} objets au plus : retirez-en un d'abord.`, 'error')
         break
+      case 'match': {
+        // Offered, not added: the user confirms with the button.
+        offered = result.record
+        const label = result.state === 'duplicate' ? 'déjà suivi' : result.state === 'full' ? `${MAX_TRACKED} objets au plus` : 'Suivre'
+        setTrackMessage(result.help ?? '1 résultat :')
+        trackCandidates.innerHTML = `<li class="track-offer"><span class="track-offer-name">${escapeHtml(result.record.fullname)}</span>
+          <span class="track-kind">${result.record.neo ? 'NEO' : 'astéroïde'}</span>
+          <button class="track-btn" data-offer="1"${result.state === 'ok' ? '' : ' disabled'}>${label}</button></li>`
+        break
+      }
       case 'candidates': {
         const more = result.count > result.candidates.length
         setTrackMessage(
@@ -947,14 +962,28 @@ export function createPanels({ app, wheelTarget, on }) {
   trackingPanel.addEventListener('click', (event) => {
     const button = event.target.closest('button')
     if (!button) return
-    const { open, approach, remove, retry, candidate } = button.dataset
-    if (open) on.trackOpen(open)
+    const { open, approach, remove, retry, candidate, offer } = button.dataset
+    if (offer) {
+      if (!offered) return
+      const result = on.trackAdd(offered)
+      offered = null
+      trackCandidates.replaceChildren()
+      if (result.kind === 'added') {
+        trackInput.value = ''
+        setTrackMessage('')
+      } else {
+        setTrackMessage(
+          result.kind === 'full' ? `${MAX_TRACKED} objets au plus : retirez-en un d'abord.` : `${result.name} est déjà suivi.`,
+          result.kind === 'full' ? 'error' : 'muted',
+        )
+      }
+    } else if (open) on.trackOpen(open)
     else if (approach) on.trackApproach(approach)
     else if (remove) on.trackRemove(remove)
     else if (retry) on.trackRetry(retry)
     else if (candidate) {
       trackInput.value = candidate
-      runTrackSearch(candidate)
+      runTrackSearch(candidate, { direct: true })
     }
   })
   trackingPanel.addEventListener('change', (event) => {

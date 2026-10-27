@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 
-import { createMoonTable, createSunTable } from '../src/sunTable.js'
+import { createMoonTable, createSunTable, orbitWindowIndices } from '../src/sunTable.js'
 
 // Ce qui est épinglé ici : les conventions que l'œil ne voit pas. Une table
 // ICRF [x, y, z] devient des axes de scène (x, z, -y) -- un signe ou un axe
@@ -206,5 +206,36 @@ describe('createMoonTable', () => {
     expect(moon.known).toBe(true)
     expect(urls[0]).toContain('body=moon')
     expect(map.has('nasa-viz:moon')).toBe(true)
+  })
+})
+
+describe('orbitWindowIndices — une année sidérale centrée, dans la table', () => {
+  const COUNT = 460 // ~15 mois de pas quotidiens
+  const start = Date.UTC(2026, 6, 1) / 1000
+  const win = (centerDays) => orbitWindowIndices(start, STEP, COUNT, start * 1000 + centerDays * 86_400_000)
+
+  it('au plus une année sidérale, contient l’instant, reste dans la table', () => {
+    for (const d of [-50, 0, 100, 230, 300, 459, 600]) {
+      const { from, to } = win(d)
+      expect(to - from).toBeLessThanOrEqual(365.256)
+      expect(to - from).toBe(365)
+      expect(from).toBeGreaterThanOrEqual(0)
+      expect(to).toBeLessThanOrEqual(COUNT - 1)
+      if (d >= 0 && d <= COUNT - 1) {
+        expect(from).toBeLessThanOrEqual(d)
+        expect(to).toBeGreaterThanOrEqual(d)
+      }
+    }
+  })
+
+  it('centrée quand la table le permet, décalée (pas rognée) quand elle déborde', () => {
+    const mid = win(230)
+    expect(Math.abs(mid.from + mid.to - 460)).toBeLessThanOrEqual(1)
+    expect(win(10)).toEqual({ from: 0, to: 365 })
+    expect(win(455)).toEqual({ from: COUNT - 1 - 365, to: COUNT - 1 })
+  })
+
+  it('table plus courte qu’une année : toute la table', () => {
+    expect(orbitWindowIndices(start, STEP, 160, start * 1000)).toEqual({ from: 0, to: 159 })
   })
 })

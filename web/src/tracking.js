@@ -149,6 +149,25 @@ export function interpretSearch(res) {
 }
 
 /**
+ * The help line for a search typed as a bare number that SBDB read as an
+ * object number ("2017" is asteroid n° 2017, not the year). null for anything
+ * that is not digits only. The year hint is only given for a plausible year.
+ *
+ * @param {string} query
+ * @returns {string | null}
+ */
+export function numberSearchHelp(query) {
+  const q = query.trim()
+  if (!/^\d+$/.test(q)) return null
+  const n = Number(q)
+  const head = `« ${q} » = l'astéroïde n° ${n}.`
+  if (q.length === 4 && n >= 1800 && n <= 2100) {
+    return `${head} Pour une désignation de l'année ${q}, tapez-la en entier (« ${q} YE5 ») ou son début (« ${q} YE ») pour une liste.`
+  }
+  return head
+}
+
+/**
  * The table an instant is read from, or null when no table covers it.
  *
  * A fine segment (5 min, NEO close approaches) wins over the base table where

@@ -30,6 +30,24 @@ import { defaultMinMs } from './clock.js'
 /** Refetched once "now" comes within this of the table's end — same rule as the planets'. */
 /** Curve points per daily sample in the Earth's orbit line — same factor as the planets' orbits. */
 const ORBIT_SMOOTHING = 8
+const SIDEREAL_YEAR_DAYS = 365.256
+
+/**
+ * Which samples of a table draw the Earth's orbit: at most one sidereal year,
+ * centred on `centerMs`, shifted to stay inside the table when the centred window
+ * would overflow one side. Inclusive indices; the whole table if it is shorter
+ * than a year.
+ *
+ * @returns {{from: number, to: number}}
+ */
+export function orbitWindowIndices(startSeconds, stepSeconds, count, centerMs) {
+  const last = count - 1
+  const span = Math.floor((SIDEREAL_YEAR_DAYS * 86400) / stepSeconds) // intervals, so <= 1 year
+  if (span >= last) return { from: 0, to: Math.max(0, last) }
+  const f = (centerMs / 1000 - startSeconds) / stepSeconds
+  const from = Math.min(Math.max(Math.round(f - span / 2), 0), last - span)
+  return { from, to: from + span }
+}
 
 const TABLE_MARGIN_MS = 30 * 86_400_000
 
@@ -125,9 +143,12 @@ function createBodyTable({ body, fallback, on }) {
    *
    * @returns {THREE.Vector3[] | null} null while only the fallback series is available
    */
-  function earthOrbitSamplesKm() {
+  function earthOrbitSamplesKm(centerMs = Date.now()) {
     if (!table) return null
-    return subdivideTable(table.positions, ORBIT_SMOOTHING).map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()).negate())
+    // One sidereal year centred on the simulated instant, not the whole ~15-month
+    // window, which would draw ~3 months twice.
+    const { from, to } = orbitWindowIndices(table.start, table.stepSeconds, table.positions.length, centerMs)
+    return subdivideTable(table.positions.slice(from, to + 1), ORBIT_SMOOTHING).map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()).negate())
   }
 
   /**

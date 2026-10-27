@@ -8,6 +8,7 @@ import {
   interpretSearch,
   isTrackedDesignation,
   nextApproach,
+  numberSearchHelp,
   positionAt,
   readTrackedList,
   removeTracked,
@@ -304,5 +305,27 @@ describe('nextApproach', () => {
     const ceres = { neo: false, close_approaches: [], next_close_approach_after_window: null }
     expect(nextApproach(ceres, 0)).toEqual({ kind: 'none' })
     expect(nextApproach(null, 0)).toEqual({ kind: 'none' })
+  })
+})
+
+describe('numberSearchHelp', () => {
+  it('un nombre à 4 chiffres plausible comme année : numéro ET piste pour l\'année', () => {
+    const help = numberSearchHelp('2017')
+    expect(help).toContain('l\'astéroïde n° 2017')
+    expect(help).toContain('2017 YE5')
+  })
+
+  it('un nombre qui n\'est pas une année : seulement le numéro', () => {
+    expect(numberSearchHelp('433')).toBe('« 433 » = l\'astéroïde n° 433.')
+    expect(numberSearchHelp('99942')).not.toContain('année')
+    expect(numberSearchHelp('1799')).not.toContain('année')
+    expect(numberSearchHelp('2101')).not.toContain('année')
+  })
+
+  it('tout ce qui n\'est pas des chiffres seuls : pas d\'aide', () => {
+    expect(numberSearchHelp('2017 YE5')).toBeNull()
+    expect(numberSearchHelp('Ceres')).toBeNull()
+    expect(numberSearchHelp('')).toBeNull()
+    expect(numberSearchHelp(' 433 ')).not.toBeNull()
   })
 })

@@ -467,6 +467,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   const orbitAbove = traces.make(ORBIT_COLOR, 0.8, orbitFrame)
   const orbitBelow = traces.make(ORBIT_COLOR, 0.55, orbitFrame)
   const orbitArc = traces.make(0xffffff, 1, orbitFrame) // recoloured with the NEO
+  const orbitArcBelow = traces.make(0xffffff, 0.7, orbitFrame) // same colour, dashed like orbitBelow
 
   function makeOrbitMarker(color, filled) {
     const mesh = new THREE.Mesh(
@@ -517,10 +518,14 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     if (approachAt && !Number.isNaN(approachAt.getTime())) {
       const jd = julianDate(approachAt)
       const halfWindow = Math.min(ORBIT_ARC_DAYS, (orbit.period_days ?? 4 * ORBIT_ARC_DAYS) / 4)
-      traces.setAu(orbitArc, sampleOrbitBetween(orbit, jd - halfWindow, jd + halfWindow, ORBIT_ARC_SAMPLES), () => true)
+      // Same convention as the ellipse: solid above the ecliptic, dashed below.
+      const arc = sampleOrbitBetween(orbit, jd - halfWindow, jd + halfWindow, ORBIT_ARC_SAMPLES)
+      traces.setAu(orbitArc, arc, (i) => arc[i].z >= 0)
+      traces.setAu(orbitArcBelow, arc, (i) => arc[i].z < 0 && i % ORBIT_DASH_STRIDE === 0)
       orbitApproachKm = eclipticAuToSceneKm(orbitPosition(orbit, jd), new THREE.Vector3())
     } else {
       traces.setAu(orbitArc, [], () => false)
+      traces.setAu(orbitArcBelow, [], () => false)
       orbitApproachKm = null
     }
 
@@ -531,6 +536,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     }
 
     orbitArc.line.material.color.copy(selected.mesh.material.color)
+    orbitArcBelow.line.material.color.copy(selected.mesh.material.color)
     orbitBuiltFrom = orbit
   }
 
@@ -543,7 +549,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     }
     if (orbit !== orbitBuiltFrom) buildHeliocentricOrbit(orbit)
 
-    for (const trace of [orbitAbove, orbitBelow, orbitArc]) traces.update(trace, t)
+    for (const trace of [orbitAbove, orbitBelow, orbitArc, orbitArcBelow]) traces.update(trace, t)
 
     for (const mesh of Object.values(orbitMarkers)) {
       placeRelativeKm(mesh.position, mesh.userData.km, t)
