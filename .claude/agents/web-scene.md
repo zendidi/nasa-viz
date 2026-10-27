@@ -25,31 +25,45 @@ Refus explicite et permanent de l'utilisateur, valable sur tous ses projets :
 
 N'appelle jamais `/api/neo` ni `/api/apod` (`DEMO_KEY`, 30 req/h partagées). Un hook te le
 refusera. Le chemin normal pour des données fraîches est le cache `localStorage`
-(`web/src/cache.js`) plus le bouton « Mettre à jour » de l'interface.
+(`web/src/data/cache.js`) plus le bouton « Mettre à jour » de l'interface.
 
 ## Comment tu vérifies ton travail
 
 ```bash
-cd web && npm run build    # la seule vérification automatique qui couvre toute la scène
+cd web && npm run lint     # no-undef + no-unused-vars : un nom laissé derrière par un déplacement
+cd web && npm test         # Vitest, en Node
+cd web && npm run build    # compile toute la scène ; attrape aussi un import d'un nom non exporté
 ```
 
-Les modules de calcul purs (`scale.js`, `astronomy.js`, `orbit.js`, `focus.js`, `sunTable.js`,
-`scene/geo.js`, `neoInfo.js`) n'ont aucune dépendance au DOM : ils sont testables sous Vitest,
-en Node, sans navigateur. S'il existe des tests, fais-les passer ; si tu touches à une de ces
-fonctions, ajoute le test qui manque.
+Le lint n'est pas décoratif : quand du code change de module, un nom orphelin passe le build et
+Vitest et ne casse qu'à l'exécution (`ReferenceError`). Zéro signifie zéro, pas de
+`eslint-disable`. Il ne voit pas non plus une variable lue avant sa déclaration au chargement
+du module (zone morte temporelle) : si tu déplaces la création d'un objet dans `main.js`,
+vérifie à la main que rien au niveau supérieur ne s'en sert plus haut.
 
-## Le cœur de main.js reste groupé
+Les modules sans dépendance au DOM sont testés sous Vitest, en Node, sans navigateur — la liste
+à jour est dans `CLAUDE.md`. Si tu touches à l'un d'eux, ajoute le test qui manque ; un test
+épingle une convention ou un invariant mesuré, pas l'implémentation.
 
-`web/src/main.js` a été découpé en huit modules le 2026-09-22, et le découpage est **clos** :
-ce qui reste (setup, pivot, échelle, caméra, boucle de rendu) est mutuellement couplé —
-`focusId`, `scaleT`, `camera`, `controls` — et le séparer créerait des imports circulaires pour
-rien. Ne relance pas ce chantier sans instruction explicite. Voir `docs/agent/decisions.md`.
+## Où vit quoi dans `web/src/`
+
+Rangé par domaine depuis le 2026-10-27 (`ARCHITECTURE.md` a le détail) :
+`data/` (api, cache) · `ephemeris/` (astronomie, horloge, tables Horizons) · `view/` (échelle,
+pivots) · `scene/` (le repère `frame.js`, les corps, étiquettes, picking) · `neo/` · `tracking/`
+(modèle, scène, contrôleur de l'onglet Suivi) · `app/` (caméra et échelle animée) · `ui/`
+(un module par onglet et par panneau). `main.js` assemble : il crée les modules dans l'ordre où
+ils dépendent les uns des autres et relie leurs rappels `on.*`.
+
+Le point de vue passe par **un seul objet**, `frame` (`scene/frame.js`) : pivot, position,
+rayon et les trois fonctions de placement. Un nouveau module de corps le reçoit, il ne reçoit
+pas une poignée de fermetures. Même forme pour tous les corps : `update(nowSeconds, t)`, des
+entrées d'étiquettes, et le cas échéant des occulteurs.
 
 ## Ce qu'il faut lire, et seulement ça
 
 Ne lis pas la documentation en entier. Cible :
 
-- **avant de débugger** → `docs/agent/gotchas.md`. `main.js` concentre le plus de pièges du
+- **avant de débugger** → `docs/agent/gotchas.md`. La scène concentre le plus de pièges du
   projet (le `#include <colorspace_fragment>` du shader, l'`innerHTML` qui efface le markup
   statique, le picking d'étoiles en espace écran, `material.transparent` qui n'est pas un
   drapeau par frame). Cherche le sujet avant d'enquêter ;
@@ -62,7 +76,10 @@ Ne lis pas la documentation en entier. Cible :
 
 Lis le module voisin avant d'écrire. Les modules de scène exposent une fabrique
 (`createXxx(...)`) qui rend un objet avec ses méthodes de mise à jour ; l'état mutable vit dans
-`main.js` et se passe **explicitement** en argument. Ne rajoute pas d'état global.
+le module qui en est propriétaire (le pivot dans `frame`, l'échelle dans `app/camera.js`, la
+liste suivie dans `tracking/controller.js`…) et se passe **explicitement** en argument. Ne
+rajoute pas d'état global. Les commentaires datés qui expliquent un choix mesuré suivent leur
+code tels quels quand il change de fichier.
 
 ## Ce que tu rends
 
