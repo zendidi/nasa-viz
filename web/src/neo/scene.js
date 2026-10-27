@@ -30,7 +30,7 @@ import {
   edgeBlendWeight,
 } from '../orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
-import { sampleCatmullRom } from '../interpolate.js'
+import { sampleKm } from '../positionTable.js'
 import { neoEllipsesVisible } from '../focus.js'
 import { NEO_FLOOR_PX, neoFloorFactor, neoFloorPx, neoRadius } from '../scale.js'
 
@@ -210,7 +210,6 @@ export function createNeoScene({ scene, camera, traces, frame, minRadiusAt, sunP
    * Without a table: arbitrary but stable direction at the close-approach
    * distance — flagged 'approx' and said so in the modal.
    */
-  const interpIcrf = [0, 0, 0]
   const keplerSunKm = new THREE.Vector3()
   const keplerGapKm = new THREE.Vector3()
 
@@ -226,8 +225,7 @@ export function createNeoScene({ scene, camera, traces, frame, minRadiusAt, sunP
     if (table && table.positions.length > 0) {
       const rows = table.positions
       const f = (nowSeconds - table.start) / positions.stepSeconds
-      sampleCatmullRom(rows, f, interpIcrf)
-      icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], entry.positionKm)
+      sampleKm(rows, f, entry.positionKm)
       const clamped = THREE.MathUtils.clamp(f, 0, rows.length - 1)
       if (clamped === f) {
         entry.source = 'horizons'

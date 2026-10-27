@@ -18,9 +18,9 @@ import { TIME_SCALE, fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.
 import { loadCached, saveCached } from '../cache.js'
 import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift } from './geo.js'
-import { polylinePointAt, sampleCatmullRom, subdivideClosedLoop } from '../interpolate.js'
+import { polylinePointAt, subdivideClosedLoop } from '../interpolate.js'
 import { orientBody } from './orientation.js'
-import { defaultMinMs } from '../clock.js'
+import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, tableCovers, tablePositionKm } from '../positionTable.js'
 import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../scale.js'
 
 /**
@@ -206,9 +206,6 @@ function planetFade(t, hidden) {
   return Math.min(1, Math.max(0, (t - GEOCENTRIC_FADE_FROM) / (1 - GEOCENTRIC_FADE_FROM)))
 }
 
-/** A table is refetched once "now" comes within this much of its end. */
-const TABLE_MARGIN_MS = 30 * 86_400_000
-
 /**
  * The frame the orbit route must declare, **in its own words**, for a stored
  * table to be usable.
@@ -242,14 +239,10 @@ const ORBIT_OPACITY = 0.35
 
 /** Whether a stored table still brackets "now" with room to spare. */
 function covers(record) {
-  if (!record?.positions?.length) return false
-  if (record.timeScale !== TIME_SCALE) return false // a TDB table from before 2026-10-21: 69 s late
   // Wall clock on purpose (here and in orbitCovers): cache validity is a fact
   // about the real world, whatever date the simulated clock is showing.
-  const nowMs = Date.now()
-  const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
   // Must reach HISTORY_MONTHS back, or the clock could not run back on it (see sunTable.js).
-  return record.start * 1000 <= defaultMinMs(nowMs) && nowMs < endMs - TABLE_MARGIN_MS
+  return tableCovers(record, Date.now(), { history: true, marginMs: TABLE_MARGIN_MS })
 }
 
 /**
@@ -269,8 +262,7 @@ function orbitCovers(record) {
   return nowMs >= record.start * 1000 && nowMs <= record.stop * 1000
 }
 
-/** Catmull-Rom points per orbit segment: 360 -> 2 880 segments. */
-const ORBIT_SMOOTHING = 8
+// Catmull-Rom points per orbit segment: 360 -> 2 880 segments (ORBIT_SMOOTHING, positionTable.js).
 
 /**
  * Turns a stored orbit table into the polyline the scene draws. Since
@@ -520,8 +512,6 @@ export function createPlanets({
 
   // --- position ------------------------------------------------------------
 
-  const interpIcrf = [0, 0, 0]
-
   /**
    * Cubic Catmull-Rom in the daily table (interpolate.js), in ICRF km, then one
    * conversion to scene axes. Max error vs hourly Horizons, 2026-10-01 ->
@@ -534,9 +524,7 @@ export function createPlanets({
   function updatePositionKm(body, nowSeconds) {
     const table = tables[body.id]
     if (!table) return
-    const f = (nowSeconds - table.start) / table.stepSeconds
-    sampleCatmullRom(table.positions, f, interpIcrf)
-    icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], body.positionKm)
+    tablePositionKm(table, nowSeconds, body.positionKm)
     body.known = true
   }
 

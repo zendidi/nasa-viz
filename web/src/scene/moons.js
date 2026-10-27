@@ -18,13 +18,14 @@
  */
 
 import * as THREE from 'three'
-import { TIME_SCALE, fetchMoons } from '../api.js'
+import { fetchMoons } from '../api.js'
 import { loadCached, saveCached } from '../cache.js'
 import { loadColorMap, makeLitBodyMaterial } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift, setBodyOrientation } from './geo.js'
 import { poleOf } from './orientation.js'
 import { moonRadius } from '../scale.js'
-import { sampleCatmullRom, subdivideTable } from '../interpolate.js'
+import { subdivideTable } from '../interpolate.js'
+import { ORBIT_SMOOTHING, tableCovers, tablePositionKm } from '../positionTable.js'
 
 /** French names, by backend id. The backend owns the physics, this owns the wording. */
 const MOON_LABELS = {
@@ -118,17 +119,12 @@ const MOON_MIN_RADIUS_PX = 2.5
 /** Fainter than a planet's orbit (0,35): there are up to nine at once, around one body. */
 const ORBIT_OPACITY = 0.22
 
-/** Curve points per hourly sample in a moon's orbit line — same factor as the planets'. */
-const ORBIT_SMOOTHING = 8
+// Curve points per hourly sample in a moon's orbit line — same factor as the planets' (ORBIT_SMOOTHING, positionTable.js).
 
 /** A stored table is usable while "now" sits inside the window it covers. */
 function covers(record) {
-  if (!record?.positions?.length) return false
-  if (record.timeScale !== TIME_SCALE) return false // a TDB table from before 2026-10-21: 69 s late
   // Wall clock on purpose: cache validity, not scene time.
-  const nowMs = Date.now()
-  const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
-  return nowMs >= record.start * 1000 && nowMs < endMs
+  return tableCovers(record, Date.now())
 }
 
 /**
@@ -219,7 +215,6 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
   }
 
   const sunDir = new THREE.Vector3()
-  const interpIcrf = [0, 0, 0]
 
   /**
    * Cubic Catmull-Rom in the moon's own hourly table (interpolate.js), in ICRF
@@ -239,9 +234,7 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
   function updatePositionKm(body, nowSeconds) {
     const table = tables[body.id]
     if (!table) return
-    const f = (nowSeconds - table.start) / table.stepSeconds
-    sampleCatmullRom(table.positions, f, interpIcrf)
-    icrfToScene(interpIcrf[0], interpIcrf[1], interpIcrf[2], body.positionKm)
+    tablePositionKm(table, nowSeconds, body.positionKm)
     body.known = true
   }
 

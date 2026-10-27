@@ -20,16 +20,16 @@
  */
 
 import * as THREE from 'three'
-import { TIME_SCALE, fetchSolarSystemBody } from './api.js'
+import { fetchSolarSystemBody } from './api.js'
 import { loadCached, saveCached } from './cache.js'
-import { sampleCatmullRom, subdivideTable } from './interpolate.js'
+import { subdivideTable } from './interpolate.js'
 import { getMoonEquatorial, getSunEquatorial } from './astronomy.js'
 import { icrfToScene, latLngToVector3 } from './scene/geo.js'
-import { defaultMinMs } from './clock.js'
+import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, sampleKm, tableCovers, tableEndSeconds, tableIndexAt } from './positionTable.js'
 
-/** Refetched once "now" comes within this of the table's end — same rule as the planets'. */
-/** Curve points per daily sample in the Earth's orbit line — same factor as the planets' orbits. */
-const ORBIT_SMOOTHING = 8
+// Refetched once "now" comes within TABLE_MARGIN_MS of the table's end — same rule as the planets'.
+// Curve points per daily sample in the Earth's orbit line — same factor as the planets' orbits
+// (ORBIT_SMOOTHING; both in positionTable.js).
 const SIDEREAL_YEAR_DAYS = 365.256
 
 /**
@@ -49,19 +49,13 @@ export function orbitWindowIndices(startSeconds, stepSeconds, count, centerMs) {
   return { from, to: from + span }
 }
 
-const TABLE_MARGIN_MS = 30 * 86_400_000
-
-function covers(record, marginMs = 0) {
-  if (!record?.positions?.length) return false
-  if (record.timeScale !== TIME_SCALE) return false
+function covers(record) {
   // Wall clock on purpose: this decides whether a *cached* table is still worth
   // keeping, a fact about the real world — not about the simulated date.
-  const nowMs = Date.now()
-  const endMs = (record.start + (record.positions.length - 1) * record.stepSeconds) * 1000
   // A table that starts later than HISTORY_MONTHS back is one stored before
   // the history existed (2026-10-27): still valid going forward, but it would
   // stop the clock at the 1st of the month going back. Refetched once.
-  return record.start * 1000 <= defaultMinMs(nowMs) && nowMs < endMs - marginMs
+  return tableCovers(record, Date.now(), { history: true, marginMs: TABLE_MARGIN_MS })
 }
 
 /**
@@ -97,10 +91,8 @@ export function createMoonTable({ on }) {
 function createBodyTable({ body, fallback, on }) {
   const stored = loadCached(body)?.data ?? null
   /** @type {{start: number, stepSeconds: number, positions: number[][]} | null} */
-  let table = covers(stored, TABLE_MARGIN_MS) ? stored : null
+  let table = covers(stored) ? stored : null
   let loading = false
-
-  const interpKm = [0, 0, 0]
 
   /**
    * Geocentric Sun in km, scene axes, at `date`.
@@ -118,11 +110,8 @@ function createBodyTable({ body, fallback, on }) {
    */
   function positionKmAt(date, out) {
     if (table) {
-      const f = (date.getTime() / 1000 - table.start) / table.stepSeconds
-      if (f >= 0 && f <= table.positions.length - 1) {
-        sampleCatmullRom(table.positions, f, interpKm)
-        return icrfToScene(interpKm[0], interpKm[1], interpKm[2], out)
-      }
+      const f = tableIndexAt(table, date.getTime() / 1000)
+      if (f >= 0 && f <= table.positions.length - 1) return sampleKm(table.positions, f, out)
     }
     const { ra, dec, distanceKm } = fallback(date)
     return out.copy(latLngToVector3(dec, ra, distanceKm))
@@ -163,7 +152,7 @@ function createBodyTable({ body, fallback, on }) {
       const res = await fetchSolarSystemBody(body)
       const served = res.bodies[0]
       const record = { timeScale: res.time_scale, start: res.start, stepSeconds: res.step_seconds, positions: served.positions ?? [] }
-      if (covers(record, TABLE_MARGIN_MS)) {
+      if (covers(record)) {
         table = record
         saveCached(body, record)
         on.changed()
@@ -184,7 +173,7 @@ function createBodyTable({ body, fallback, on }) {
     },
     /** End of the loaded window in ms (the last sample), null without a table — the simulated clock's upper bound. */
     get endMs() {
-      return table ? (table.start + (table.positions.length - 1) * table.stepSeconds) * 1000 : null
+      return table ? tableEndSeconds(table) * 1000 : null
     },
     /** False while the low-precision series is standing in. */
     get known() {
