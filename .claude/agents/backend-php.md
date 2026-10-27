@@ -47,8 +47,11 @@ Ne lis pas la documentation en entier — elle fait des milliers de lignes. Cibl
 ## Forme du code
 
 Lis le fichier voisin avant d'écrire : même densité de commentaires, mêmes noms, mêmes idiomes.
-Les services sont des clients d'API sans état, injectés par le conteneur ; `SpaceDataController`
-les orchestre et met en cache. `HttpResponses` centralise la forme des réponses d'erreur.
+Les services sont des clients d'API sans état, injectés par le conteneur ; les contrôleurs de
+`src/Controller/` les orchestrent et mettent en cache, un par domaine (`NeoController`,
+`SolarSystemController`, `SmallBodyController`, `SpaceDataController` pour ISS/APOD/usage), sur
+la base `ProxyController` qui forme la réponse 502. Une nouvelle route va dans le contrôleur de
+son domaine ; le chemin et le nom de route sont le contrat (`API.md`), pas la classe. `HttpResponses` centralise la forme des réponses d'erreur.
 
 ## Ce que tu rends
 

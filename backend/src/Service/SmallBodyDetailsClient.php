@@ -58,7 +58,7 @@ final class SmallBodyDetailsClient
      * non-null entry lists per-source status ("ok", "not_found",
      * "unavailable") so callers can avoid caching an incomplete sheet — ESA's
      * status is included there too, but callers should NOT treat ESA like
-     * the other three: see SpaceDataController::neoDetails(), which excludes
+     * the other three: see NeoController::neoDetails(), which excludes
      * it from the "don't cache an incomplete sheet" check for the same
      * reason it never enters the exception below.
      *

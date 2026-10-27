@@ -2,7 +2,7 @@
 
 namespace App\Tests\Controller;
 
-use App\Controller\SpaceDataController;
+use App\Controller\SmallBodyController;
 use App\Service\HorizonsClient;
 use App\Service\JplCadClient;
 use App\Service\SmallBodyPositionsClient;
@@ -55,7 +55,7 @@ final class SmallBodyPositionsRouteTest extends TestCase
             // SBDB: the Apophis fixture for its SPK-ID, "not found" for anything else.
             return new MockResponse(file_get_contents(self::FIXTURES.('20099942' === $q['sstr'] ? 'sbdb_search_apophis.json' : 'sbdb_search_notfound.json')));
         });
-        $controller = new SpaceDataController($this->pool, new NullLogger());
+        $controller = new SmallBodyController(new NullLogger());
 
         return $controller->smallBodyPositions(
             new Request(['spkid' => $spkid]),

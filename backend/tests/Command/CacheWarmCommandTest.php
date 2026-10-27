@@ -3,6 +3,7 @@
 namespace App\Tests\Command;
 
 use App\Command\CacheWarmCommand;
+use App\Controller\NeoController;
 use App\Controller\SpaceDataController;
 use App\Service\ApodClient;
 use App\Service\CachedFeeds;
@@ -170,11 +171,12 @@ final class CacheWarmCommandTest extends TestCase
 
     public function testTheRoutesReadAndWriteTheKeysAndTtlsTheWarmUses(): void
     {
+        $neoController = new NeoController(new NullLogger());
         $controller = new SpaceDataController($this->cache, new NullLogger());
         $today = (new \DateTimeImmutable('today'))->format('Y-m-d');
         $tomorrow = (new \DateTimeImmutable('tomorrow'))->format('Y-m-d');
 
-        self::assertSame(200, $controller->neo(Request::create('/api/neo'), $this->feeds)->getStatusCode());
+        self::assertSame(200, $neoController->neo(Request::create('/api/neo'), $this->feeds)->getStatusCode());
         self::assertSame(200, $controller->apod($this->feeds)->getStatusCode());
 
         // Literal keys on purpose: they are the contract between route and warm.

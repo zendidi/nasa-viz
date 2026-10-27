@@ -63,8 +63,11 @@ formes de réponse, pas ce fichier.
   par le usage tracker).
 - `src/Service/NasaUsageTracker.php` — compteur d'appels réels à `api.nasa.gov` du jour (clé de
   cache `nasa_api_calls_<date UTC>`, expire à minuit UTC). Exposé via `GET /api/usage`.
-- `src/Controller/SpaceDataController.php` — routes HTTP, toutes `GET`, toutes cachées
-  (`cache.app`) :
+- `src/Controller/` — routes HTTP, toutes `GET`, toutes cachées (`cache.app`), rangées par domaine
+  depuis le 2026-10-27 : `NeoController` (`/api/neo*`), `SolarSystemController`
+  (`/api/solar-system/*`), `SmallBodyController` (`/api/small-body/*`) et `SpaceDataController`
+  (ISS, APOD, usage), sur une base commune `ProxyController` (réponse 502 qui nomme la source
+  tombée). Les routes :
   - `/api/iss/position` — TTL 5s
   - `/api/neo?start_date=&end_date=` — TTL 1h (10 min si une source est tombée), par plage de
     dates, plage max 7 jours
@@ -175,7 +178,7 @@ scène web à l'identique. Elle consommera le même contrat backend (`backend/AP
 1. **Backend** : méthode dans un `Service/` (nouveau ou existant), qui retourne une forme
    normalisée — jamais le JSON brut de NASA. Si ça touche `api.nasa.gov`, appeler
    `NasaUsageTracker::recordCall()` avant l'appel HTTP réel.
-2. **Route** dans `SpaceDataController` avec un TTL de cache adapté à la fréquence de mise à jour
+2. **Route** dans le contrôleur de son domaine (`src/Controller/`) avec un TTL de cache adapté à la fréquence de mise à jour
    réelle de la donnée. Si un cron doit pouvoir préchauffer
    la donnée (cas du flux NEO et de l'APOD), la logique cache + recalcul vit dans
    `src/Service/CachedFeeds.php`, partagée par la route et par `app:cache:warm`, plutôt que dans le
