@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  FLYBY_HALF_SECONDS,
   MAX_TRACKED,
   TRACK_COLORS,
   addTracked,
+  flybyArcTimes,
   freeColor,
   interpretSearch,
   isTrackedDesignation,
@@ -327,5 +329,46 @@ describe('numberSearchHelp', () => {
     expect(numberSearchHelp('Ceres')).toBeNull()
     expect(numberSearchHelp('')).toBeNull()
     expect(numberSearchHelp(' 433 ')).not.toBeNull()
+  })
+})
+
+describe('flybyArcTimes', () => {
+  const DAY = 86_400
+  const start = 1_800_000_000
+  const end = start + 365 * DAY
+
+  it('aucun rapprochement, aucun arc (et toujours le cas pour un non-NEO)', () => {
+    expect(flybyArcTimes([], start, end)).toEqual([])
+  })
+
+  it('un arc de ±15 jours qui passe exactement par le périgée', () => {
+    const at = start + 100 * DAY + 1234
+    const [arc, ...rest] = flybyArcTimes([at], start, end)
+    expect(rest).toEqual([])
+    expect(arc[0]).toBe(at - FLYBY_HALF_SECONDS)
+    expect(arc[arc.length - 1]).toBe(at + FLYBY_HALF_SECONDS)
+    expect(arc).toContain(at)
+    expect([...arc].sort((a, b) => a - b)).toEqual(arc)
+  })
+
+  it('serré près du périgée (5 min), lâche ailleurs (1 h)', () => {
+    const at = start + 100 * DAY
+    const [arc] = flybyArcTimes([at], start, end)
+    const gapAfter = (t) => arc[arc.indexOf(t) + 1] - t
+    expect(gapAfter(at)).toBe(300)
+    expect(gapAfter(at - 10 * DAY)).toBe(3600)
+  })
+
+  it('coupé aux bornes des tables : rien hors de [start, end]', () => {
+    const arcs = flybyArcTimes([start + 2 * DAY, end - DAY], start, end)
+    expect(arcs).toHaveLength(2)
+    expect(arcs[0][0]).toBe(start)
+    expect(arcs[1][arcs[1].length - 1]).toBe(end)
+  })
+
+  it('deux rapprochements à moins de 30 jours partagent un arc, sans trou ni doublon', () => {
+    const arcs = flybyArcTimes([start + 100 * DAY, start + 110 * DAY], start, end)
+    expect(arcs).toHaveLength(1)
+    expect(new Set(arcs[0]).size).toBe(arcs[0].length)
   })
 })

@@ -118,7 +118,9 @@ export function trackedSheetHtml({ rec, sheet, next, positionHtml, nowMs }) {
     <p><strong>Type</strong> ${rec.neo ? 'NEO (astéroïde proche de la Terre)' : 'astéroïde, pas un NEO'}</p>
     ${positionHtml}
     ${trackedApproachHtml(next, rec.spkid)}
-    <p class="muted">Trace dans la scène : trajectoire géocentrique sur toute la plage de l'horloge, dans la couleur de l'objet.</p>
+    <p class="muted">Trace dans la scène : orbite autour du Soleil sur toute la plage de l'horloge, dans la couleur de l'objet${
+      rec.neo ? " ; depuis la Terre s'y ajoute chaque passage près de la Terre (15 jours de part et d'autre du rapprochement)" : ''
+    }.</p>
     ${detailsBlockHtml(details, { loading: sheet.loading, error: sheet.error }, { neo: rec.neo })}
     ${
       details?.orbit

@@ -233,3 +233,49 @@ export function nextApproach(object, tSeconds) {
   if (after && after.time > tSeconds) return { kind: 'after_window', time: after.time, approach: after }
   return { kind: 'none' }
 }
+
+/**
+ * What the Earth's view draws of a NEO's path relative to the Earth: only its
+ * flybys, ±FLYBY_HALF_SECONDS around each close approach (user's call,
+ * 2026-10-27). Over the whole year that path carries the Earth's own motion and
+ * loops on itself — noise for a main-belt object, and mostly noise for a NEO
+ * too; the rest of the year is the heliocentric line, drawn from every pivot.
+ *
+ * 15 days, because CAD lists approaches closer than 0,05 au (7,5 million km):
+ * at 6 km/s and up, ±15 days spans the whole passage inside that distance.
+ */
+export const FLYBY_HALF_SECONDS = 15 * 86_400
+const FLYBY_STEP_SECONDS = 3600
+// Finer around the approach itself: Apophis covers ~160 000 km in 6 h, at a
+// 38 000 km perigee, so the coarse trace's chords would cut the corner.
+const FLYBY_FINE_HALF_SECONDS = 86_400
+const FLYBY_FINE_STEP_SECONDS = 300
+
+/**
+ * The instants to sample, as one array per arc: approaches whose windows
+ * overlap share one arc, every arc is clipped to [startS, endS] (the tables'
+ * span), and each approach instant is itself a sample, so the arc passes
+ * through the perigee rather than beside it.
+ *
+ * @param {number[]} approachTimes  seconds
+ * @returns {number[][]}
+ */
+export function flybyArcTimes(approachTimes, startS, endS) {
+  const windows = approachTimes
+    .map((time) => [Math.max(startS, time - FLYBY_HALF_SECONDS), Math.min(endS, time + FLYBY_HALF_SECONDS)])
+    .filter(([from, to]) => from < to)
+    .sort((a, b) => a[0] - b[0])
+  const merged = []
+  for (const window of windows) {
+    const last = merged[merged.length - 1]
+    if (last && window[0] <= last[1]) last[1] = Math.max(last[1], window[1])
+    else merged.push([...window])
+  }
+  const near = (time) => approachTimes.some((a) => Math.abs(time - a) < FLYBY_FINE_HALF_SECONDS)
+  return merged.map(([from, to]) => {
+    const times = new Set(approachTimes.filter((a) => a >= from && a <= to))
+    for (let time = from; time < to; time += near(time) ? FLYBY_FINE_STEP_SECONDS : FLYBY_STEP_SECONDS) times.add(time)
+    times.add(to)
+    return [...times].sort((a, b) => a - b)
+  })
+}

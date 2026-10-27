@@ -1,7 +1,7 @@
 /**
  * The asteroids the user tracks (docs/suivi-asteroides.md): for each, a marker
  * in its own colour at its real position and a trace over the whole window of
- * the clock (geocentric or heliocentric depending on the pivot, see buildTrace), both read from the precise table that
+ * the clock (heliocentric, plus its flybys from the Earth's view, see buildTraces), both read from the precise table that
  * `/api/small-body/positions` serves — one request per object, independent,
  * each object appearing as soon as its own answer lands.
  *
@@ -15,7 +15,7 @@ import * as THREE from 'three'
 import { fetchSmallBodyPositions, searchSmallBody } from '../api.js'
 import { escapeHtml } from '../neoInfo.js'
 import { icrfToScene } from '../scene/geo.js'
-import { interpretSearch, positionAt, tableAt } from '../tracking.js'
+import { flybyArcTimes, interpretSearch, positionAt, tableAt } from '../tracking.js'
 
 // Same logic as the NEO dots: a floor in pixels, because at true scale the
 // object itself is sub-pixel. The hit sphere is wider so a speck stays clickable.
@@ -38,7 +38,7 @@ const hitMaterial = new THREE.MeshBasicMaterial({ visible: false })
  *   rec: import('../tracking.js').TrackedRecord,
  *   status: 'loading'|'ready'|'error'|'missing', error: string|null, object: object|null,
  *   group: THREE.Group, mesh: THREE.Mesh, hit: THREE.Mesh,
- *   trace: object, helioTrace: object, labelEl: HTMLElement,
+ *   flybyTrace: object, helioTrace: object, labelEl: HTMLElement,
  *   positionKm: THREE.Vector3, shown: boolean, removed: boolean,
  * }} TrackedEntry
  */
@@ -90,7 +90,7 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
       group: pointGroup,
       mesh,
       hit,
-      trace: traces.make(rec.color, TRACE_OPACITY, { parent: traceGroup, frame: 'geocentric' }),
+      flybyTrace: traces.make(rec.color, TRACE_OPACITY, { parent: traceGroup, frame: 'geocentric' }),
       helioTrace: traces.make(rec.color, TRACE_OPACITY, { parent: traceGroup, frame: 'heliocentric' }),
       labelEl,
       positionKm: new THREE.Vector3(),
@@ -111,7 +111,7 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     entries.delete(spkid)
     group.remove(entry.group)
     entry.mesh.material.dispose()
-    for (const trace of [entry.trace, entry.helioTrace]) {
+    for (const trace of [entry.flybyTrace, entry.helioTrace]) {
       traceGroup.remove(trace.line)
       trace.line.geometry.dispose()
       trace.line.material.dispose()
@@ -121,25 +121,46 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
   }
 
   /**
-   * The trace over the whole base table, thinned to TRACE_STEP_SECONDS, in two
-   * frames. The table is geocentric, so drawn as such it carries the Earth's own
-   * yearly motion: seen from the Sun, every asteroid looped around a copy of the
-   * Earth's orbit (user report, 2026-10-27). The heliocentric copy subtracts the
-   * Sun **at each sample's own date** — like the planets' orbits — and is the one
-   * drawn from every pivot but the Earth and the Moon, where the geocentric path
-   * is the meaningful one (a NEO's flyby).
+   * Two lines. The table is geocentric, so drawn as such over the whole window it
+   * carries the Earth's own yearly motion: seen from the Sun, every asteroid
+   * looped around a copy of the Earth's orbit, and seen from the Earth it looped
+   * on itself (user reports, 2026-10-27).
+   *
+   * - The heliocentric line, over the whole base table thinned to
+   *   TRACE_STEP_SECONDS, subtracts the Sun **at each sample's own date** — like
+   *   the planets' orbits — and is drawn from every pivot, the Earth included.
+   * - The flyby line is geocentric but only ±15 days around each close approach
+   *   (`flybyArcTimes`), drawn from the Earth's view only: there the path
+   *   relative to the Earth is the meaningful one, and only near the Earth. It is
+   *   sampled from `positionAt`, so the 5-minute segments shape the perigee.
    */
-  function buildTrace(entry, object) {
+  function buildTraces(entry, object) {
     const { positions, start, step_seconds: step } = object.table
     const stride = Math.max(1, Math.round(TRACE_STEP_SECONDS / step))
     const indices = []
     for (let i = 0; i < positions.length; i += stride) indices.push(i)
     if (indices[indices.length - 1] !== positions.length - 1) indices.push(positions.length - 1)
-    const samples = indices.map((i) => icrfToScene(positions[i][0], positions[i][1], positions[i][2], new THREE.Vector3()))
-    traces.setKm(entry.trace, samples, () => true)
     const sunKm = new THREE.Vector3()
-    const helio = samples.map((p, k) => p.clone().sub(sunPositionKmAt(new Date((start + indices[k] * step) * 1000), sunKm)))
+    const helio = indices.map((i) =>
+      icrfToScene(positions[i][0], positions[i][1], positions[i][2], new THREE.Vector3()).sub(
+        sunPositionKmAt(new Date((start + i * step) * 1000), sunKm),
+      ),
+    )
     traces.setKm(entry.helioTrace, helio, () => true)
+
+    const end = start + (positions.length - 1) * step
+    const arcs = flybyArcTimes((object.close_approaches ?? []).map((a) => a.time), start, end)
+    const samples = []
+    /** Index of each arc's first sample: the segment leading into it would join two flybys. */
+    const arcStarts = new Set()
+    const icrf = [0, 0, 0]
+    for (const arc of arcs) {
+      arcStarts.add(samples.length)
+      for (const time of arc) {
+        if (positionAt(object, time, icrf)) samples.push(icrfToScene(icrf[0], icrf[1], icrf[2], new THREE.Vector3()))
+      }
+    }
+    traces.setKm(entry.flybyTrace, samples, (i) => !arcStarts.has(i + 1))
   }
 
   /**
@@ -161,7 +182,7 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
       if (object?.table?.positions?.length > 0) {
         entry.object = object
         entry.status = 'ready'
-        buildTrace(entry, object)
+        buildTraces(entry, object)
         on.changed()
         return
       }
@@ -200,11 +221,10 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
         entry.mesh.scale.setScalar(minRadiusAt(entry.group.position, MARKER_PX))
         entry.hit.scale.setScalar(minRadiusAt(entry.group.position, HIT_PX))
       }
-      const geocentric = frame.geocentric()
-      const [drawn, hidden] = geocentric ? [entry.trace, entry.helioTrace] : [entry.helioTrace, entry.trace]
-      hidden.line.visible = false
-      if (entry.object) traces.update(drawn, t)
-      else drawn.line.visible = false
+      if (entry.object) traces.update(entry.helioTrace, t)
+      else entry.helioTrace.line.visible = false
+      if (entry.object && frame.geocentric()) traces.update(entry.flybyTrace, t)
+      else entry.flybyTrace.line.visible = false
     }
   }
 
