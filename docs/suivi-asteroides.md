@@ -1,4 +1,4 @@
-# Suivi d'astéroïdes — choix validés et plan (non implémenté)
+# Suivi d'astéroïdes — choix validés et plan (les trois lots sont livrés le 2026-10-27, branche `asteroid-tracking`, non fusionnée dans master)
 
 Décidé avec l'utilisateur le 2026-10-27. Les chiffres ci-dessous ont été mesurés le même jour sur
 les sources réelles (JPL SBDB, SBDB Query, Horizons — toutes sans clé, aucune ne touche au quota
@@ -176,6 +176,11 @@ désormais `source` (`JPL Horizons`, `JPL SBDB`, `JPL`, `NASA NeoWs / JPL CAD`�
 l'affichent déjà ; l'onglet « Suivi » devra faire de même (lot 3).
 
 ### Lot 3 — web : l'onglet « Suivi »
+
+*Livré et validé à l'œil le 2026-10-27 (commits `bb6c0d4`, `0f16f20`). Le bouton « centrer » de la
+liste ci-dessous **n'a pas été construit** : il est sorti au backlog (`docs/agent/backlog.md`,
+`#centrer-asteroide-suivi`). Ce qui a été construit et ce qui a changé en route :
+`docs/agent/decisions.md`, « 2026-10-27 — Suivi d'astéroïdes… ».*
 
 - champ de recherche (Entrée), liste de candidats si ambigu, liste des ≤ 5 objets suivis ;
 - le suivi actif **masque les NEO de la semaine** (réversible) ; chaque objet suivi a un repère et un

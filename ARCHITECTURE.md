@@ -137,6 +137,7 @@ formes de réponse, pas ce fichier.
     son **orbite complète** tracée en 3D depuis les éléments SBDB (`docs/points-de-vue.md`)
   - `src/sunTable.js` — tables Horizons du Soleil et, depuis le 2026-10-21, de la Lune (`createMoonTable`, pas de 6 h), avec la série d’`astronomy.js` en repli.
   - `src/clock.js` — horloge simulée unique (module pur, testé par `tests/clock.test.js`) : `createClock`, vitesses ×1 / 1 h/s / 1 j/s, `setRate` sans saut, `reset`, bornes (fin de la table Soleil ou 1er du mois UTC + 365 j), `atLimit` ; le temps réel n'est jamais borné. Les caches restent sur l'horloge murale.
+  - `src/tracking.js` — suivi d'astéroïdes (module pur, testé par `tests/tracking.test.js`) : liste de cinq au plus (`localStorage`, clé `tracked`, la liste seulement, jamais les tables), `tableAt` (segment de 5 min si l'instant tombe dedans, sinon table de base), aide `numberSearchHelp`. `src/tracked/scene.js` trace chaque objet suivi en deux repères (géocentrique depuis la Terre et la Lune, héliocentrique depuis les autres pivots). Onglets de l'interface : ISS · NEO · Planètes · Suivi (`docs/suivi-asteroides.md`)
   - `src/neoInfo.js` — textes de comparaison des sources et de la fiche, couleurs par taxonomie
   - Badge de quota (`GET /api/usage`)
 
