@@ -274,7 +274,12 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
         const table = positions.objects[entry.designation]
         const f = (nowSeconds - table.start) / positions.stepSeconds
         const edge = f < 0 ? table.start : table.start + (table.positions.length - 1) * positions.stepSeconds
-        return `<p><strong>Distance au ${format(edge)}</strong> ${km} km <span class="muted">(hors de la semaine couverte par les positions)</span></p>`
+        // No elements to propagate from (sheet still loading, object unknown to
+        // SBDB and IMCCE, or no closed orbit): nothing is made up, it is said.
+        const why = detailsLoading.has(entry.designation)
+          ? 'éléments d’orbite en cours de chargement'
+          : 'pas d’éléments d’orbite elliptique disponibles pour cet objet'
+        return `<p><strong>Distance au ${format(edge)}</strong> ${km} km <span class="muted">(position figée au bord de la semaine JPL Horizons : ${why}, le mouvement hors de cette semaine n’est pas calculé)</span></p>`
       }
       case 'approx':
         return '<p class="muted">Position approximative : direction arbitraire, placée à sa distance d\'approche la plus proche.</p>'
