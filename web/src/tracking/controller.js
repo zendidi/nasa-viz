@@ -284,6 +284,12 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
       if (sheetSpkid) renderSheet()
     },
 
+    /** The open tracked sheet's distance line only, at the current simulated time. */
+    positionHtml() {
+      const entry = sheetSpkid ? trackedScene.get(sheetSpkid) : null
+      return entry ? trackedScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : null
+    },
+
     /** The detail panel was closed, or taken by a weekly NEO's sheet. */
     sheetClosed() {
       sheetSpkid = null

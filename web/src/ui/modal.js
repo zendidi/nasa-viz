@@ -67,6 +67,17 @@ export function createDetailPanel(on) {
     detailPanel.classList.remove('hidden')
   }
 
+  /**
+   * Rewrites one `data-live` block of the open sheet and nothing else — the
+   * distance at the running simulated date, a few times a second, without
+   * re-rendering the sheet under the reader. Skips the DOM when nothing changed.
+   */
+  function setLive(key, html) {
+    if (detailPanel.classList.contains('hidden')) return
+    const block = detailBody.querySelector(`[data-live="${key}"]`)
+    if (block && block.innerHTML !== html) block.innerHTML = html
+  }
+
   function close() {
     detailPanel.classList.add('hidden')
     on.detailClosed()
@@ -81,5 +92,5 @@ export function createDetailPanel(on) {
 
   detailPanel.querySelector('#detail-close').addEventListener('click', close)
 
-  return { open, close, isOpen: () => !detailPanel.classList.contains('hidden') }
+  return { open, setLive, close, isOpen: () => !detailPanel.classList.contains('hidden') }
 }

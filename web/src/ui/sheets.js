@@ -55,7 +55,7 @@ export function neoSheetHtml({ neo, designation, sheet, trackButton, positionHtm
     ${trackButton}
     <p><strong>Diamètre</strong> ${diameter}</p>
     <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
-    ${positionHtml}
+    <div data-live="position">${positionHtml}</div>
     ${
       approach
         ? `
@@ -116,7 +116,7 @@ export function trackedSheetHtml({ rec, sheet, next, positionHtml, nowMs }) {
   return `
     <p><strong>Désignation</strong> ${escapeHtml(rec.des)}</p>
     <p><strong>Type</strong> ${rec.neo ? 'NEO (astéroïde proche de la Terre)' : 'astéroïde, pas un NEO'}</p>
-    ${positionHtml}
+    <div data-live="position">${positionHtml}</div>
     ${trackedApproachHtml(next, rec.spkid)}
     <p class="muted">Trace dans la scène : orbite autour du Soleil sur toute la plage de l'horloge, dans la couleur de l'objet${
       rec.neo ? " ; depuis la Terre s'y ajoute chaque passage près de la Terre (15 jours de part et d'autre du rapprochement)" : ''

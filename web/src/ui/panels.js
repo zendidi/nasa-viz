@@ -205,6 +205,7 @@ export function createPanels({ app, wheelTarget, on }) {
     setUsage,
     openModal: modal.open,
     openDetail: detail.open,
+    setDetailLive: detail.setLive,
     closeDetail: detail.close,
     requestUpdate,
   }

@@ -441,6 +441,23 @@ function showNeoModal(neo) {
   neoScene.loadDetails([entry ? entry.designation : designationOf(neo)])
 }
 
+/**
+ * The open sheet's "Distance au …" line follows the running clock (2026-10-27):
+ * it used to be written once, on opening or on a jump, so at 1 h/s it lagged
+ * the simulated date by hours. Only that block is rewritten, 4 times a second —
+ * the rest of the sheet is fixed facts (the approach itself) and stays put.
+ */
+const SHEET_POSITION_REFRESH_MS = 250
+let sheetPositionRefreshedMs = 0
+
+function refreshSheetPosition(wallMs) {
+  if (wallMs - sheetPositionRefreshedMs < SHEET_POSITION_REFRESH_MS) return
+  sheetPositionRefreshedMs = wallMs
+  const entry = modalNeo ? neoScene.entryOf(modalNeo) : null
+  const html = entry ? neoScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : tracking.positionHtml()
+  if (html !== null) panels.setDetailLive('position', html)
+}
+
 function renderNeoModal() {
   const neo = modalNeo
   if (!neo) return
@@ -760,6 +777,8 @@ function animate() {
   // Real time is rendered on events only; a running fast clock changes its
   // text every frame (renderTime skips the DOM when nothing differs).
   if (!clock.isRealTime()) time.renderPanel(nowMs, wallMs)
+
+  refreshSheetPosition(wallMs)
 
   rig.update(performance.now()) // scale transition, recentring, zoom limits, controls
   starfield.group.position.copy(camera.position)
