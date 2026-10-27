@@ -109,6 +109,13 @@ jobs:
         working-directory: web
         run: npm ci
 
+      - name: Lint
+        working-directory: web
+        # ESLint, deux règles seulement (no-undef, no-unused-vars) : un nom
+        # laissé derrière quand du code change de module. Ni le build ni Vitest
+        # ne le voient -- seulement un ReferenceError à l'exécution.
+        run: npm run lint
+
       - name: Tests unitaires
         working-directory: web
         # Vitest, en Node. Il couvre les modules de calcul purs -- échelle,

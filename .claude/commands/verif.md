@@ -1,9 +1,9 @@
 ---
-description: Lance les quatre vérifications automatiques du projet (PHPUnit + PHPStan backend, Vitest + build Vite web) et rapporte les chiffres réels
+description: Lance les cinq vérifications automatiques du projet (PHPUnit + PHPStan backend, Vitest + build Vite + ESLint web) et rapporte les chiffres réels
 allowed-tools: Bash, Read, Grep, Glob
 ---
 
-Lance les quatre vérifications automatiques du projet, **en parallèle dans un seul message**
+Lance les cinq vérifications automatiques du projet, **en parallèle dans un seul message**
 (elles sont indépendantes) :
 
 ```bash
@@ -26,6 +26,15 @@ cd web && npm test
 ```bash
 cd web && npm run build
 ```
+
+```bash
+cd web && npm run lint
+```
+
+ESLint, deux règles seulement (`no-undef`, `no-unused-vars`) : il attrape un nom laissé derrière
+quand du code change de module, ce que ni le build ni Vitest ne voient (seulement un
+`ReferenceError` à l'exécution). Un import d'un nom non exporté, lui, est attrapé par le build
+(`MISSING_EXPORT`). Comme PHPStan : zéro signifie zéro, pas de commentaire `eslint-disable`.
 
 Si `php` n'est pas sur le PATH, utilise le binaire embarqué `tools/php/php.exe`.
 
