@@ -1,0 +1,241 @@
+/* The whole overlay's stylesheet, including the rules for the scene labels
+ * and the two tooltips other modules will own later — they still belong to
+ * one visual system, so it stays whole here until those modules exist.
+ * Imported by ui/panels.js; Vite injects it. */
+#ui { position: fixed; top: 0; left: 0; padding: 16px 20px; color: #eaf4ff;
+      font-family: system-ui, sans-serif; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+#ui-header { display: flex; align-items: center; gap: 12px; pointer-events: auto; }
+#ui h1 { margin: 0; font-size: 20px; letter-spacing: 0.04em; }
+#ui h2 { margin: 12px 0 4px; font-size: 13px; text-transform: uppercase; opacity: 0.7; }
+#ui p { margin: 2px 0; font-size: 13px; }
+#ui .muted { opacity: 0.6; }
+#ui .error { color: #ff8080; }
+#update-btn, .scale-preset, .focus-btn, #recenter-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff;
+              border: 1px solid #4fa8ff; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+              text-shadow: none; }
+#update-btn:hover, .scale-preset:hover, .focus-btn:hover, #recenter-btn:hover { background: #24608f; }
+#update-btn:disabled { opacity: 0.5; cursor: default; }
+#usage-badge { font-size: 12px; cursor: help; }
+.header-toggle { pointer-events: auto; background: none; color: #eaf4ff; border: 1px solid #1c4d7a; border-radius: 4px;
+                 padding: 3px 10px; font-size: 11px; cursor: pointer; text-shadow: none; opacity: 0.75; }
+.header-toggle:hover { opacity: 1; border-color: #4fa8ff; }
+.header-toggle[aria-pressed="true"] { background: #1c4d7a; border-color: #4fa8ff; opacity: 1; }
+
+/* The left column, "panneau" style (2026-10-15): the same card as the two
+   bottom panels, one section per kind of object with a rule between them.
+   Without the class it is the original raw text on the sky, which the
+   header button brings back. Still click-through as a whole — only its
+   controls opt back in, as everywhere in #ui. */
+#info-panel.card { margin-top: 12px; padding: 2px 16px 10px; max-width: 400px; box-sizing: border-box;
+                   background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px; text-shadow: none; }
+#info-panel.card section + section { margin-top: 10px; border-top: 1px solid rgba(79,168,255,.25); }
+#info-panel.card h2 { margin: 10px 0 6px; letter-spacing: 0.05em; color: #9fd2ff; opacity: 0.9; }
+#info-panel.card .neo-toggle { margin-top: 6px; }
+#info-panel.card #planets-panel .legend { max-width: none; }
+
+/* One section at a time behind three tabs (2026-10-27): the column used to
+   stack ISS, NEO and planets, and ran tall enough to crowd the scene. */
+#info-panel { max-width: 360px; }
+#info-tabs { display: flex; gap: 4px; margin-top: 10px; pointer-events: auto; }
+.info-tab { flex: 1; background: none; color: #eaf4ff; border: 1px solid #1c4d7a; border-radius: 4px;
+            padding: 3px 8px; font-size: 12px; cursor: pointer; text-shadow: none; opacity: 0.75; }
+.info-tab:hover { opacity: 1; border-color: #4fa8ff; }
+.info-tab[aria-selected="true"] { background: #1c4d7a; border-color: #4fa8ff; opacity: 1; }
+#info-panel section.hidden { display: none; }
+#info-panel.card section + section { margin-top: 0; border-top: none; }
+
+/* The "Suivi" tab. The search field and its messages are static markup, outside
+   #track-list: renderTracking replaces that list's innerHTML on every
+   change, and would take the typed text and the focus with it otherwise. */
+.track-search { display: flex; gap: 6px; margin: 6px 0 2px; }
+#track-input { flex: 1; min-width: 0; pointer-events: auto; box-sizing: border-box; background: rgba(10,22,34,.9);
+               color: #eaf4ff; border: 1px solid #1c4d7a; border-radius: 4px; padding: 4px 8px; font-size: 12px;
+               text-shadow: none; }
+#track-input:focus { outline: none; border-color: #4fa8ff; }
+#track-input:disabled { opacity: 0.5; }
+.track-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px;
+             padding: 3px 9px; font-size: 11px; cursor: pointer; text-shadow: none; }
+.track-btn:hover { background: #24608f; }
+.track-btn:disabled { opacity: 0.4; cursor: default; }
+#track-message:empty { display: none; }
+#track-candidates { list-style: none; margin: 4px 0; padding: 0; max-height: 140px; overflow-y: auto; pointer-events: auto; }
+#track-candidates:empty { display: none; }
+#track-candidates .track-offer { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+#track-candidates .track-offer-name { flex: 1; min-width: 0; font-size: 13px; }
+#track-candidates .track-offer button { display: inline-block; width: auto; }
+#track-candidates button { display: block; width: 100%; text-align: left; background: none; border: none;
+                           border-bottom: 1px solid rgba(79,168,255,.15); color: #7fe0ff; font-size: 12px;
+                           padding: 3px 2px; cursor: pointer; text-shadow: none; }
+#track-candidates button:hover { background: rgba(79,168,255,.15); }
+#track-list ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.track-item { padding: 6px 0; border-top: 1px solid rgba(79,168,255,.2); }
+.track-head { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.track-head .dot { flex: none; }
+.track-name { flex: 1; min-width: 0; text-align: left; background: none; border: none; padding: 0; font-size: 13px;
+              color: #7fe0ff; cursor: pointer; pointer-events: auto; text-shadow: none; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+.track-name:hover { text-decoration: underline; }
+.track-kind { flex: none; font-size: 10px; border: 1px solid rgba(159,210,255,.5); border-radius: 3px; padding: 0 4px; }
+#ui .track-state { margin: 2px 0 0 15px; font-size: 12px; }
+.track-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 0 15px; }
+.track-actions .track-btn { padding: 2px 7px; }
+
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+#iss-panel h2 .dot { margin-bottom: 2px; }
+.dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
+.legend { font-size: 12px; opacity: 0.8; }
+/* The one control in a side panel, so it says so by being clickable where
+   everything around it is text: pointer cursor on the whole label, and the
+   box aligned on the baseline of the line it reads with.
+
+   pointer-events: auto is not cosmetic, it is what makes the box clickable
+   at all: #ui above is click-through so the scene can be dragged from behind
+   the panels, so every real control has to opt back in — the buttons do it
+   in their own rule. On the label rather than on the paragraph, so the empty
+   width to the right of the text stays click-through.
+
+   Without it (2026-10-12) the checkbox was completely inert: no toggle, no
+   change event, nothing wrong anywhere downstream to find.
+
+   NB : no backticks anywhere in this stylesheet — it is a JS template
+   literal, and one backtick in a comment ends the string. */
+.neo-toggle { font-size: 12px; }
+.neo-toggle label { cursor: pointer; pointer-events: auto; }
+.neo-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
+.neo-toggle .muted { margin-left: 4px; }
+/* The orbits box hangs under the points box that commands it. */
+.neo-toggle.sub { margin-left: 20px; }
+.neo-toggle label:has(input:disabled) { opacity: 0.5; cursor: default; }
+/* Seven swatches on one line would push the whole left column out to ~420 px
+   and under the APOD thumbnail; only this legend is capped, so the NEO one
+   keeps the width it has always had. */
+#planets-panel .legend { max-width: 240px; }
+
+#apod-panel { position: fixed; top: 16px; right: 20px; pointer-events: auto; cursor: pointer;
+              max-width: 220px; text-align: right; }
+/* The right edge is shared (2026-10-15): APOD keeps the top half at most,
+   the NEO detail panel docks in the bottom half. A tall picture shrinks to
+   fit rather than running down into the detail panel — contained, so it
+   keeps its proportions, and pinned right to stay flush with the title. */
+#apod-panel { display: flex; flex-direction: column; align-items: flex-end; box-sizing: border-box;
+              max-height: calc(50vh - 24px); }
+#apod-panel.hidden { display: none; }
+#apod-panel > * { flex: none; }
+#apod-panel img { display: block; flex: 0 1 auto; min-height: 0; max-width: 100%; object-fit: contain;
+                  object-position: right top; border-radius: 4px; margin-top: 4px; }
+#apod-panel .apod-title { font-weight: 600; }
+
+#bottom-bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 2;
+              display: flex; align-items: stretch; justify-content: center; flex-wrap: wrap; gap: 12px;
+              max-width: calc(100vw - 40px); }
+#scale-panel, #view-panel { background: rgba(10,22,34,.8); border: 1px solid #1c4d7a; border-radius: 8px;
+               padding: 10px 16px; color: #eaf4ff; font-family: system-ui, sans-serif; text-align: center; }
+#view-panel { display: flex; flex-direction: column; justify-content: center; }
+#scale-panel.hidden { display: none; }
+/* The clock lives in the scale panel since 2026-10-27, under a rule. */
+#scale-panel .time-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(79,168,255,.25); }
+#time-slider { width: 260px; accent-color: #4fa8ff; }
+#time-rate-label { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 130px; }
+#time-play-btn { min-width: 84px; }
+#time-now-btn, #time-play-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff;
+              border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; text-shadow: none; }
+#time-now-btn:hover, #time-play-btn:hover { background: #24608f; }
+#time-play-btn.paused { background: #4fa8ff; color: #0e2233; }
+#time-now-btn:disabled { opacity: 0.35; cursor: default; }
+#time-label { margin: 6px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+#time-label.muted { opacity: 0.6; }
+#time-limit { margin: 4px 0 0; font-size: 12px; color: #ffbf66; }
+#time-limit.hidden { display: none; }
+#scale-panel .scale-row, #view-panel .scale-row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+#scale-panel .scale-row + .scale-row, #view-panel .scale-row + .scale-row { margin-top: 8px; }
+#scale-panel label, #view-panel label { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin-right: 4px; }
+#scale-panel .scale-end { font-size: 11px; opacity: 0.6; }
+#scale-slider { width: 260px; accent-color: #4fa8ff; }
+.scale-preset.active, .focus-btn.active { background: #4fa8ff; color: #0e2233; }
+/* Eight planets and Pluto don't fit one line next to the scale panel, and the row must
+   not push #bottom-bar wider than the viewport. */
+#view-panel .rings-toggle { cursor: pointer; pointer-events: auto; margin: 0 0 0 4px; }
+#view-panel .rings-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
+/* A fifth wider than its content used to make it (2026-10-27), for room to grow. */
+#view-panel { width: 352px; box-sizing: border-box; }
+#view-panel .focus-planets { flex-wrap: wrap; }
+#view-panel .view-toggles { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+#view-panel .focus-planets .focus-btn { font-size: 11px; padding: 2px 6px; }
+.focus-btn:disabled { opacity: 0.35; cursor: default; }
+#scale-label { margin: 8px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+#view-label { margin: 8px 0 0; font-size: 12px; opacity: 0.75; }
+#scale-panel .scale-hint, #view-panel .scale-hint { margin: 2px 0 0; font-size: 11px; opacity: 0.55; }
+
+#scene-labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1;
+                font-family: system-ui, sans-serif; }
+.scene-label { position: absolute; left: 0; top: 0; font-size: 11px; color: #cfe6ff; white-space: nowrap;
+               text-shadow: 0 1px 3px rgba(0,0,0,.9); }
+.scene-label.ring { color: #c8ccd4; opacity: 0.75; font-size: 10px; }
+.scene-label.ring.absolute { color: #ffbf66; }
+
+#modal-backdrop { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.6); display: flex;
+                   align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
+#modal-backdrop.hidden { display: none; }
+#modal { position: relative; background: #0e2233; color: #eaf4ff; border: 1px solid #4fa8ff;
+         border-radius: 8px; padding: 20px 24px; max-width: 480px; width: 90%;
+         max-height: 80vh; overflow-y: auto; }
+.sheet h2 { margin: 0 0 12px; font-size: 17px; }
+.sheet h3 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; }
+.sheet p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
+.sheet .muted { opacity: 0.6; }
+/* Three catalogues plus a spread column, in a 480 px modal: the numbers are
+   tabular-aligned so the eye can see which digit stops matching, and the
+   element names stay left while the figures go right. */
+.orbit-compare { width: 100%; border-collapse: collapse; margin: 6px 0 2px;
+                 font-size: 12px; font-variant-numeric: tabular-nums; }
+.orbit-compare th, .orbit-compare td { padding: 2px 4px; text-align: right; }
+.orbit-compare thead th, .orbit-compare tbody th { font-weight: 600; opacity: 0.7; }
+.orbit-compare tbody th { text-align: left; white-space: nowrap; }
+.orbit-compare thead th { border-bottom: 1px solid rgba(79,168,255,.35); }
+.orbit-compare .spread { color: #9fd2ff; border-left: 1px solid rgba(79,168,255,.25); }
+.orbit-compare sup { font-size: 9px; }
+.sheet .warn { color: #ffbf66; opacity: 1; }
+.sheet a { color: #7fe0ff; }
+.sheet .sheet-action { background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px;
+                       padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.sheet .sheet-action:hover { background: #24608f; }
+.sheet .sheet-action:disabled { opacity: 0.45; cursor: default; }
+.sheet .credits { margin-top: 14px; font-size: 11px; }
+.neo-sources { margin: 4px 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+.neo-sources li { margin: 2px 0; }
+.orbit-schematic { margin: 10px 0 0; }
+.orbit-schematic svg { display: block; width: 100%; max-width: 300px; margin: 0 auto; }
+.orbit-schematic text { font: 10px system-ui, sans-serif; }
+.orbit-schematic figcaption { margin-top: 4px; font-size: 11px; line-height: 1.5; opacity: 0.75; text-align: center; }
+.sheet img, .sheet iframe { display: block; width: 100%; border-radius: 4px; margin-bottom: 10px; border: none; }
+.sheet iframe { aspect-ratio: 16 / 9; }
+.sheet-close { position: absolute; top: 8px; right: 10px; background: none; border: none;
+               color: #eaf4ff; font-size: 20px; cursor: pointer; line-height: 1; }
+
+/* Same look and same scroll as the modal, docked bottom-right, under APOD
+   (2026-10-15 — bottom-left, it ran into the left-hand column): 480 px +
+   20 px gutter stops short of #bottom-bar on a 1900 px screen, and the
+   height is capped to the bottom half the right edge leaves it. z-index above
+   #bottom-bar so a narrow window overlaps rather than hides it. The scroll
+   lives in an inner box, not on the panel itself, so the close button —
+   absolute on the panel — stays pinned top-right whatever the scroll. */
+#detail-panel { position: fixed; right: 20px; bottom: 16px; z-index: 3; box-sizing: border-box;
+                background: #0e2233; color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 8px;
+                width: 480px; max-width: calc(100vw - 40px); font-family: system-ui, sans-serif; }
+#detail-scroll { box-sizing: border-box; padding: 20px 24px; max-height: calc(50vh - 24px); overflow-y: auto; }
+/* Shifted left of the inner scrollbar, which runs along the right edge. */
+#detail-panel .sheet-close { z-index: 1; right: 22px; }
+#detail-panel.hidden { display: none; }
+#detail-panel h2 { padding-right: 20px; }
+
+#star-tooltip { position: fixed; pointer-events: none; z-index: 5; background: rgba(10,22,34,.92);
+                color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px; padding: 3px 9px;
+                font-family: system-ui, sans-serif; font-size: 12px; white-space: nowrap;
+                transform: translate(14px, -50%); }
+#star-tooltip.hidden { display: none; }
+
+#constellation-tooltip { position: fixed; pointer-events: none; z-index: 4; background: rgba(10,22,34,.85);
+                color: #9fd2ff; border: 1px solid #6fb7ff; border-radius: 4px; padding: 2px 9px;
+                font-family: system-ui, sans-serif; font-size: 11px; letter-spacing: 0.03em;
+                text-transform: uppercase; white-space: nowrap; transform: translate(14px, -50%); }
+#constellation-tooltip.hidden { display: none; }
