@@ -31,6 +31,13 @@ final class JplCadClient
      */
     private const TIMEOUT_SECONDS = 8;
     private const MAX_DURATION_SECONDS = 15;
+    /**
+     * TT − UTC since 2017-01-01 (32.184 s + 37 leap seconds). TDB differs from
+     * TT by under 2 ms, far below anything a table here resolves.
+     */
+    private const TT_MINUS_UTC_SECONDS = 69.184;
+    private const UNIX_EPOCH_JD = 2440587.5;
+
     private const BUDGET = ['timeout' => self::TIMEOUT_SECONDS, 'max_duration' => self::MAX_DURATION_SECONDS];
 
     public function __construct(
@@ -68,6 +75,44 @@ final class JplCadClient
                 self::rows($all),
             );
         };
+    }
+
+    /**
+     * Close approaches of ONE small body (any asteroid, NEO or not) from
+     * $from's date to 2200, closer than 0.05 au, by SPK-ID. `jd` is kept raw
+     * and in TDB: see tdbJulianDateToUnixUtc() before using it as a time.
+     *
+     * @return \Closure(): list<array{jd: float, dist_au: float, dist_min_au: float, dist_max_au: float, v_rel_kms: float, t_sigma: string}>
+     */
+    public function requestObjectApproaches(string $spkid, \DateTimeImmutable $from): \Closure
+    {
+        $response = $this->httpClient->request('GET', $this->baseUrl.'/cad.api', ['query' => [
+            'spk' => $spkid,
+            'date-min' => $from->format('Y-m-d'),
+            'date-max' => '2200-01-01',
+            'dist-max' => '0.05',
+        ]] + self::BUDGET);
+
+        return static fn (): array => array_map(static fn (array $row) => [
+            'jd' => (float) $row['jd'],
+            'dist_au' => (float) $row['dist'],
+            'dist_min_au' => (float) $row['dist_min'],
+            'dist_max_au' => (float) $row['dist_max'],
+            'v_rel_kms' => (float) $row['v_rel'],
+            't_sigma' => (string) $row['t_sigma_f'],
+        ], self::rows($response));
+    }
+
+    /**
+     * CAD's `jd` (and `cd`) are **TDB**, while every table in this project is
+     * UTC (HorizonsClient::TIME_SCALE; reading TDB as UTC put the whole scene
+     * 69.184 s late, decision of 2026-10-21). TDB runs ahead of UTC by
+     * TT − UTC = 69.184 s, so the Unix UTC instant is the JD's Unix reading
+     * minus that.
+     */
+    public static function tdbJulianDateToUnixUtc(float $jdTdb): int
+    {
+        return (int) round(($jdTdb - self::UNIX_EPOCH_JD) * 86400 - self::TT_MINUS_UTC_SECONDS);
     }
 
     /**

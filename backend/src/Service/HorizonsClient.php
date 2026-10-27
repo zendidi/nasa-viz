@@ -229,9 +229,48 @@ final class HorizonsClient
      */
     private function fetch(array $commands, \DateTimeImmutable $start, \DateTimeImmutable $stop, string $stepSize, string $center = self::GEOCENTRIC): array
     {
+        $requests = [];
+        foreach ($commands as $key => $command) {
+            $requests[$key] = ['command' => $command, 'start' => $start, 'stop' => $stop, 'step' => $stepSize, 'center' => $center];
+        }
+
+        return $this->fetchRequests($requests);
+    }
+
+    /**
+     * Small bodies by SPK-ID, each with its own window and step: one batch can
+     * mix a year of hourly rows for one object, a year of daily rows for
+     * another and a day of 5-minute rows around a close pass. `DES=<spkid>;` is
+     * the one COMMAND form that resolves every asteroid (measured 2026-10-27:
+     * `DES=99942;` and a bare `20099942` both fail on some).
+     *
+     * @param array<string, array{spkid: string, start: \DateTimeImmutable, stop: \DateTimeImmutable, step: string}> $requests caller's key => request; `step` is a Horizons step ('1h', '5m')
+     *
+     * @return array<string, array{start: int, positions: list<array{int, int, int}>}|null>
+     *
+     * @throws ExceptionInterface on transport failure
+     */
+    public function getSmallBodyTables(array $requests): array
+    {
+        return $this->fetchRequests(array_map(static fn (array $r) => [
+            'command' => sprintf("'DES=%s;'", $r['spkid']),
+            'start' => $r['start'],
+            'stop' => $r['stop'],
+            'step' => $r['step'],
+            'center' => self::GEOCENTRIC,
+        ], $requests));
+    }
+
+    /**
+     * @param array<string, array{command: string, start: \DateTimeImmutable, stop: \DateTimeImmutable, step: string, center: string}> $requests
+     *
+     * @return array<string, array{start: int, positions: list<array{int, int, int}>}|null>
+     */
+    private function fetchRequests(array $requests): array
+    {
         /** @var array<string, ResponseInterface> $responses */
         $responses = [];
-        foreach ($commands as $key => $command) {
+        foreach ($requests as $key => ['command' => $command, 'start' => $start, 'stop' => $stop, 'step' => $stepSize, 'center' => $center]) {
             // Query string built by hand: HttpClient's `query` option leaves ';'
             // raw, and Horizons then splits COMMAND='DES=…;' at it (HTTP 400).
             $query = http_build_query([
@@ -262,7 +301,7 @@ final class HorizonsClient
                 throw new TransportException(sprintf('Horizons answered HTTP %d: %s', $response->getStatusCode(), $response->getContent(false)));
             }
             $data = $response->toArray(false);
-            $result[$key] = $this->parseVectorTable($data['result'] ?? '', $start);
+            $result[$key] = $this->parseVectorTable($data['result'] ?? '', $requests[$key]['start']);
         }
 
         return $result;

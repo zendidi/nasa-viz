@@ -117,19 +117,63 @@ savoir quelles lignes « NEO seulement » afficher.
 
 ### Lot 2 — backend : la table précise
 
-`GET /api/small-body/positions?spkid=…` (1 à 5 SPK-ID) :
+`GET /api/small-body/positions?spkid=…` — **un seul SPK-ID par appel** (décidé 2026-10-27) : 5 NEO
+froids en un appel ont pris **26,8 s** pour une limite PHP de 30 s, Horizons ne calculant pas une
+batch en parallèle. Le web demande chacun de ses ≤ 5 objets dans son propre appel (~7–10 s à froid
+pour un NEO, 0,1 s en cache), et chaque objet apparaît dès qu'il est prêt :
 
 - table géocentrique ICRF en km, **même fenêtre que les planètes** (`SolarSystemClient::positionsStart`
   → +365 j) : la trajectoire couvre toute la plage de l'horloge — plus de « pas d'orbite au-delà de
   sa semaine » comme pour les NEO de la liste ;
-- **pas selon l'objet** : horaire pour un NEO (rapide et courbé vu de la Terre), à mesurer pour un
-  astéroïde non-NEO — un pas journalier en Catmull-Rom suffit pour Jupiter (36 km, 2026-10-15),
-  la ceinture principale devrait être du même ordre, **à vérifier contre Horizons horaire avant de
-  le décider** ;
-- **pour un NEO seulement** : les rapprochements avec la Terre (SBDB `ca-data=1`) dans la fenêtre,
-  plus le prochain après ;
-- raffinement possible (pas plus fin autour d'un rapprochement serré) **seulement après avoir mesuré**
-  l'erreur du pas horaire sur un passage proche, comme pour la Lune.
+- **table de base, pas selon l'objet** : **journalier** pour un astéroïde non-NEO, **horaire** pour un
+  NEO (mesures ci-dessous) ;
+- **pour un NEO seulement**, des **segments fins** autour des passages très proches : pas de 5 min,
+  ± 12 h autour de chaque rapprochement de la fenêtre à moins de **0,0005 ua** (~75 000 km). Chaque
+  segment est une petite table uniforme ; le client l'utilise quand l'instant tombe dedans, la table
+  de base sinon ;
+- **pour un NEO seulement** : les rapprochements avec la Terre (API CAD, `spk=<SPK-ID>`,
+  `dist-max=0.05`) dans la fenêtre, plus le prochain après elle.
+
+#### Mesures du pas (2026-10-27)
+
+Catmull-Rom uniforme (comme `web/src/interpolate.js`) sur la table grossière, comparé à Horizons au
+pas fin, en géocentrique. Erreur = distance 3D en km.
+
+| Objet | Distance mini à la Terre | Table → référence | Erreur max | Médiane |
+|---|---|---|---|---|
+| 1 Ceres, 243 Ida, 434 Hungaria, 624 Hektor, 132 Aethra (non-NEO) | 181 M à 633 M km | 1 j → 1 h, 16 mois | **13,8 à 14,7** | 8,6 |
+| 433 Eros (NEO, loin de la Terre cette année) | 176 M km | 1 j → 1 h, 16 mois | 15,2 | 8,4 |
+| 2026 RG15 | 95 000 km | 1 j → 1 h | **9 160** | 4,8 |
+| 2026 QC3 | 40 000 km | 1 j → 1 h | **34 290** | 1 901 |
+| 2026 RG15 | 95 000 km | 1 h → 2 min | 4,2 | 0 |
+| 2026 QC3 | 40 000 km | 1 h → 2 min | 61 | 0 |
+| 2026 TP128 | 7 500 km | 1 h → 2 min | **2 442** | 0 |
+| 2026 QC3 | 40 000 km | 10 min → 1 min | 0,2 | 0 |
+| 2026 TP128 | 7 500 km | 10 min → 1 min | 106 | 0 |
+| 2026 TP128 | 7 500 km | 5 min → 1 min | **16,4** | 0 |
+
+Ce qu'on en tire :
+
+- **Loin de la Terre, le pas journalier donne ~14 km quel que soit l'astéroïde**, à 180 millions de
+  km et plus. Ce plancher commun vient du mouvement de la Terre elle-même (repère géocentrique),
+  pas de l'astéroïde. Un pas horaire n'apporterait rien de visible : 24 fois plus de lignes pour
+  rien.
+- **Près de la Terre, le journalier est inutilisable** (34 000 km d'erreur à 40 000 km de distance).
+  D'où le pas horaire pour tout NEO : c'est la catégorie qui *peut* passer près, et on ne veut pas
+  deviner quand.
+- **L'horaire tient jusqu'à ~100 000 km et lâche en dessous** : 61 km à 40 000 km, 2 442 km (un tiers
+  de la distance) pour 2026 TP128, qui a frôlé la Terre à ~1 100 km d'altitude le 2026-10-15. Le pas
+  de 5 min le ramène à 16 km, d'où les segments fins sous 0,0005 ua.
+- Les passages pris pour la mesure viennent de l'API CAD (69 passages à moins de 0,005 ua entre
+  2026-08 et 2027-10) : ce n'est pas un cas d'école, il y en a plusieurs par mois.
+
+### Source en panne
+
+Décidé 2026-10-27 : quand une source ne répond pas, **les panneaux disent qui** — « JPL Horizons est
+en panne : impossible d'obtenir les données pour l'instant. » Chaque 502 du backend porte
+désormais `source` (`JPL Horizons`, `JPL SBDB`, `JPL`, `NASA NeoWs / JPL CAD`…) et
+`upstreamErrorMessage` (`web/src/api.js`) en fait la phrase. Les panneaux ISS, NEO, APOD et la fiche
+l'affichent déjà ; l'onglet « Suivi » devra faire de même (lot 3).
 
 ### Lot 3 — web : l'onglet « Suivi »
 
@@ -154,6 +198,5 @@ savoir quelles lignes « NEO seulement » afficher.
 
 ## Points encore ouverts
 
-- **Pas pour les astéroïdes non-NEO** : journalier ou horaire, à trancher sur mesure (lot 2).
 - **TTL du cache serveur** des tables : 1 jour comme `/api/neo/positions` par défaut ; plus long pour
   un objet numéroté à orbite bien établie, si la mesure le justifie.

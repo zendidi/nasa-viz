@@ -12,8 +12,11 @@ the upstream providers change their response shape. Every route is
 `CORS_ALLOW_ORIGIN` in `.env`; a deployed Unity/WebGL build or a packaged
 Quest APK doesn't need CORS at all — only browser clients enforce it).
 
-On failure, every route returns HTTP 502 with `{"error": "<message>"}`
-instead of a 200 with partial data — treat any non-2xx as "no data this
+On failure, every route returns HTTP 502 with
+`{"error": "<message>", "source": "JPL Horizons"}` — `source` (since
+2026-10-27) names the provider that failed, in words a viewer recognises
+(`JPL Horizons`, `JPL SBDB`, `JPL`, `NASA NeoWs / JPL CAD`, `wheretheiss.at`…),
+so a client can say *who* is down — instead of a 200 with partial data — treat any non-2xx as "no data this
 tick", not a schema change.
 
 ## `GET /api/iss/position`
@@ -267,6 +270,73 @@ Three shapes, always HTTP 200:
 - HTTP 502 when SBDB is unreachable, answers 5xx or sends garbage — never
   cached. (SBDB answers an ambiguous query with HTTP 300 and a body; that is
   handled, not an error.)
+
+## `GET /api/small-body/positions?spkid=20099942`
+
+Precise geocentric position table for **one** tracked **asteroid** (any
+non-comet small body; NEO-only behaviour is flagged below). Outside `/api/neo`
+on purpose: Horizons, SBDB and CAD are all keyless, so this spends no NASA
+quota. Get SPK-IDs from `/api/small-body/search`.
+
+- `spkid`: exactly one, `^\d{7,8}$` (the same id repeated counts as one).
+  Anything else is HTTP 400 `{"error": …}`. The web client tracks up to 5
+  asteroids and asks for each in **its own call** — see the cold cost below.
+- **Window = the planets' window** (`/api/solar-system/positions`): `window.start`
+  is three months before the 1st of the current UTC month, `window.end` is a
+  year after that 1st, so the web clock bounds line up. Tables start at
+  `window.start`.
+- Table step depends on the object: **1 hour for a NEO** (`neo: true`, ~11 000
+  rows, ~360 kB of JSON), **1 day for any other asteroid** (~460 rows).
+  Measured: an interpolated daily table is ~14 km off for any asteroid at
+  180 million km or more, but 34 290 km off at 40 000 km; hourly is 61 km off
+  at 40 000 km.
+- **NEO only**: `segments` are 5-minute tables, approach −12 h to +12 h (start
+  floored to a 5-minute boundary, stop rounded up to one), one for each
+  in-window approach closer than **0.0005 au** (~75 000 km), at most 10 (the
+  closest if there are more, returned in time order). The hourly table gives
+  up below ~100 000 km (2 442 km off at 7 500 km); 5 minutes brings it to
+  16 km. A client uses a segment when the instant falls inside it, the base
+  table otherwise.
+- **NEO only**: `close_approaches` (JPL CAD, closer than 0.05 au, inside the
+  window, by time) and `next_close_approach_after_window` (the first one at or
+  after `window.end`, or `null`). `time` is Unix **UTC**: CAD's own dates are
+  TDB and 69.184 s are subtracted. `dist_*_km` use 1 au = 149 597 870.7 km;
+  `t_sigma` is CAD's formatted time uncertainty.
+
+```json
+{
+  "frame": "ICRF geocentric", "units": "km", "time_scale": "UTC",
+  "window": {"start": 1782864000, "end": 1822348800},
+  "objects": {
+    "20099942": {
+      "spkid": "20099942", "des": "99942", "fullname": "99942 Apophis (2004 MN4)", "neo": true,
+      "table": {"start": 1782864000, "step_seconds": 3600, "positions": [[x, y, z], …]},
+      "segments": [{"start": 1792031700, "step_seconds": 300, "positions": [[x, y, z], …]}],
+      "close_approaches": [{"time": 1792075131, "dist_km": 7489.3, "dist_min_km": 7475.7,
+                            "dist_max_km": 7502.9, "v_rel_km_s": 21.49, "t_sigma": "00:02"}],
+      "next_close_approach_after_window": {"time": 1870811104, "dist_km": 38000000.0, …}
+    }
+  }
+}
+```
+
+- Positions are integer km, ICRF, Earth-centred, like every other table here.
+  `time_scale` is `"UTC"` — reject a response that says otherwise.
+- A non-NEO has `segments: []`, `close_approaches: []`,
+  `next_close_approach_after_window: null`.
+- An object is `null` when SBDB has no match for the SPK-ID (also a comet, which
+  `search` refuses) or Horizons returns no table. `objects` is keyed by SPK-ID
+  as sent.
+- `close_approaches: null` on a NEO means **CAD failed for that object**: the
+  table is served anyway, without approaches or segments, and that object is
+  **not cached**, so the next call retries it.
+- Cache per object, key = SPK-ID + window start + time scale: 1 day; a `null`
+  object 1 hour. The SBDB lookup reuses the search route's cache.
+- HTTP 502 when Horizons or SBDB is unreachable — nothing cached.
+- Cold cost (measured 2026-10-27, when the route still took up to 5 ids):
+  2 objects 10 s, 3 NEOs + 2 others 18 s, **5 NEOs 26.8 s** against PHP's
+  30 s wall — Horizons doesn't compute a batch in parallel. Hence one asteroid
+  per call: ~7-10 s cold for a NEO, 0.1 s warm.
 
 ## `GET /api/neo/positions?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&designations=2026 RB39,2021 LC`
 

@@ -9,11 +9,23 @@ const BASE = '/api'
  */
 export const TIME_SCALE = 'UTC'
 
+/**
+ * What a panel shows when a route fails. The backend names the provider that
+ * failed (`source`, on its 502s), so the viewer reads who is down — "JPL
+ * Horizons est en panne" — instead of a generic failure.
+ */
+export function upstreamErrorMessage(body, status) {
+  if (body && typeof body.source === 'string' && body.source !== '') {
+    return `${body.source} est en panne : impossible d'obtenir les données pour l'instant.`
+  }
+  return (body && body.error) || `request failed: ${status}`
+}
+
 async function getJson(path) {
   const res = await fetch(`${BASE}${path}`)
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `request failed: ${res.status}`)
+    throw new Error(upstreamErrorMessage(body, res.status))
   }
   return res.json()
 }

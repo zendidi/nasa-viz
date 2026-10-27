@@ -250,6 +250,12 @@ final class SolarSystemClient
         return $windowStart->modify(sprintf('-%d months', self::HISTORY_MONTHS));
     }
 
+    /** Where every position table stops: a year past the window's start. */
+    public static function windowEnd(\DateTimeImmutable $windowStart): \DateTimeImmutable
+    {
+        return $windowStart->modify(sprintf('+%d days', self::WINDOW_DAYS));
+    }
+
     /**
      * One table per requested planet, all on the window's clock. A null entry
      * means Horizons didn't answer for that body — a reason to keep it
@@ -277,7 +283,7 @@ final class SolarSystemClient
             $tables = $this->horizons->getMajorBodyVectors(
                 $commands,
                 $start,
-                $windowStart->modify(sprintf('+%d days', self::WINDOW_DAYS)),
+                self::windowEnd($windowStart),
                 self::STEP_SECONDS === $stepSeconds ? self::STEP_SIZE : sprintf('%dm', intdiv($stepSeconds, 60)),
             );
             foreach ($tables as $id => $table) {
