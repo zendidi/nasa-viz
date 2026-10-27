@@ -2,8 +2,6 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage, searchSmallBody } from './api.js'
 import { loadCached, saveCached } from './cache.js'
-import { getEarthPoleJ2000, getEarthRotationAngle } from './astronomy.js'
-import { issAt } from './iss.js'
 import { createClock, defaultMaxMs, defaultMinMs } from './clock.js'
 import { createMoonTable, createSunTable } from './sunTable.js'
 import { FOCUSES, neoEllipsesVisible } from './focus.js'
@@ -12,7 +10,9 @@ import { neoSheetHtml, trackButtonHtml, trackedSheetHtml } from './ui/sheets.js'
 import { createStarfield } from './scene/starfield.js'
 import { createPicking } from './picking.js'
 import { createOrbitTraces } from './scene/orbitTrace.js'
-import { EARTH_POSITION_KM, createViewFrame } from './scene/frame.js'
+import { createViewFrame } from './scene/frame.js'
+import { createEarthSystem } from './scene/earthSystem.js'
+import { createSun } from './scene/sun.js'
 import { createNeoScene, designationOf } from './neo/scene.js'
 import { createTrackedScene } from './tracked/scene.js'
 import {
@@ -26,21 +26,11 @@ import {
   readTrackedList,
   removeTracked,
 } from './tracking.js'
-import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
-import { icrfToScene, latLngToVector3 } from './scene/geo.js'
-import {
-  MOON_RADIUS,
-  makeGlobe,
-  makeIssMarker,
-  makeSunMarker,
-  makeMoon,
-  createDistanceRings,
-  createEclipticPlane,
-  cloudDriftAt,
-} from './scene/bodies.js'
+import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX } from './labels.js'
+import { createDistanceRings, createEclipticPlane } from './scene/bodies.js'
 import { createPlanets } from './scene/planets.js'
 import { createMoons } from './scene/moons.js'
-import { loadOrientationFor, orientBody } from './scene/orientation.js'
+import { loadOrientationFor } from './scene/orientation.js'
 import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
@@ -50,39 +40,16 @@ import {
 } from './neoInfo.js'
 import {
   AU_KM,
-  EARTH_RADIUS,
   LUNAR_DISTANCE_KM,
-  ISS_READABLE_RADIUS,
-  SUN_READABLE_RADIUS,
   SCALE_STEPS,
   stepToT,
   lerpLog,
   sceneDistance,
   sceneDistanceToKm,
-  earthSystemScale,
-  issOrbitRadius,
-  issRadius,
-  sunRadius,
   worldPerPixel,
   describeScale,
-  isRealScale,
   remapCameraDistance,
 } from './scale.js'
-
-// Distances and sizes of everything but the Earth depend on the "réalisme"
-// scale (scaleT, see scale.js and docs/echelle-reelle.md): readable at 0,
-// true proportions at 1. The light only needs a direction.
-const SUN_LIGHT_DISTANCE = 30
-
-// Floor on each body's on-screen radius, in pixels — at true scale almost
-// everything is sub-pixel (the whole Earth–Moon system is ~5 px when framing a
-// NEO at 0.5 au), so without these nothing would show at all.
-//
-// The Sun's sits above `PLANET_MIN_RADIUS_PX` (3,5, scene/planets.js) on
-// purpose: past the point where every body is on its floor, these numbers are
-// the only thing the scene still says about size, and the Sun must not end up
-// smaller than Jupiter when it is really ten times its radius.
-const MIN_RADIUS_PX = { earth: 2, moon: 1.5, iss: 2.5, sun: 4.5 }
 
 const app = document.getElementById('app')
 
@@ -111,27 +78,13 @@ renderer.outputColorSpace = THREE.SRGBColorSpace
 // day-side lighting explicitly and the night texture supplies its own city
 // lights, so a strong ambient would wash both out.
 scene.add(new THREE.AmbientLight(0xffffff, 0.15))
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.2)
-scene.add(sunLight)
+// The Sun's directional light: scene/sun.js.
 
 // The sky loads itself in the background and never blocks the scene (scene/starfield.js).
 const starfield = createStarfield(scene)
 
-const { group: globe, material: globeMaterial, sphere: globeSphere, clouds: globeClouds } = makeGlobe()
-scene.add(globe)
-
-// Child of globe (not scene) so it turns with the real Earth rotation set in
-// animate() — its position is computed in the globe's own unrotated
-// lat/lng frame, same as the texture, so it always sits over the right spot.
-const issMarker = makeIssMarker()
-issMarker.visible = false // until a position is known
-globe.add(issMarker)
-
-const sunMarker = makeSunMarker()
-scene.add(sunMarker)
-
-const moon = makeMoon()
-scene.add(moon)
+// The Earth, the Moon, the ISS and the Sun are built further down, once the
+// label factory exists (scene/earthSystem.js, scene/sun.js).
 
 const distanceRings = createDistanceRings(scene)
 const eclipticPlane = createEclipticPlane(scene)
@@ -149,7 +102,6 @@ const eclipticPlane = createEclipticPlane(scene)
  * no extra per-frame JS work needed.
  */
 const sunDirWorld = new THREE.Vector3()
-const moonDirWorld = new THREE.Vector3()
 let moonDistanceKm = LUNAR_DISTANCE_KM
 let sunDistanceKm = AU_KM
 
@@ -175,7 +127,7 @@ const sunTable = createSunTable({
     changed: () => {
       const wallMs = Date.now()
       updateAstronomy(new Date(clock.nowMs(wallMs)))
-      rebuildBodyOrbits(clock.nowMs(wallMs))
+      earthSystem.rebuildOrbits(clock.nowMs(wallMs))
       refreshClockBounds(wallMs) // the table's real end replaces the 1st-of-month + 365 d guess
     },
   },
@@ -189,7 +141,7 @@ const moonTable = createMoonTable({
     changed: () => {
       const simMs = clock.nowMs(Date.now())
       updateAstronomy(new Date(simMs))
-      rebuildBodyOrbits(simMs, { earth: false })
+      earthSystem.rebuildOrbits(simMs, { earth: false })
     },
   },
 })
@@ -203,18 +155,13 @@ function updateAstronomy(now) {
   sunTable.positionKmAt(now, sunPositionKm)
   sunDistanceKm = sunPositionKm.length()
   sunDirWorld.copy(sunPositionKm).divideScalar(sunDistanceKm)
-  sunLight.position.copy(sunDirWorld).multiplyScalar(SUN_LIGHT_DISTANCE)
-  // The globe shader reads sunDirection in world space and does its own
-  // modelMatrix transform per-fragment, so the globe's real rotation (set
-  // from the ERA in animate()) sweeps the terminator across the texture with
-  // no extra per-frame work here.
-  globeMaterial.uniforms.sunDirection.value.copy(sunDirWorld)
+  sun.setDirection(sunDirWorld)
+  earthSystem.setSunDirection(sunDirWorld)
 
   // Real direction and distance only — where that lands in the scene depends
   // on the current scale, applied per frame in applyScale().
   moonTable.positionKmAt(now, moonPositionKm)
   moonDistanceKm = moonPositionKm.length()
-  moonDirWorld.copy(moonPositionKm).divideScalar(moonDistanceKm)
 }
 
 // --- point de vue (le corps au centre de la scène) ----------------------------
@@ -222,21 +169,18 @@ function updateAstronomy(now) {
 // scene/frame.js: the pivot, its position and radius, and the three placers
 // every module draws through. setFocus() below is the only thing that moves it.
 const frame = createViewFrame({ sunPositionKm })
-const { placeKm } = frame
 
 /** Venus shows its cloud deck by default; ticked, the radar surface under it (planets panel). */
 let venusSurface = false
 // The distance rings, on by default; the view panel's "Cercles" box.
 let ringsEnabled = true
 
-updateAstronomy(new Date(simNowMs()))
-
 // Real drift is slow (~1°/day for the Sun, ~0.5°/h for the Moon) — no need to
 // recompute every frame at ×1: the gate is 60 s of *simulated* time, which is
 // one minute of wall time at ×1 (the cadence the scene always had) and every
 // frame from 1 h/s up, so the lighting and the Moon move smoothly when sped up.
 // The drawn orbits are re-sampled with it so their first sample stays the body's
-// current position (rebuildBodyOrbits()) — but at most every 250 ms of wall time:
+// current position (earthSystem.rebuildOrbits()) — but at most every 250 ms of wall time:
 // that rebuild allocates new geometry, and a Moon orbit 0,07° stale (1 h/s) is
 // invisible where a per-frame GPU re-upload would not be free.
 const ASTRONOMY_STEP_MS = 60_000
@@ -250,7 +194,7 @@ function stepAstronomy(simMs, wallMs) {
     orbitsRebuiltWallMs = wallMs
     // The Earth's line comes from the Sun table and does not depend on "now";
     // only the fallback series (no table yet) samples forward from it.
-    rebuildBodyOrbits(simMs, { earth: !sunTable.known })
+    earthSystem.rebuildOrbits(simMs, { earth: !sunTable.known })
   }
 }
 
@@ -287,90 +231,6 @@ const neoScene = createNeoScene({
     },
   },
 })
-
-// --- orbits of the bodies the scene places itself (Moon, Earth) -----------------
-//
-// Drawn from the very series that places the body, never from a neighbouring
-// model: a line that doesn't pass through its own body is worse than no line.
-// The fixed 384 400 km reference circle used to miss the Moon by 1 scene unit
-// (it ignores both the 5 % apogee/perigee swing and the orbit's 5° tilt to the
-// ecliptic), and the Earth's Kepler ellipse misses the globe by ~945 000 km.
-// Sampling starts at "now", so sample 0 *is* the body — the trace goes through
-// it by construction, at every scale and in both views.
-
-const MOON_ORBIT_DAYS = 27.321582 // sidereal month
-const MOON_ORBIT_SAMPLES = 96
-const EARTH_ORBIT_DAYS = 365.256
-const EARTH_ORBIT_SAMPLES = 180
-const DAY_MS = 86_400_000
-
-// Straight in the scene, not in a group: the Earth's orbit is the heliocentric
-// view's own yardstick (and its 1 au circle), worth drawing even with nothing
-// selected. Each declares its own frame — the Earth's samples are heliocentric
-// (the Sun table, negated), the Moon's are geocentric like every body position.
-const earthOrbitTrace = traces.make(0x4fa8ff, 0.5, { parent: scene, frame: 'heliocentric' })
-const moonOrbitTrace = traces.make(0x8ea3b8, 0.5, { parent: scene, frame: 'geocentric' })
-
-function sampleBodyOrbit(startMs, count, days, positionAt) {
-  return Array.from({ length: count + 1 }, (_, i) =>
-    positionAt(new Date(startMs + (i / count) * days * DAY_MS)),
-  )
-}
-
-/** @param {number} startMs simulated time the samples start from — sample 0 is the body "now" */
-function rebuildBodyOrbits(startMs, { earth = true } = {}) {
-  traces.setKm(
-    moonOrbitTrace,
-    sampleBodyOrbit(startMs, MOON_ORBIT_SAMPLES, MOON_ORBIT_DAYS, (date) =>
-      moonTable.positionKmAt(date, new THREE.Vector3()),
-    ),
-    () => true,
-  )
-  // Straight from the Sun table when there is one — the Earth seen from the Sun
-  // is the Sun seen from the Earth, negated. Those are the very samples the
-  // globe's own position is interpolated from, so the Earth lands on its line by
-  // construction. Only while the fallback series is standing in is the curve
-  // sampled a year forward from now instead.
-  if (!earth) return
-  traces.setKm(
-    earthOrbitTrace,
-    sunTable.earthOrbitSamplesKm(startMs) ??
-      sampleBodyOrbit(startMs, EARTH_ORBIT_SAMPLES, EARTH_ORBIT_DAYS, (date) =>
-        sunTable.positionKmAt(date, new THREE.Vector3()).negate(),
-      ),
-    () => true,
-  )
-}
-
-rebuildBodyOrbits(simNowMs())
-
-/**
- * The Moon's orbit is geocentric, so it collapses onto the Earth from anywhere
- * else: Earth's view only.
- *
- * The Earth's is heliocentric, and since 2026-10-12 that means it draws from
- * every pivot — through the globe itself when the Earth is the pivot, exactly
- * as Mars's orbit does from Mars. It follows the planets' own fade so that the
- * heliocentric orbits come and go as one set: from the Earth or a planet, where
- * the other planets are only drawn at 100 % réel, an orbit left on screen with no planet on
- * it would be the one line in the scene with nothing to point at.
- */
-function updateBodyOrbits(t) {
-  if (frame.id === 'earth') traces.update(moonOrbitTrace, t)
-  else moonOrbitTrace.line.visible = false
-
-  if (planets.drawnAt(t)) traces.update(earthOrbitTrace, t)
-  else earthOrbitTrace.line.visible = false
-}
-
-// --- ISS -------------------------------------------------------------------------
-
-let issPosition = null
-
-function applyIssPosition(position) {
-  issPosition = position
-  issMarker.visible = true
-}
 
 // --- scale ("réalisme") ------------------------------------------------------------
 
@@ -573,7 +433,7 @@ function setFocus(nextId) {
     planets.loadTextureFor(frame.planet.id)
     loadOrientationFor(frame.planet.id)
   }
-  if (frame.id === 'sun') sunMarker.userData.loadTexture()
+  if (frame.id === 'sun') sun.loadTexture()
 }
 
 // Dragging with the right button wanders off the pivot; this brings it back to
@@ -597,17 +457,10 @@ function stepRecenter(nowMs) {
   if (u === 1) recenterTween = null
 }
 
-const tmpWorldPos = new THREE.Vector3()
-
 /** Scene radius needed for `px` pixels at a world position, given the current camera. */
 function minRadiusAt(worldPos, px) {
   const distance = camera.position.distanceTo(worldPos)
   return px * worldPerPixel(distance, camera.fov, renderer.domElement.clientHeight)
-}
-
-/** The Earth's drawn radius in world units — system scale and pixel floor included. */
-function earthWorldRadius() {
-  return EARTH_RADIUS * globe.scale.x * globeSphere.scale.x
 }
 
 /** Places and sizes every scale-dependent object for scaleT and the current camera. */
@@ -620,55 +473,9 @@ function applyScale(nowSeconds) {
   // own line at true scale, snapping back each minute (seen 2026-10-15). The
   // lighting derived from it stays on the minute: 0,0007° of drift.
   sunTable.positionKmAt(new Date(nowSeconds * 1000), sunPositionKm)
-  const isEarthFocus = frame.id === 'earth'
-  // Shrinking the globe *group* (not just the sphere) takes the ISS with it,
-  // so low orbit stays low orbit when the Earth is only a marker.
-  const earthScale = earthSystemScale(t, isEarthFocus)
 
-  placeKm(globe.position, EARTH_POSITION_KM, t)
-  globe.scale.setScalar(earthScale)
-  const earthRadius = Math.max(EARTH_RADIUS * earthScale, minRadiusAt(globe.position, MIN_RADIUS_PX.earth))
-  globeSphere.scale.setScalar(earthRadius / (EARTH_RADIUS * earthScale))
-
-  placeKm(moon.position, moonPositionKm, t)
-  const moonRadius = MOON_RADIUS * earthScale
-  moon.scale.setScalar(Math.max(moonRadius, minRadiusAt(moon.position, MIN_RADIUS_PX.moon)) / MOON_RADIUS)
-  // Tidally locked, which is exactly why this cannot be skipped: with no
-  // rotation applied the Moon's near side points at a fixed direction in space,
-  // so the far side turns towards the viewer over a month. The orientation
-  // route says where the Moon's pole and prime meridian are, and the sub-Earth
-  // libration falls out of it on its own — the near side stays facing the
-  // Earth because that is what the real rotation does, not because anything
-  // here aims it.
-  orientBody(moon.quaternion, 'moon', nowSeconds)
-
-  placeKm(sunMarker.position, sunPositionKm, t)
-  // The halo is legibility, not photosphere: gone at true scale, where it made
-  // the Sun 1,67 times too wide.
-  sunMarker.userData.glow.material.opacity = 0.25 * (1 - t)
-  sunMarker.userData.glow.visible = !isRealScale(t)
-  sunMarker.scale.setScalar(
-    Math.max(sunRadius(t, frame.id === 'sun'), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
-  )
-
-  // Low orbit is invisible from any other pivot (the Moon is already back on
-  // top of the Earth there), and an ISS dot pinned at the Earth's pixel would
-  // only add noise.
-  // Hidden the moment the simulated time is not the real time: the ISS is a live
-  // position with no table behind it, so at any other date it would be a lie.
-  // Placed at the real "now" from the ten-minute track, not on the last poll's
-  // reading (up to ~460 km behind until 2026-10-21) — and not at all once the
-  // track has run out: a stale cached reading is no longer drawn as live.
-  const issNow = isEarthFocus && clock.isRealTime() ? issAt(issPosition?.track, nowSeconds) : null
-  const issShown = issNow !== null
-  issMarker.visible = issShown
-  if (issShown) {
-    issMarker.position.copy(latLngToVector3(issNow.latitude, issNow.longitude, issOrbitRadius(issNow.altitude_km, t)))
-    issMarker.getWorldPosition(tmpWorldPos)
-    issMarker.scale.setScalar(
-      Math.max(issRadius(t), minRadiusAt(tmpWorldPos, MIN_RADIUS_PX.iss)) / ISS_READABLE_RADIUS,
-    )
-  }
+  earthSystem.update(nowSeconds, t, { realTime: clock.isRealTime(), earthOrbitDrawn: planets.drawnAt(t) })
+  sun.update(t)
 
   distanceRings.group.visible = ringsEnabled && t > 0.001
   for (const ring of distanceRings.list) {
@@ -676,9 +483,8 @@ function applyScale(nowSeconds) {
   }
 
   // Twice as far as the camera may pull back, so its edge never comes into view.
-  if (eclipticPlane.group.visible) eclipticPlane.update(sunMarker.position, controls.maxDistance * 2)
+  if (eclipticPlane.group.visible) eclipticPlane.update(sun.marker.position, controls.maxDistance * 2)
 
-  updateBodyOrbits(t)
   planets.update(nowSeconds, t)
   moons.update(nowSeconds, t)
   neoScene.update(nowSeconds, t)
@@ -783,7 +589,7 @@ function afterTimeJump() {
   const simMs = clock.nowMs(wallMs)
   updateAstronomy(new Date(simMs))
   orbitsRebuiltWallMs = wallMs
-  rebuildBodyOrbits(simMs, { earth: !sunTable.known })
+  earthSystem.rebuildOrbits(simMs, { earth: !sunTable.known })
   renderTimePanel(simMs, wallMs)
   renderScalePanel() // its NEO distances are the simulated ones
   // The sheet quotes a distance at the simulated date, written once: redo it.
@@ -923,16 +729,21 @@ const labels = createSceneLabels({
   camera,
   canvas: renderer.domElement,
   // A label hides behind the Earth, whose radius follows the scale cursor.
-  occluder: () => ({ center: globe.position, radius: earthWorldRadius() }),
+  occluder: () => earthSystem.earthOccluder(),
 })
 
-const bodyLabels = {
-  earth: labels.create('Terre'),
-  moon: labels.create('Lune'),
-  iss: labels.create('ISS'),
-  sun: labels.create('Soleil'),
-}
-const moonOrbitLabel = labels.create('orbite lunaire', 'ring')
+// --- the Earth, the Moon, the ISS and the Sun -----------------------------------
+//
+// Built here, after the label factory, because each names its own bodies — the
+// same reason as the planets below. The first astronomy pass and the first
+// orbit sampling wait for them; nothing before this point reads either.
+
+const earthSystem = createEarthSystem({ scene, frame, traces, labels, minRadiusAt, sunTable, moonTable, moonPositionKm })
+const sun = createSun({ scene, frame, labels, minRadiusAt, sunPositionKm })
+
+updateAstronomy(new Date(simNowMs()))
+earthSystem.rebuildOrbits(simNowMs())
+
 const orbitMarkerLabels = {
   perihelion: labels.create('périhélie', 'ring'),
   aphelion: labels.create('aphélie', 'ring'),
@@ -1193,37 +1004,10 @@ function rebuildRingLabels() {
 distanceRings.rebuild(frame.focus.rings)
 rebuildRingLabels()
 
-const issLabelPos = new THREE.Vector3()
-const moonOrbitLabelPos = new THREE.Vector3()
-
 /** Names bodies once they've shrunk to dots, and labels the rings and orbits. */
 function updateSceneLabels() {
-  // Named once too small to read as themselves — the Sun except when the scene
-  // is centred on it, the ISS only once the scale makes it a speck.
-  const bodies = [
-    { el: bodyLabels.earth, worldPos: globe.position, radius: earthWorldRadius(), occludable: false, show: true },
-    { el: bodyLabels.moon, worldPos: moon.position, radius: MOON_RADIUS * moon.scale.x, occludable: true, show: true },
-    {
-      el: bodyLabels.sun,
-      worldPos: sunMarker.position,
-      radius: SUN_READABLE_RADIUS * sunMarker.scale.x,
-      occludable: true,
-      show: frame.id !== 'sun',
-    },
-    {
-      el: bodyLabels.iss,
-      worldPos: issMarker.visible ? issMarker.getWorldPosition(issLabelPos) : null,
-      radius: issRadius(scaleT),
-      occludable: true,
-      show: issMarker.visible && scaleT > 0.001,
-    },
-  ].map((body) => ({
-    ...body,
-    show:
-      body.show &&
-      body.worldPos !== null &&
-      labels.projectedRadiusPx(body.worldPos, body.radius) < LABEL_WHEN_SMALLER_THAN_PX,
-  }))
+  // Named once too small to read as themselves — each module decides its own.
+  const earthLabels = earthSystem.labelEntries(scaleT)
 
   const rings = ringLabels.map(({ el, at }, i) => {
     const ring = distanceRings.list[i]
@@ -1239,23 +1023,18 @@ function updateSceneLabels() {
     }
   })
 
-  // The lunar orbit names itself a quarter of a revolution ahead of the Moon,
-  // so the two labels don't stack.
-  const moonOrbitDrawn = moonOrbitTrace.line.visible && moonOrbitTrace.km
-  if (moonOrbitDrawn) {
-    moonOrbitLabelPos.fromArray(moonOrbitTrace.km, Math.floor(MOON_ORBIT_SAMPLES / 4) * 3)
-    placeKm(moonOrbitLabelPos, moonOrbitLabelPos, scaleT)
-  }
-
   labels.update([
-    ...bodies,
+    earthLabels.earth,
+    earthLabels.moon,
+    sun.labelEntry(),
+    earthLabels.iss,
     // After the four above, so a planet's name never pushes the Earth's or the
     // Moon's aside — the list order is the spacing arbitration.
     ...planets.labelEntries(),
     ...moons.labelEntries(),
     ...trackedScene.labelEntries(),
     ...rings,
-    { el: moonOrbitLabel, worldPos: moonOrbitLabelPos, occludable: true, show: Boolean(moonOrbitDrawn) },
+    earthLabels.moonOrbit,
     // Perihelion / aphelion / nodes of the drawn heliocentric orbit.
     ...Object.entries(neoScene.orbitMarkers).map(([key, mesh]) => ({
       el: orbitMarkerLabels[key],
@@ -1276,10 +1055,7 @@ createPicking({
   starfield,
   panels,
   // Read fresh at each pick: both radii follow the scale cursor.
-  occluders: () => [
-    { center: globe.position, radius: earthWorldRadius() },
-    { center: moon.position, radius: MOON_RADIUS * moon.scale.x },
-  ],
+  occluders: () => earthSystem.occluders(),
   on: {
     neoClicked: (neo) => showNeoModal(neo),
     trackedClicked: (entry) => showTrackedModal(entry.rec.spkid),
@@ -1293,7 +1069,7 @@ async function refreshIss() {
   try {
     const position = await fetchIssPosition()
     saveCached('iss', position)
-    applyIssPosition(position)
+    earthSystem.setIssPosition(position)
     panels.renderIss(position, null, Date.now())
   } catch (err) {
     panels.renderIss(null, err.message)
@@ -1367,7 +1143,7 @@ const cachedNeo = loadCached('neo')
 const cachedApod = loadCached('apod')
 
 if (cachedIss) {
-  applyIssPosition(cachedIss.data)
+  earthSystem.setIssPosition(cachedIss.data)
   panels.renderIss(cachedIss.data, null, cachedIss.fetchedAt)
 }
 if (cachedNeo) {
@@ -1400,32 +1176,13 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight)
 })
 
-const SCENE_UP = new THREE.Vector3(0, 1, 0)
-const earthPole = new THREE.Vector3()
-const earthTilt = new THREE.Quaternion()
-const earthSpin = new THREE.Quaternion()
-
 function animate() {
   requestAnimationFrame(animate)
   const wallMs = Date.now()
   // The simulated clock, read once: every placement of the frame shares it.
   const nowMs = clock.nowMs(wallMs)
   const now = new Date(nowMs)
-  // Recomputed fresh from the clock every frame (not accumulated per frame) so
-  // it's exactly right regardless of frame rate or a backgrounded tab, with no
-  // drift to correct for.
-  // Tilted onto the pole of date, then spun by the ERA about it (astronomy.js):
-  // the scene's axes are J2000, and the J2000 pole is 0,15° off the real one in
-  // 2026; GMST, used until 2026-10-21, turned the globe 0,34° too far.
-  const [px, py, pz] = getEarthPoleJ2000(now)
-  earthTilt.setFromUnitVectors(SCENE_UP, icrfToScene(px, py, pz, earthPole))
-  earthSpin.setFromAxisAngle(SCENE_UP, (getEarthRotationAngle(now) * Math.PI) / 180)
-  globe.quaternion.multiplyQuaternions(earthTilt, earthSpin)
-  // Same discipline for the clouds: a function of the clock, not a per-frame
-  // increment, so a backgrounded tab comes back where it should be.
-  // It adds to the globe's rotation rather than replacing it — the layer is a
-  // child of the sphere (scene/bodies.js).
-  globeClouds.rotation.y = cloudDriftAt(now)
+  earthSystem.orient(now)
 
   stepAstronomy(nowMs, wallMs)
   // Real time is rendered on events only; a running fast clock changes its
@@ -1437,7 +1194,7 @@ function animate() {
   updateCameraLimits()
   controls.update()
   starfield.group.position.copy(camera.position)
-  globe.updateMatrixWorld()
+  earthSystem.globe.updateMatrixWorld()
   applyScale(nowMs / 1000)
   updateSceneLabels()
 
