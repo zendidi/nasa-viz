@@ -773,3 +773,50 @@ export function createDistanceRings(scene) {
     },
   }
 }
+
+/**
+ * The ecliptic plane (2026-10-27), off by default, the "Plan de l'écliptique"
+ * box of the view panel: a faint disc with a polar grid, so the tilt of an
+ * orbit (a NEO's, Pluto's) reads against something.
+ *
+ * Same orientation trick as the distance rings: drawn in XZ, the group turned
+ * by the obliquity about X. It is the plane *through the Sun*, so main.js
+ * slides it along the ecliptic pole to wherever the Sun is placed — nothing
+ * for the Earth and the Sun, which both lie in it; a little for a planet off
+ * the ecliptic. Exact at 100 % réel; below it the scale curve compresses
+ * distances radially from the pivot, so for a planet pivot the plane through
+ * the placed Sun is the closest flat stand-in, not a measurement.
+ */
+const ECLIPTIC_POLE_SCENE = new THREE.Vector3(0, Math.cos(OBLIQUITY_RAD), Math.sin(OBLIQUITY_RAD))
+
+export function createEclipticPlane(scene) {
+  const group = new THREE.Group()
+  group.rotation.x = OBLIQUITY_RAD
+  group.visible = false
+  // Translucent and never writing depth: a plane this size crosses everything,
+  // and must not hide what sits behind or under it.
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1, 128).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x4fa8ff, transparent: true, opacity: 0.05, side: THREE.DoubleSide, depthWrite: false }),
+  )
+  const grid = new THREE.PolarGridHelper(1, 12, 10, 128, 0x4fa8ff, 0x4fa8ff)
+  for (const material of [grid.material].flat()) {
+    material.transparent = true
+    material.opacity = 0.18
+    material.depthWrite = false
+  }
+  group.add(disc, grid)
+  scene.add(group)
+
+  return {
+    group,
+    /**
+     * @param {THREE.Vector3} sunScenePos where the Sun is drawn this frame
+     * @param {number} radius how far the plane must reach, in scene units
+     */
+    update(sunScenePos, radius) {
+      group.position.copy(ECLIPTIC_POLE_SCENE).multiplyScalar(sunScenePos.dot(ECLIPTIC_POLE_SCENE))
+      group.scale.setScalar(radius)
+    },
+  }
+}

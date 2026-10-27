@@ -109,7 +109,7 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  *                                          scale step when it happens over it
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed,
- *                                          allOrbits, points, venusSurface, rings,
+ *                                          allOrbits, points, venusSurface, rings, ecliptic,
  *                                          timeRate, timeReset
  */
 /**
@@ -230,9 +230,12 @@ export function createPanels({ app, wheelTarget, on }) {
     <div class="scale-row focus-planets">
       ${focusButtons('planet')}
     </div>
-    <div class="scale-row">
+    <div class="scale-row view-options">
       <button id="recenter-btn">Recentrer</button>
-      <label class="rings-toggle"><input type="checkbox" id="rings-toggle" checked>Cercles</label>
+      <div class="view-toggles">
+        <label class="rings-toggle"><input type="checkbox" id="rings-toggle" checked>Cercles</label>
+        <label class="rings-toggle"><input type="checkbox" id="ecliptic-toggle">Plan de l'écliptique</label>
+      </div>
     </div>
     <p id="view-label"></p>
     <p class="muted scale-hint">Touche R : recentrer</p>
@@ -407,11 +410,14 @@ export function createPanels({ app, wheelTarget, on }) {
        not push #bottom-bar wider than the viewport. */
     #view-panel .rings-toggle { cursor: pointer; pointer-events: auto; margin: 0 0 0 4px; }
     #view-panel .rings-toggle input { vertical-align: -1px; margin-right: 4px; accent-color: #4fa8ff; }
-    #view-panel .focus-planets { flex-wrap: wrap; max-width: 260px; }
+    /* A fifth wider than its content used to make it (2026-10-27), for room to grow. */
+    #view-panel { width: 352px; box-sizing: border-box; }
+    #view-panel .focus-planets { flex-wrap: wrap; }
+    #view-panel .view-toggles { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
     #view-panel .focus-planets .focus-btn { font-size: 11px; padding: 2px 6px; }
     .focus-btn:disabled { opacity: 0.35; cursor: default; }
     #scale-label { margin: 8px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
-    #view-label { margin: 8px 0 0; font-size: 12px; opacity: 0.75; max-width: 220px; }
+    #view-label { margin: 8px 0 0; font-size: 12px; opacity: 0.75; }
     #scale-panel .scale-hint, #view-panel .scale-hint { margin: 2px 0 0; font-size: 11px; opacity: 0.55; }
 
     #scene-labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 1;
@@ -922,6 +928,7 @@ export function createPanels({ app, wheelTarget, on }) {
   viewPanel.querySelector('#recenter-btn').addEventListener('click', () => on.recenter())
   // Static markup, never re-rendered: a direct listener is enough here.
   viewPanel.querySelector('#rings-toggle').addEventListener('change', (event) => on.rings(event.target.checked))
+  viewPanel.querySelector('#ecliptic-toggle').addEventListener('change', (event) => on.ecliptic(event.target.checked))
 
   window.addEventListener('keydown', (event) => {
     if (event.key === 'r' || event.key === 'R') on.recenter()

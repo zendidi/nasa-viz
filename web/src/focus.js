@@ -14,17 +14,24 @@
 import { AU_KM, EARTH_CURVE, LUNAR_DISTANCE_KM, SUN_CURVE, isRealScale, moonSystemCurve, orbitingCurve } from './scale.js'
 
 const lunarRing = (count, label) => ({ km: count * LUNAR_DISTANCE_KM, label })
-const auRing = (au) => ({ km: au * AU_KM, label: `${au.toLocaleString('fr-FR')} ua` })
+/**
+ * Every ring outside the Earth's view is labelled in au, two decimals, always
+ * (2026-10-27, user's call): "0,50 UA", "2,00 UA". Kept strict even where it
+ * rounds to "0,00 UA" — the moon-system rings around a planet are a few
+ * thousandths of an au at most, and the user preferred one uniform reading to
+ * a power of ten. The Earth's rings stay in lunar distances.
+ */
+const auLabel = (km) =>
+  `${(km / AU_KM).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} UA`
+
+const auRing = (au) => ({ km: au * AU_KM, label: auLabel(au * AU_KM) })
 
 /**
  * Same circle, for a distance that falls out of a computation instead of being
- * chosen: 0,19355 au reads as noise, so it is rounded to two significant
- * digits. These rings are a yardstick for the eye, not a measurement.
+ * chosen (0,19355 au): the two fixed decimals of `auLabel` round it the same
+ * way. These rings are a yardstick for the eye, not a measurement.
  */
-const scaledRing = (au) => ({
-  km: au * AU_KM,
-  label: `${au.toLocaleString('fr-FR', { maximumSignificantDigits: 2 })} ua`,
-})
+const scaledRing = auRing
 
 /**
  * @typedef {{
@@ -158,10 +165,7 @@ const PLANET_MOON_ANCHOR = {
  * all**, which is exactly the limit that was documented as accepted on
  * 2026-09-29. The new curve lifted it.
  */
-const moonRing = (km) => ({
-  km: Math.round(km),
-  label: `${Math.round(km).toLocaleString('fr-FR', { maximumSignificantDigits: 2 })} km`,
-})
+const moonRing = (km) => ({ km: Math.round(km), label: auLabel(km) })
 
 export const PLANET_FOCUS_IDS = Object.keys(PLANET_AU)
 
@@ -182,9 +186,9 @@ for (const id of PLANET_FOCUS_IDS) {
     // one system is bigger than another, all the scaled ones being pinned to
     // land in the same place whichever pivot you choose.
     rings: anchorKm
-      ? [{ km: AU_KM, label: '1 ua (Terre)', absolute: true }, moonRing(0.3 * anchorKm), moonRing(3 * anchorKm)]
+      ? [{ km: AU_KM, label: `${auLabel(AU_KM)} (Terre)`, absolute: true }, moonRing(0.3 * anchorKm), moonRing(3 * anchorKm)]
       : [
-          { km: AU_KM, label: '1 ua (Terre)', absolute: true },
+          { km: AU_KM, label: `${auLabel(AU_KM)} (Terre)`, absolute: true },
           scaledRing(0.5 * au),
           scaledRing(2 * au),
           scaledRing(5 * au),

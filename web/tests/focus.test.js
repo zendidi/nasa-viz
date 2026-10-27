@@ -156,11 +156,22 @@ describe('FOCUSES', () => {
 
   it('formate les nombres a la francaise dans les libelles d anneau (virgule, pas point)', () => {
     // Contrat de mise en forme pin sur une entree ecrite a la main (pas
-    // generee en boucle) : 0,5 ua et pas "0.5 ua".
+    // generee en boucle) : 0,50 UA et pas "0.50 UA".
     const ring = FOCUSES.sun.rings.find((r) => r.label.includes('0,5'))
     expect(ring).toBeDefined()
-    expect(ring.label).toBe('0,5 ua')
+    expect(ring.label).toBe('0,50 UA')
     expect(ring.label).not.toMatch(/\./)
+  })
+
+  // 2026-10-27 : hors vue Terre, tout cercle s'ecrit en UA a deux decimales
+  // strictes, sans croix et sans km -- meme ceux des lunes, qui tombent a 0,00.
+  it('hors vue Terre, chaque cercle s ecrit "d,dd UA", jamais en km', () => {
+    for (const id of FOCUS_IDS.filter((f) => f !== 'earth')) {
+      for (const ring of FOCUSES[id].rings) {
+        expect(ring.label, `${id} ${ring.label}`).toMatch(/^\d+,\d{2} UA( \(Terre\))?$/)
+      }
+    }
+    expect(FOCUSES.mars.rings.map((r) => r.label)).toContain('0,00 UA')
   })
 })
 

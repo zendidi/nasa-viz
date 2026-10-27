@@ -22,6 +22,7 @@ import {
   makeSunMarker,
   makeMoon,
   createDistanceRings,
+  createEclipticPlane,
   cloudDriftAt,
 } from './scene/bodies.js'
 import { createPlanets } from './scene/planets.js'
@@ -126,6 +127,7 @@ const moon = makeMoon()
 scene.add(moon)
 
 const distanceRings = createDistanceRings(scene)
+const eclipticPlane = createEclipticPlane(scene)
 
 // --- astronomy (real Sun/Moon positions) --------------------------------------
 
@@ -744,6 +746,9 @@ function applyScale(nowSeconds) {
     ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t, focusOf().curve))
   }
 
+  // Twice as far as the camera may pull back, so its edge never comes into view.
+  if (eclipticPlane.group.visible) eclipticPlane.update(sunMarker.position, controls.maxDistance * 2)
+
   updateBodyOrbits(t)
   planets.update(nowSeconds, t)
   moons.update(nowSeconds, t)
@@ -776,6 +781,9 @@ const panels = createPanels({
     },
     rings: (enabled) => {
       ringsEnabled = enabled
+    },
+    ecliptic: (enabled) => {
+      eclipticPlane.group.visible = enabled
     },
     venusSurface: (enabled) => {
       venusSurface = enabled
