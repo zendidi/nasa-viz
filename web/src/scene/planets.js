@@ -305,10 +305,8 @@ function orbitSamplesKm(record) {
  * @param {THREE.Scene} options.scene
  * @param {object} options.labels  labels.js — only `create` is used
  * @param {object} options.traces  scene/orbitTrace.js
- * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} options.placeKm
+ * @param {import('./frame.js').ViewFrame} options.frame  the pivot and its placers
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
- * @param {() => boolean} options.hidesPlanets  does the pivot hide the other planets below 100 % reel?
- * @param {() => string | null} options.focusPlanetId  which planet is the pivot, if any
  * @param {THREE.Vector3} options.sunPositionKm  live geocentric Sun, mutated in place by
  *   main.js's `updateAstronomy()` — held by reference on purpose, so the lighting
  *   follows it without a per-frame hand-off
@@ -318,10 +316,8 @@ export function createPlanets({
   scene,
   labels,
   traces,
-  placeKm,
+  frame,
   minRadiusAt,
-  hidesPlanets,
-  focusPlanetId,
   sunPositionKm,
   on,
 }) {
@@ -613,8 +609,8 @@ export function createPlanets({
 
   /** Places and sizes every planet that has a table, for the current scale and camera. */
   function update(nowSeconds, t) {
-    const fade = planetFade(t, hidesPlanets())
-    const pivotId = focusPlanetId()
+    const fade = planetFade(t, frame.hidesPlanets())
+    const pivotId = frame.planet ? frame.planet.id : null
 
     for (const body of bodies) {
       // Kept up to date even when nothing is drawn: `positionKm` is what the
@@ -627,7 +623,7 @@ export function createPlanets({
       body.mesh.visible = body.known && bodyFade > 0.001
       if (body.mesh.visible) {
         applyFade(body, bodyFade)
-        placeKm(body.mesh.position, body.positionKm, t)
+        frame.placeKm(body.mesh.position, body.positionKm, t)
         orientBody(body.mesh.quaternion, body.id, nowSeconds)
         // The real direction from this planet to the Sun, in scene axes. Both
         // vectors are geocentric km, so the difference is exact — unaffected by
@@ -795,7 +791,7 @@ export function createPlanets({
      * far the camera may pull back (`updateCameraLimits` in main.js).
      */
     drawnAt(t) {
-      return planetFade(t, hidesPlanets()) > 0.001
+      return planetFade(t, frame.hidesPlanets()) > 0.001
     },
     /**
      * What labels.js should place for the planets, in the scene's own order

@@ -109,16 +109,15 @@ export function designationOf(neo) {
  * @param {THREE.Scene}  options.scene
  * @param {THREE.Camera} options.camera
  * @param {object}       options.traces  scene/orbitTrace.js
- * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} options.placeKm
- * @param {(out: THREE.Vector3, relativeKm: any, t: number) => void} options.placeRelativeKm
+ * @param {import('../scene/frame.js').ViewFrame} options.frame  the pivot and its placers
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
- * @param {() => string} options.focusId  which body the scene is centred on
  * @param {(date: Date, out: THREE.Vector3) => THREE.Vector3} options.sunPositionKmAt
  *   the Sun's geocentric position, km, scene axes — turns a heliocentric
  *   Kepler position into the geocentric one every NEO is placed from
  * @param {{detailsProgress: Function, detailsApplied: Function, positionsChanged: (settled: boolean) => void}} options.on
  */
-export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm, minRadiusAt, focusId, sunPositionKmAt, on }) {
+export function createNeoScene({ scene, camera, traces, frame, minRadiusAt, sunPositionKmAt, on }) {
+  const { placeKm, placeRelativeKm } = frame
   const group = new THREE.Group()
   scene.add(group)
 
@@ -401,7 +400,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   function updateTrajectory(nowSeconds, t) {
     // Geocentric path only makes sense centred on the Earth; the heliocentric
     // view draws the whole orbit instead (docs/points-de-vue.md).
-    const table = selected && focusId() === 'earth' ? positions.objects[selected.designation] : null
+    const table = selected && frame.id === 'earth' ? positions.objects[selected.designation] : null
     if (!table || table.positions.length < 2) {
       trajectoryLine.visible = false
       trajectoryArrow.visible = false
@@ -441,7 +440,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   /** Human summary of the drawn path, for the modal. */
   function describeTrajectory(entry) {
     const table = positions.objects[entry.designation]
-    if (focusId() !== 'earth' || !table || table.positions.length < 2) return ''
+    if (frame.id !== 'earth' || !table || table.positions.length < 2) return ''
     const closestAt = new Date((table.start + trajectoryClosestIndex * positions.stepSeconds) * 1000)
     return `<p class="muted">Trajectoire réelle tracée dans la scène (JPL Horizons) — passé atténué, cercle = passage au plus près${
       entry === selected ? ` le ${closestAt.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}` : ''
@@ -541,7 +540,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
   }
 
   function updateHeliocentricOrbit(t) {
-    const orbit = neoEllipsesVisible(focusId(), t) ? selectedOrbitElements() : null
+    const orbit = neoEllipsesVisible(frame.id, t) ? selectedOrbitElements() : null
     heliocentricGroup.visible = orbit !== null
     if (!orbit) {
       orbitBuiltFrom = null
@@ -570,10 +569,10 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
 
   /** Human summary of the heliocentric trace, for the modal. `t` is the slider's own value. */
   function describeOrbit(entry, t) {
-    if (focusId() !== 'sun') return ''
+    if (frame.id !== 'sun') return ''
     const orbit = entry === selected ? selectedOrbitElements() : null
     if (!orbit) return ''
-    if (!neoEllipsesVisible(focusId(), t)) {
+    if (!neoEllipsesVisible(frame.id, t)) {
       return `<p class="muted">Orbite complète visible en échelle réelle (Maj + molette jusqu'à « 100 % réel ») :
       en échelle comprimée, la courbe déforme les ellipses.</p>`
     }
@@ -638,7 +637,7 @@ export function createNeoScene({ scene, camera, traces, placeKm, placeRelativeKm
     // geocentric one squeezes the whole solar system into seven scene units
     // (19,1 to 26,2, measured in scene/planets.js). See `neo-ellipse-pivot` in
     // docs/agent/backlog.md.
-    allOrbitsGroup.visible = pointsEnabled && allOrbitsEnabled && neoEllipsesVisible(focusId(), t)
+    allOrbitsGroup.visible = pointsEnabled && allOrbitsEnabled && neoEllipsesVisible(frame.id, t)
     if (!allOrbitsGroup.visible) return
     if (allOrbitsStale) buildAllOrbits()
     for (const trace of Object.values(allOrbits)) traces.update(trace, t)

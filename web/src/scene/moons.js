@@ -136,14 +136,13 @@ function covers(record) {
  * @param {THREE.Scene} options.scene
  * @param {object} options.labels  labels.js — only `create` is used
  * @param {object} options.traces  scene/orbitTrace.js
- * @param {(out: THREE.Vector3, relativeKm: THREE.Vector3, t: number) => void} options.placeRelativeKm
+ * @param {import('./frame.js').ViewFrame} options.frame  the pivot and its placers —
+ *   `frame.planet`, the pivot's own record when it is a planet, is the moons' whole reason to exist
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
- * @param {() => {id: string, positionKm: THREE.Vector3} | null} options.focusPlanet
- *   the pivot's own record when it is a planet — the moons' whole reason to exist
  * @param {THREE.Vector3} options.sunPositionKm  live geocentric Sun, mutated in place by main.js
  * @param {{changed: Function}} options.on
  */
-export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusAt, focusPlanet, sunPositionKm, on }) {
+export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPositionKm, on }) {
   const group = new THREE.Group()
   scene.add(group)
 
@@ -263,7 +262,7 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
 
   /** Places and sizes the current pivot's moons; hides every other. */
   function update(nowSeconds, t) {
-    const planet = focusPlanet()
+    const planet = frame.planet
 
     for (const body of Object.values(bodies)) {
       const mine = planet !== null && tables[body.id]?.planet === planet.id
@@ -276,7 +275,7 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
       if (!body.known) continue
 
       // Already relative to the pivot, because the pivot IS this moon's planet.
-      placeRelativeKm(body.mesh.position, body.positionKm, t)
+      frame.placeRelativeKm(body.mesh.position, body.positionKm, t)
 
       loadMapFor(body)
       // Locked moon: pole of its planet, longitude 0 toward the planet. The
@@ -359,7 +358,7 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
     update,
     /** Distances from the pivot, in km — the camera's reach reads these. */
     distancesKm() {
-      const planet = focusPlanet()
+      const planet = frame.planet
       if (!planet) return []
       return Object.values(bodies)
         .filter((body) => body.known && tables[body.id]?.planet === planet.id)
@@ -376,7 +375,7 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
     },
     /** For the panel: how many moons the centred planet has drawn, and whether more are coming. */
     status() {
-      const planet = focusPlanet()
+      const planet = frame.planet
       if (!planet) return null
       const mine = Object.values(tables).filter((record) => record.planet === planet.id)
       return { planet: planet.id, known: mine.length, loading: loadingPlanet === planet.id, error: loadErrors[planet.id] ?? null }

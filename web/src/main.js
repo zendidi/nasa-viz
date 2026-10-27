@@ -6,12 +6,13 @@ import { getEarthPoleJ2000, getEarthRotationAngle } from './astronomy.js'
 import { issAt } from './iss.js'
 import { createClock, defaultMaxMs, defaultMinMs } from './clock.js'
 import { createMoonTable, createSunTable } from './sunTable.js'
-import { FOCUSES, hidesPlanets, neoEllipsesVisible } from './focus.js'
+import { FOCUSES, neoEllipsesVisible } from './focus.js'
 import { createPanels } from './ui/panels.js'
 import { neoSheetHtml, trackButtonHtml, trackedSheetHtml } from './ui/sheets.js'
 import { createStarfield } from './scene/starfield.js'
 import { createPicking } from './picking.js'
 import { createOrbitTraces } from './scene/orbitTrace.js'
+import { EARTH_POSITION_KM, createViewFrame } from './scene/frame.js'
 import { createNeoScene, designationOf } from './neo/scene.js'
 import { createTrackedScene } from './tracked/scene.js'
 import {
@@ -62,7 +63,6 @@ import {
   issOrbitRadius,
   issRadius,
   sunRadius,
-  pivotRadius,
   worldPerPixel,
   describeScale,
   isRealScale,
@@ -157,7 +157,6 @@ let sunDistanceKm = AU_KM
 // goes through, whichever body the scene is centred on (see placeKm()).
 const sunPositionKm = new THREE.Vector3()
 const moonPositionKm = new THREE.Vector3()
-const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)
 
 // The one clock for everything placed or oriented in time (clock.js). It reads
 // the wall only through the argument we hand it: the cache-validity checks and
@@ -220,93 +219,15 @@ function updateAstronomy(now) {
 
 // --- point de vue (le corps au centre de la scène) ----------------------------
 //
-// The pivot IS the scene's origin: nothing is drawn at an absolute position,
-// everything goes through placeKm() below. Switching pivot therefore only
-// changes two things — which position is subtracted, and which readable curve
-// compresses what's left (docs/points-de-vue.md).
-
-let focusId = 'earth'
-const focusOf = () => FOCUSES[focusId]
-
-/**
- * The planet's own record when a planet is the pivot, null otherwise. Resolved
- * once on the switch rather than looked up per placement: `placeKm` runs for
- * every NEO and every body, dozens of times a frame.
- *
- * It is also the guard. `setFocus` only assigns it once the planet's Horizons
- * table has landed, so anything reading it can trust `positionKm`.
- *
- * @type {{id: string, radiusKm: number, positionKm: THREE.Vector3} | null}
- */
-let focusPlanet = null
+// scene/frame.js: the pivot, its position and radius, and the three placers
+// every module draws through. setFocus() below is the only thing that moves it.
+const frame = createViewFrame({ sunPositionKm })
+const { placeKm } = frame
 
 /** Venus shows its cloud deck by default; ticked, the radar surface under it (planets panel). */
 let venusSurface = false
 // The distance rings, on by default; the view panel's "Cercles" box.
 let ringsEnabled = true
-
-const focusPositionKm = () => {
-  if (focusPlanet) return focusPlanet.positionKm
-  return focusId === 'sun' ? sunPositionKm : EARTH_POSITION_KM
-}
-
-/**
- * The pivot's own radius in scene units — what the camera must not enter.
- * `pivotRadius` covers all three cases by construction (see scale.js); the Earth
- * branch stays written out because EARTH_RADIUS is the anchor the others are
- * defined against, and reading it as a constant here is the clearer statement.
- */
-const focusRadius = (t) => {
-  if (focusPlanet) return pivotRadius(focusPlanet.radiusKm, t)
-  return focusId === 'sun' ? sunRadius(t, true) : EARTH_RADIUS
-}
-
-const placeRelative = new THREE.Vector3()
-
-/** Scene position of a body known by its geocentric km vector, at scale t. */
-function placeKm(out, geocentricKm, t) {
-  placeRelative.subVectors(geocentricKm, focusPositionKm())
-  const distanceKm = placeRelative.length()
-  if (distanceKm < 1e-6) return out.set(0, 0, 0)
-  return out.copy(placeRelative).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
-}
-
-/** Same, for a sample already expressed relative to the pivot (orbit traces). */
-function placeRelativeKm(out, relativeKm, t) {
-  const distanceKm = relativeKm.length()
-  if (distanceKm < 1e-6) return out.set(0, 0, 0)
-  return out.copy(relativeKm).multiplyScalar(sceneDistance(distanceKm, t, focusOf().curve) / distanceKm)
-}
-
-const placeHeliocentric = new THREE.Vector3()
-
-/**
- * Same, for a sample expressed relative to the **Sun** — orbital elements and
- * the backend's orbit tables both come that way.
- *
- * It is `placeKm` with one addition, and that is the whole trick: adding the
- * live geocentric Sun turns a heliocentric sample into a geocentric one, which
- * is the frame every body position in this scene already speaks. The pivot's
- * own subtraction then happens once, inside `placeKm`, instead of being
- * re-derived per caller.
- *
- * What it buys: a heliocentric orbit used to be readable only from the Sun,
- * where "relative to the pivot" and "relative to the Sun" are the same vector.
- * Drawn from the Earth it ringed the Earth, from Mars it ringed Mars — which is
- * why the planets' orbits were simply hidden anywhere but the Sun
- * (docs/agent/backlog.md, `orbite-planete-centree-pivot`). Now they are right
- * from every pivot.
- *
- * Note what is *not* subtracted: the pivot's position at each sample's own
- * date. Taking the current one translates the whole orbit rigidly, which is the
- * intended picture — where that orbit lies relative to us now. Subtracting a
- * moving pivot would draw the relative motion instead, i.e. the retrograde
- * rosettes that the 2026-09-29 cache bug accidentally put on screen.
- */
-function placeHeliocentricKm(out, heliocentricKm, t) {
-  placeHeliocentric.addVectors(heliocentricKm, sunPositionKm)
-  return placeKm(out, placeHeliocentric, t)
-}
 
 updateAstronomy(new Date(simNowMs()))
 
@@ -337,7 +258,7 @@ function stepAstronomy(simMs, wallMs) {
 
 // Orbit traces are shared: the NEO's ellipse and the Moon's and Earth's own
 // orbits are the same kind of line, re-projected every frame.
-const traces = createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricKm })
+const traces = createOrbitTraces({ frame })
 
 // The NEO points, the sheets that colour them, their real positions, and the
 // two drawings of the selected one all live together (neo/scene.js) — they
@@ -346,10 +267,8 @@ const neoScene = createNeoScene({
   scene,
   camera,
   traces,
-  placeKm,
-  placeRelativeKm,
+  frame,
   minRadiusAt,
-  focusId: () => focusId,
   sunPositionKmAt: (date, out) => sunTable.positionKmAt(date, out),
   on: {
     // A sheet arriving changes what the modal can show, then what the legend
@@ -437,7 +356,7 @@ rebuildBodyOrbits(simNowMs())
  * it would be the one line in the scene with nothing to point at.
  */
 function updateBodyOrbits(t) {
-  if (focusId === 'earth') traces.update(moonOrbitTrace, t)
+  if (frame.id === 'earth') traces.update(moonOrbitTrace, t)
   else moonOrbitTrace.line.visible = false
 
   if (planets.drawnAt(t)) traces.update(earthOrbitTrace, t)
@@ -478,15 +397,15 @@ function setScaleStep(step) {
 /** NEO distances from the current pivot — what the scale label and the camera anchors quote. */
 function neoDistancesKm() {
   neoScene.refreshPositions(simNowMs() / 1000)
-  return neoScene.entries.filter((e) => e.source).map((e) => e.positionKm.distanceTo(focusPositionKm()))
+  return neoScene.entries.filter((e) => e.source).map((e) => e.positionKm.distanceTo(frame.positionKm()))
 }
 
 /** The pivot's yardsticks, at their real current distance. */
 function focusReferences() {
   // Around a planet the Sun is the only yardstick the scene can quote today;
   // its moons will be the second one (lot 4).
-  if (focusPlanet) return [{ label: 'Soleil', km: focusPlanet.positionKm.distanceTo(sunPositionKm) }]
-  return focusId === 'sun' ? [{ label: 'Terre', km: sunDistanceKm }] : [{ label: 'Lune', km: moonDistanceKm }]
+  if (frame.planet) return [{ label: 'Soleil', km: frame.planet.positionKm.distanceTo(sunPositionKm) }]
+  return frame.id === 'sun' ? [{ label: 'Terre', km: sunDistanceKm }] : [{ label: 'Lune', km: moonDistanceKm }]
 }
 
 function medianOf(values) {
@@ -503,7 +422,7 @@ function medianOf(values) {
 function cameraAnchors(tFrom, tTo, neoMedianKm) {
   const from = [controls.minDistance]
   const to = [controls.minDistance]
-  const curve = focusOf().curve
+  const curve = frame.focus.curve
   const candidates = focusReferences().map((reference) => reference.km)
   if (neoMedianKm !== null) candidates.push(neoMedianKm)
   for (const km of candidates) {
@@ -536,16 +455,16 @@ function stepScaleTransition(nowMs) {
 
 /** Zoom range follows how far the scene extends at the current scale. */
 function updateCameraLimits() {
-  const curve = focusOf().curve
+  const curve = frame.focus.curve
   let farthest = 0
   for (const reference of focusReferences()) {
     farthest = Math.max(farthest, sceneDistance(reference.km, scaleT, curve))
   }
   for (const entry of neoScene.entries) {
-    if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+    if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(frame.positionKm()), scaleT, curve))
   }
   for (const km of trackedScene.positionsKm()) {
-    farthest = Math.max(farthest, sceneDistance(km.distanceTo(focusPositionKm()), scaleT, curve))
+    farthest = Math.max(farthest, sceneDistance(km.distanceTo(frame.positionKm()), scaleT, curve))
   }
   // Neptune sits further out than any NEO in both views — without this the
   // zoom would stop short of the planet it is drawing. Only while the planets
@@ -553,7 +472,7 @@ function updateCameraLimits() {
   // 100 % réel (the pivot itself is at distance 0), and an invisible Neptune must not be what lets the camera pull back 26 units.
   if (planets.drawnAt(scaleT)) {
     for (const body of planets.bodies) {
-      if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+      if (body.known) farthest = Math.max(farthest, sceneDistance(body.positionKm.distanceTo(frame.positionKm()), scaleT, curve))
     }
   }
   // A moon can be the furthest thing in the scene at the readable end —
@@ -569,7 +488,7 @@ function updateCameraLimits() {
   }
   // The pivot is the anchor: never let the camera dive inside it (the Sun at
   // true scale is 218 units across, where the Earth is 2).
-  controls.minDistance = focusRadius(scaleT) * lerpLog(1.75, 1.3, scaleT)
+  controls.minDistance = frame.radius(scaleT) * lerpLog(1.75, 1.3, scaleT)
   controls.maxDistance = Math.max(20, farthest * 2.5)
   // OrbitControls' dolly is multiplicative (×0.95 per wheel notch at speed 1):
   // spanning 2.6 → ~60 000 would take ~190 notches without this.
@@ -602,7 +521,7 @@ const focusOffset = new THREE.Vector3()
  */
 function setFocus(nextId) {
   const next = FOCUSES[nextId]
-  if (nextId === focusId || !next) return
+  if (nextId === frame.id || !next) return
 
   // A planet only becomes the pivot once its Horizons table has landed. Without
   // a position there is no origin to subtract, so every body in the scene would
@@ -613,12 +532,11 @@ function setFocus(nextId) {
   if (next.group === 'planet' && !nextPlanet) return
 
   focusOffset.subVectors(camera.position, controls.target)
-  const framedKm = sceneDistanceToKm(focusOffset.length(), scaleT, focusOf().curve)
+  const framedKm = sceneDistanceToKm(focusOffset.length(), scaleT, frame.focus.curve)
 
-  focusId = nextId
-  focusPlanet = nextPlanet
+  frame.set(nextId, nextPlanet)
   recenterTween = null
-  distanceRings.rebuild(focusOf().rings)
+  distanceRings.rebuild(frame.focus.rings)
   rebuildRingLabels()
   neoScene.invalidateOrbit()
 
@@ -629,9 +547,9 @@ function setFocus(nextId) {
   // the Sun (radius 696 000 km), and framing the NEO cloud from the Earth is
   // a pinhole around the Sun.
   const reference = focusReferences()[0]
-  const framed = sceneDistance(framedKm, scaleT, focusOf().curve)
-  const closest = Math.max(controls.minDistance, focusRadius(scaleT) * 3)
-  const furthest = Math.min(controls.maxDistance, sceneDistance(reference.km, scaleT, focusOf().curve) * 1.8)
+  const framed = sceneDistance(framedKm, scaleT, frame.focus.curve)
+  const closest = Math.max(controls.minDistance, frame.radius(scaleT) * 3)
+  const furthest = Math.min(controls.maxDistance, sceneDistance(reference.km, scaleT, frame.focus.curve) * 1.8)
   camera.position.copy(focusOffset.setLength(THREE.MathUtils.clamp(framed, closest, Math.max(closest, furthest))))
 
   renderScalePanel()
@@ -650,12 +568,12 @@ function setFocus(nextId) {
   // Nothing is loaded for a planet nobody looks at — the moons and the
   // orientation cost Horizons requests, the map costs bandwidth, and none of it
   // buys anything at the few pixels a planet occupies from anywhere else.
-  if (focusPlanet) {
-    moons.loadFor(focusPlanet.id)
-    planets.loadTextureFor(focusPlanet.id)
-    loadOrientationFor(focusPlanet.id)
+  if (frame.planet) {
+    moons.loadFor(frame.planet.id)
+    planets.loadTextureFor(frame.planet.id)
+    loadOrientationFor(frame.planet.id)
   }
-  if (focusId === 'sun') sunMarker.userData.loadTexture()
+  if (frame.id === 'sun') sunMarker.userData.loadTexture()
 }
 
 // Dragging with the right button wanders off the pivot; this brings it back to
@@ -702,7 +620,7 @@ function applyScale(nowSeconds) {
   // own line at true scale, snapping back each minute (seen 2026-10-15). The
   // lighting derived from it stays on the minute: 0,0007° of drift.
   sunTable.positionKmAt(new Date(nowSeconds * 1000), sunPositionKm)
-  const isEarthFocus = focusId === 'earth'
+  const isEarthFocus = frame.id === 'earth'
   // Shrinking the globe *group* (not just the sphere) takes the ISS with it,
   // so low orbit stays low orbit when the Earth is only a marker.
   const earthScale = earthSystemScale(t, isEarthFocus)
@@ -730,7 +648,7 @@ function applyScale(nowSeconds) {
   sunMarker.userData.glow.material.opacity = 0.25 * (1 - t)
   sunMarker.userData.glow.visible = !isRealScale(t)
   sunMarker.scale.setScalar(
-    Math.max(sunRadius(t, focusId === 'sun'), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
+    Math.max(sunRadius(t, frame.id === 'sun'), minRadiusAt(sunMarker.position, MIN_RADIUS_PX.sun)) / SUN_READABLE_RADIUS,
   )
 
   // Low orbit is invisible from any other pivot (the Moon is already back on
@@ -754,7 +672,7 @@ function applyScale(nowSeconds) {
 
   distanceRings.group.visible = ringsEnabled && t > 0.001
   for (const ring of distanceRings.list) {
-    ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t, focusOf().curve))
+    ring.line.scale.setScalar(sceneDistance(ring.distanceKm, t, frame.focus.curve))
   }
 
   // Twice as far as the camera may pull back, so its edge never comes into view.
@@ -920,7 +838,7 @@ function renderNeoPanel(feed, error, fetchedAt) {
   panels.renderNeo(feed, error, fetchedAt, error ? [] : neoLegend(), {
     ...neoScene.allOrbitsStatus(),
     // Ticked or not, the box can do nothing from the Sun below 100 % réel.
-    scaleLocked: focusId === 'sun' && !neoEllipsesVisible(focusId, stepToT(scaleStep)),
+    scaleLocked: frame.id === 'sun' && !neoEllipsesVisible(frame.id, stepToT(scaleStep)),
   })
 }
 
@@ -936,12 +854,12 @@ function renderPlanetsPanel() {
     planets.legend(),
     planets.drawnAt(stepToT(scaleStep)),
     moons.status(),
-    focusId === 'venus' ? { surface: venusSurface } : null,
+    frame.id === 'venus' ? { surface: venusSurface } : null,
   )
 }
 
 function renderScalePanel() {
-  const focus = focusOf()
+  const focus = frame.focus
   panels.renderScale({
     step: scaleStep,
     frame: focus.frame,
@@ -955,7 +873,7 @@ function renderScalePanel() {
 }
 
 function renderViewPanel() {
-  panels.renderView(focusId, planets.focusableIds())
+  panels.renderView(frame.id, planets.focusableIds())
 }
 
 /** The NEO the detail panel is showing, so it can be re-rendered when its sheet arrives. */
@@ -1041,10 +959,9 @@ const trackedScene = createTrackedScene({
   scene,
   traces,
   labels,
-  placeKm,
+  frame,
   minRadiusAt,
   sunPositionKmAt: (date, out) => sunTable.positionKmAt(date, out),
-  geocentricView: () => focusId === 'earth' || focusId === 'moon',
   on: {
     changed: () => {
       refreshTrackingPanel()
@@ -1240,13 +1157,8 @@ const planets = createPlanets({
   scene,
   labels,
   traces,
-  placeKm,
+  frame,
   minRadiusAt,
-  // Every pivot but the Sun hides the *other* planets and the planetary orbit
-  // lines below 100 % reel (2026-10-16; Earth since 2026-09-29). The pivot planet
-  // itself stays drawn: planets.js exempts it.
-  hidesPlanets: () => hidesPlanets(focusId),
-  focusPlanetId: () => (focusPlanet ? focusPlanet.id : null),
   // Passed by reference, not by value: `updateAstronomy()` copies into this same
   // vector every minute, so the planets' lighting follows the Sun on its own.
   sunPositionKm,
@@ -1260,9 +1172,8 @@ const moons = createMoons({
   scene,
   labels,
   traces,
-  placeRelativeKm,
+  frame,
   minRadiusAt,
-  focusPlanet: () => focusPlanet,
   sunPositionKm,
   on: { changed: () => renderPlanetsPanel() },
 })
@@ -1279,7 +1190,7 @@ function rebuildRingLabels() {
   ringLabels = distanceRings.list.map((ring) => ({ el: labels.create(ring.label, ring.absolute ? 'ring absolute' : 'ring'), at: new THREE.Vector3() }))
 }
 
-distanceRings.rebuild(focusOf().rings)
+distanceRings.rebuild(frame.focus.rings)
 rebuildRingLabels()
 
 const issLabelPos = new THREE.Vector3()
@@ -1297,7 +1208,7 @@ function updateSceneLabels() {
       worldPos: sunMarker.position,
       radius: SUN_READABLE_RADIUS * sunMarker.scale.x,
       occludable: true,
-      show: focusId !== 'sun',
+      show: frame.id !== 'sun',
     },
     {
       el: bodyLabels.iss,
@@ -1433,7 +1344,7 @@ async function refreshApod() {
 // orbit, the yardstick of that view — setFocus alone would keep the start-up
 // distance, which at this scale is a close-up of the photosphere.
 setFocus('sun')
-camera.position.setLength(Math.min(controls.maxDistance, sceneDistance(focusReferences()[0].km, scaleT, focusOf().curve) * 1.8))
+camera.position.setLength(Math.min(controls.maxDistance, sceneDistance(focusReferences()[0].km, scaleT, frame.focus.curve) * 1.8))
 
 refreshUsage()
 renderScalePanel()

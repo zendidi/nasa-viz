@@ -36,15 +36,13 @@ import { eclipticAuToSceneKm } from './geo.js'
  */
 
 /**
- * @param {object} placers
- * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} placers.placeKm
- * @param {(out: THREE.Vector3, relativeKm: ArrayLike<number>|THREE.Vector3, t: number) => void} placers.placeRelativeKm
- * @param {(out: THREE.Vector3, heliocentricKm: THREE.Vector3, t: number) => void} placers.placeHeliocentricKm
+ * @param {object} options
+ * @param {import('./frame.js').ViewFrame} options.frame  one placer per OrbitFrame
  */
-export function createOrbitTraces({ placeKm, placeRelativeKm, placeHeliocentricKm }) {
+export function createOrbitTraces({ frame }) {
   const scratch = new THREE.Vector3()
   /** @type {Record<OrbitFrame, Function>} */
-  const placers = { pivot: placeRelativeKm, geocentric: placeKm, heliocentric: placeHeliocentricKm }
+  const placers = { pivot: frame.placeRelativeKm, geocentric: frame.placeKm, heliocentric: frame.placeHeliocentricKm }
 
   /**
    * @param {{parent: THREE.Object3D, frame?: OrbitFrame}} options

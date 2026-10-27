@@ -48,15 +48,15 @@ const hitMaterial = new THREE.MeshBasicMaterial({ visible: false })
  * @param {THREE.Scene}  options.scene
  * @param {object}       options.traces  scene/orbitTrace.js
  * @param {{create: (text: string, className?: string) => HTMLElement}} options.labels  labels.js
- * @param {(out: THREE.Vector3, geocentricKm: THREE.Vector3, t: number) => void} options.placeKm
+ * @param {import('../scene/frame.js').ViewFrame} options.frame  the pivot and its placers
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
  * @param {(date: Date, out: THREE.Vector3) => THREE.Vector3} options.sunPositionKmAt
  *   the Sun's geocentric position, km, scene axes, at any date of the window
- * @param {() => boolean} options.geocentricView  whether the pivot is the Earth (or the Moon)
  * @param {{changed: () => void, spkidChanged: (oldSpkid: string, record: object) => void}} options.on
  *   `spkidChanged`: the object was re-resolved under a new SPK-ID (it got numbered)
  */
-export function createTrackedScene({ scene, traces, labels, placeKm, minRadiusAt, sunPositionKmAt, geocentricView, on }) {
+export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, sunPositionKmAt, on }) {
+  const { placeKm } = frame
   // Markers (what picking raycasts) and traces apart: the raycaster would hit a
   // line too, and a line has no object to report.
   const group = new THREE.Group()
@@ -200,7 +200,7 @@ export function createTrackedScene({ scene, traces, labels, placeKm, minRadiusAt
         entry.mesh.scale.setScalar(minRadiusAt(entry.group.position, MARKER_PX))
         entry.hit.scale.setScalar(minRadiusAt(entry.group.position, HIT_PX))
       }
-      const geocentric = geocentricView()
+      const geocentric = frame.geocentric()
       const [drawn, hidden] = geocentric ? [entry.trace, entry.helioTrace] : [entry.helioTrace, entry.trace]
       hidden.line.visible = false
       if (entry.object) traces.update(drawn, t)
