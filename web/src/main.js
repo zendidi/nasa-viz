@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
+import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage, searchSmallBody } from './api.js'
 import { loadCached, saveCached } from './cache.js'
 import { getEarthPoleJ2000, getEarthRotationAngle } from './astronomy.js'
 import { issAt } from './iss.js'
@@ -13,6 +13,17 @@ import { createStarfield } from './scene/starfield.js'
 import { createPicking } from './picking.js'
 import { createOrbitTraces } from './scene/orbitTrace.js'
 import { createNeoScene, designationOf } from './neo/scene.js'
+import { createTrackedScene } from './tracked/scene.js'
+import {
+  MAX_TRACKED,
+  TRACKED_CACHE_KEY,
+  addTracked,
+  interpretSearch,
+  isTrackedDesignation,
+  nextApproach,
+  readTrackedList,
+  removeTracked,
+} from './tracking.js'
 import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX, LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
 import { icrfToScene, latLngToVector3 } from './scene/geo.js'
 import {
@@ -32,6 +43,7 @@ import {
   NEO_DEFAULT_COLOR,
   NEO_HAZARD_COLOR,
   NEO_CREDITS,
+  trackedCredits,
   TAXONOMY,
   taxonomyKey,
   cssColor,
@@ -349,6 +361,7 @@ const neoScene = createNeoScene({
     // and the scale label know about diameters.
     detailsProgress: () => {
       if (modalNeo) renderNeoModal()
+      if (modalTracked) renderTrackedModal()
     },
     detailsApplied: () => {
       if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
@@ -535,6 +548,9 @@ function updateCameraLimits() {
   }
   for (const entry of neoScene.entries) {
     if (entry.source) farthest = Math.max(farthest, sceneDistance(entry.positionKm.distanceTo(focusPositionKm()), scaleT, curve))
+  }
+  for (const km of trackedScene.positionsKm()) {
+    farthest = Math.max(farthest, sceneDistance(km.distanceTo(focusPositionKm()), scaleT, curve))
   }
   // Neptune sits further out than any NEO in both views — without this the
   // zoom would stop short of the planet it is drawing. Only while the planets
@@ -753,6 +769,7 @@ function applyScale(nowSeconds) {
   planets.update(nowSeconds, t)
   moons.update(nowSeconds, t)
   neoScene.update(nowSeconds, t)
+  trackedScene.update(nowSeconds, t)
 }
 
 // --- UI overlay --------------------------------------------------------------
@@ -778,6 +795,20 @@ const panels = createPanels({
     deselect: () => neoScene.select(null),
     detailClosed: () => {
       modalNeo = null
+      modalTracked = null
+    },
+    trackSearch: (q) => searchAndTrack(q),
+    trackOpen: (spkid) => showTrackedModal(spkid),
+    trackApproach: (spkid) => goToNextApproach(spkid),
+    trackRemove: (spkid) => untrack(spkid),
+    trackRetry: (spkid) => trackedScene.reload(spkid),
+    trackShowNeo: (enabled) => {
+      showNeoWhileTracking = enabled
+      applyNeoPolicy()
+    },
+    detailAction: (action, data) => {
+      if (action === 'track') trackFromNeo(data.designation)
+      else if (action === 'approach') goToNextApproach(data.spkid)
     },
     rings: (enabled) => {
       ringsEnabled = enabled
@@ -791,10 +822,14 @@ const panels = createPanels({
       renderPlanetsPanel()
     },
     points: (enabled) => {
+      // The same choice as the "Suivi" tab's box: while something is tracked, the
+      // NEO panel's own box is what decides whether the week's points come back.
+      if (trackedList.length > 0) showNeoWhileTracking = enabled
       neoScene.setPoints(enabled)
       // The sheet describes a point that is no longer on screen.
-      if (!enabled) panels.closeDetail()
+      if (!enabled && modalNeo) panels.closeDetail()
       if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
+      refreshTrackingPanel()
     },
     allOrbits: (enabled) => {
       neoScene.setAllOrbits(enabled)
@@ -839,6 +874,8 @@ function afterTimeJump() {
   renderScalePanel() // its NEO distances are the simulated ones
   // The sheet quotes a distance at the simulated date, written once: redo it.
   if (modalNeo) renderNeoModal()
+  if (modalTracked) renderTrackedModal()
+  refreshTrackingPanel() // "next close approach" is relative to the simulated time
 }
 
 /**
@@ -930,6 +967,7 @@ let modalNeo = null
 
 function showNeoModal(neo) {
   modalNeo = neo
+  modalTracked = null
   const entry = neoScene.entryOf(neo)
   if (entry) neoScene.select(entry)
   renderNeoModal()
@@ -950,6 +988,7 @@ function renderNeoModal() {
     neo.name,
     `
     <p><strong>Désignation</strong> ${escapeHtml(designation)}</p>
+    ${trackButtonHtml(designation)}
     <p><strong>Diamètre</strong> ${diameter}</p>
     <p><strong>Potentiellement dangereux</strong> ${neo.is_potentially_hazardous ? 'Oui' : 'Non'}</p>
     ${entry ? neoScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : ''}
@@ -1007,6 +1046,247 @@ const orbitMarkerLabels = {
   aphelion: labels.create('aphélie', 'ring'),
   ascending: labels.create('nœud ascendant', 'ring'),
   descending: labels.create('nœud descendant', 'ring'),
+}
+
+// --- suivi d'astéroïdes (onglet « Suivi ») ------------------------------------------
+//
+// The list lives here and is the only thing persisted (tracking.js says why);
+// the scene module loads the tables and draws. The NEO of the week stays what it
+// was: a tracked asteroid is a different object, NEO or not.
+
+/** @type {import('./tracking.js').TrackedRecord[]} */
+let trackedList = []
+/** The user's choice, while something is tracked, to keep the week's NEO points on screen. */
+let showNeoWhileTracking = false
+/** The tracked object whose sheet the detail panel is showing (SPK-ID), like `modalNeo`. */
+let modalTracked = null
+/** The "Suivre" button of a weekly NEO's sheet: which designation is being resolved, and what it said. */
+let neoTrack = { designation: null, busy: false, message: '' }
+
+const formatUtc = (seconds) =>
+  `${new Date(seconds * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'UTC' })} UTC`
+
+const trackedScene = createTrackedScene({
+  scene,
+  traces,
+  labels,
+  placeKm,
+  minRadiusAt,
+  sunPositionKmAt: (date, out) => sunTable.positionKmAt(date, out),
+  geocentricView: () => focusId === 'earth' || focusId === 'moon',
+  on: {
+    changed: () => {
+      refreshTrackingPanel()
+      if (modalTracked) renderTrackedModal()
+    },
+    // An object that got numbered changed SPK-ID: the stored one follows.
+    spkidChanged: (oldSpkid, record) => {
+      trackedList = trackedList.map((rec) => (rec.spkid === oldSpkid ? record : rec))
+      saveCached(TRACKED_CACHE_KEY, trackedList)
+      if (modalTracked === oldSpkid) modalTracked = record.spkid
+    },
+  },
+})
+
+/** Points of the week on screen: all of them when nothing is tracked, the user's call otherwise. */
+function applyNeoPolicy() {
+  const visible = trackedList.length === 0 || showNeoWhileTracking
+  neoScene.setPoints(visible)
+  if (!visible && modalNeo) panels.closeDetail()
+  if (neoScene.currentFeed) renderNeoPanel(neoScene.currentFeed, null, neoScene.currentFetchedAt)
+  refreshTrackingPanel()
+}
+
+function refreshTrackingPanel() {
+  const nowSeconds = simNowMs() / 1000
+  const items = []
+  for (const rec of trackedList) {
+    const entry = trackedScene.get(rec.spkid)
+    if (!entry) continue
+    let approach = null
+    if (rec.neo && entry.status === 'ready') {
+      const next = nextApproach(entry.object, nowSeconds)
+      approach = { kind: next.kind, timeMs: next.time * 1000, distKm: next.approach?.dist_km ?? null }
+    }
+    items.push({
+      spkid: rec.spkid,
+      name: rec.fullname,
+      neo: rec.neo,
+      color: cssColor(rec.color),
+      status: entry.status,
+      error: entry.error,
+      approach,
+    })
+  }
+  panels.renderTracking({
+    items,
+    full: trackedList.length >= MAX_TRACKED,
+    showNeo: trackedList.length === 0 || showNeoWhileTracking,
+  })
+}
+
+/** Adds a resolved record to the list and the scene. The refusal, if any, comes back as `reason`. */
+function trackRecord(record) {
+  const outcome = addTracked(trackedList, record)
+  if (!outcome.added) return outcome
+  trackedList = outcome.list
+  saveCached(TRACKED_CACHE_KEY, trackedList)
+  const added = trackedList[trackedList.length - 1]
+  if (trackedList.length === 1) showNeoWhileTracking = false // the first one clears the week's NEO off the scene
+  trackedScene.add(added)
+  applyNeoPolicy()
+  return { ...outcome, record: added }
+}
+
+function untrack(spkid) {
+  trackedList = removeTracked(trackedList, spkid)
+  saveCached(TRACKED_CACHE_KEY, trackedList)
+  if (trackedList.length === 0) showNeoWhileTracking = false
+  const wasOpen = modalTracked === spkid
+  trackedScene.remove(spkid)
+  if (wasOpen) panels.closeDetail()
+  applyNeoPolicy()
+}
+
+/** The panel's search: one answer, added when unambiguous, reported otherwise. */
+async function searchAndTrack(q) {
+  let found
+  try {
+    found = interpretSearch(await searchSmallBody(q))
+  } catch (err) {
+    return { kind: 'error', message: err.message }
+  }
+  if (found.kind !== 'match') return found
+  const outcome = trackRecord(found.record)
+  const name = found.record.fullname
+  if (outcome.added) return { kind: 'added', name }
+  return { kind: outcome.reason === 'full' ? 'full' : 'duplicate', name }
+}
+
+function showTrackedModal(spkid) {
+  const entry = trackedScene.get(spkid)
+  if (!entry) return
+  modalNeo = null
+  neoScene.select(null)
+  modalTracked = spkid
+  renderTrackedModal()
+  neoScene.loadDetails([entry.rec.des])
+}
+
+/** "Suivre" in a weekly NEO's sheet: resolve its designation, then add it like a search would. */
+async function trackFromNeo(designation) {
+  neoTrack = { designation, busy: true, message: '' }
+  renderNeoModal()
+  let message = ''
+  try {
+    const found = interpretSearch(await searchSmallBody(designation))
+    if (found.kind === 'match') {
+      const outcome = trackRecord(found.record)
+      if (outcome.added || outcome.reason === 'duplicate') {
+        neoTrack = { designation: null, busy: false, message: '' }
+        panels.showTab('tracking')
+        showTrackedModal((outcome.record ?? found.record).spkid)
+        return
+      }
+      message = `${MAX_TRACKED} objets au plus`
+    } else if (found.kind === 'candidates') {
+      message = 'désignation ambiguë : utilisez la recherche de l\'onglet Suivi'
+    } else if (found.kind === 'comet') {
+      message = 'comète, pas encore prise en charge'
+    } else {
+      message = 'introuvable dans JPL SBDB'
+    }
+  } catch (err) {
+    message = err.message
+  }
+  neoTrack = { designation, busy: false, message }
+  if (modalNeo) renderNeoModal()
+}
+
+/** The "Suivre" button and why it may be off. A button, not a link: it acts on the list. */
+function trackButtonHtml(designation) {
+  const tracked = isTrackedDesignation(trackedList, designation)
+  const full = trackedList.length >= MAX_TRACKED
+  const mine = neoTrack.designation === designation
+  const busy = mine && neoTrack.busy
+  const note = tracked
+    ? 'déjà suivi'
+    : full
+      ? `${MAX_TRACKED} objets au plus`
+      : busy
+        ? 'résolution (JPL SBDB)…'
+        : mine
+          ? escapeHtml(neoTrack.message)
+          : ''
+  return `<p><button class="sheet-action" data-action="track" data-designation="${escapeHtml(designation)}"${
+    tracked || full || busy ? ' disabled' : ''
+  }>Suivre</button> <span class="${mine && neoTrack.message && !busy ? 'error' : 'muted'}">${note}</span></p>`
+}
+
+/** Sets the clock on the next close approach of a tracked NEO — when it is inside the tables. */
+function goToNextApproach(spkid) {
+  const entry = trackedScene.get(spkid)
+  if (!entry?.object) return
+  const next = nextApproach(entry.object, simNowMs() / 1000)
+  if (next.kind !== 'in_window') {
+    refreshTrackingPanel() // out of the tables: the clock cannot go there, the panel says the date
+    return
+  }
+  clock.jumpTo(next.time * 1000, Date.now())
+  afterTimeJump()
+}
+
+/** The close-approach lines of a tracked NEO's sheet. */
+function trackedApproachHtml(entry, nowSeconds) {
+  if (!entry.rec.neo || entry.status !== 'ready') return ''
+  const next = nextApproach(entry.object, nowSeconds)
+  switch (next.kind) {
+    case 'in_window': {
+      const { dist_km: dist, v_rel_km_s: speed } = next.approach
+      return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} · ${Math.round(dist).toLocaleString('fr-FR')} km${
+        typeof speed === 'number' ? ` · ${speed.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} km/s` : ''
+      } <button class="sheet-action" data-action="approach" data-spkid="${entry.rec.spkid}">Y aller</button></p>`
+    }
+    case 'after_window':
+      return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} <span class="muted">(après la plage de l'horloge : on ne peut pas s'y rendre)</span></p>`
+    case 'unavailable':
+      return `<p class="muted">Rapprochements indisponibles : JPL CAD n'a pas répondu pour cet objet.</p>`
+    default:
+      return '<p class="muted">Aucun rapprochement connu à moins de 0,05 ua.</p>'
+  }
+}
+
+/** The same sheet as a weekly NEO's, in the same place — only its lines differ (NEO or not, no NeoWs). */
+function renderTrackedModal() {
+  const entry = modalTracked ? trackedScene.get(modalTracked) : null
+  if (!entry) return
+  const { rec } = entry
+  const nowSeconds = simNowMs() / 1000
+  const sheet = neoScene.sheet(rec.des)
+  const details = sheet.data
+  const next = rec.neo && entry.status === 'ready' ? nextApproach(entry.object, nowSeconds) : null
+
+  panels.openDetail(
+    rec.fullname,
+    `
+    <p><strong>Désignation</strong> ${escapeHtml(rec.des)}</p>
+    <p><strong>Type</strong> ${rec.neo ? 'NEO (astéroïde proche de la Terre)' : 'astéroïde, pas un NEO'}</p>
+    ${trackedScene.describePosition(entry, nowSeconds, !clock.isRealTime())}
+    ${trackedApproachHtml(entry, nowSeconds)}
+    <p class="muted">Trace dans la scène : trajectoire géocentrique sur toute la plage de l'horloge, dans la couleur de l'objet.</p>
+    ${detailsBlockHtml(details, { loading: sheet.loading, error: sheet.error }, { neo: rec.neo })}
+    ${
+      details?.orbit
+        ? orbitSchematicSvg(details.orbit, {
+            now: new Date(simNowMs()),
+            approachAt: next?.kind === 'in_window' ? new Date(next.time * 1000) : null,
+            hazardous: false,
+          })
+        : ''
+    }
+    <p class="muted credits">${trackedCredits(rec.neo)}</p>
+  `,
+  )
 }
 
 // --- planets -------------------------------------------------------------------
@@ -1126,6 +1406,7 @@ function updateSceneLabels() {
     // Moon's aside — the list order is the spacing arbitration.
     ...planets.labelEntries(),
     ...moons.labelEntries(),
+    ...trackedScene.labelEntries(),
     ...rings,
     { el: moonOrbitLabel, worldPos: moonOrbitLabelPos, occludable: true, show: Boolean(moonOrbitDrawn) },
     // Perihelion / aphelion / nodes of the drawn heliocentric orbit.
@@ -1144,6 +1425,7 @@ createPicking({
   canvas: renderer.domElement,
   camera,
   neoGroup: neoScene.group,
+  trackedGroup: trackedScene.group,
   starfield,
   panels,
   // Read fresh at each pick: both radii follow the scale cursor.
@@ -1153,6 +1435,7 @@ createPicking({
   ],
   on: {
     neoClicked: (neo) => showNeoModal(neo),
+    trackedClicked: (entry) => showTrackedModal(entry.rec.spkid),
     emptyClicked: () => neoScene.select(null),
   },
 })
@@ -1246,6 +1529,12 @@ if (cachedNeo) {
 if (cachedApod) {
   panels.renderApod(cachedApod.data, null, cachedApod.fetchedAt)
 }
+// The tracked list is all that is stored (never the tables): one positions call per
+// object, in parallel, each object appearing as its own answer lands.
+trackedList = readTrackedList(loadCached(TRACKED_CACHE_KEY)?.data)
+for (const rec of trackedList) trackedScene.add(rec)
+applyNeoPolicy()
+
 // First-ever load has nothing to show yet — fetch once. Otherwise stay on the
 // cached snapshot until "Mettre à jour" is clicked, to spare the NASA quota.
 if (!cachedIss || !cachedNeo || !cachedApod) {

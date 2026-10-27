@@ -113,6 +113,17 @@ export function createClock({ wallMs, minMs = -Infinity, maxMs = Infinity }) {
       rate = CLOCK_RATES.REAL
     },
 
+    /**
+     * Jumps to an instant (sim ms), clamped to the bounds, keeping the rate: the
+     * line is re-anchored so `nowMs(wall)` is the target exactly. At ×1 this
+     * leaves real time (`anchorSim !== anchorWall`), as it should — the ISS is
+     * a live position and must not be drawn at a simulated instant.
+     */
+    jumpTo(targetMs, wall) {
+      anchorSim = Math.min(max, Math.max(min, targetMs))
+      anchorWall = wall
+    },
+
     /** Bounds in sim ms. Re-anchors first so moving a bound never makes the time jump through the old line. */
     setBounds(nextMin, nextMax, wall) {
       anchorSim = nowMs(wall)

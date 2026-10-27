@@ -171,3 +171,39 @@ describe('defaultMaxMs', () => {
     expect(defaultMaxMs(Date.UTC(2026, 9, 31, 23, 59))).toBe(expected)
   })
 })
+
+describe('jumpTo', () => {
+  // Épinglé : « aller au prochain rapprochement » règle l'horloge sur un instant
+  // sans toucher à la vitesse, et reste dans la plage des tables.
+  it('rend exactement l\'instant visé, puis continue à la même vitesse', () => {
+    const clock = createClock({ wallMs: T0 })
+    clock.setRate(HOUR_PER_SECOND, T0)
+    const target = T0 + 20 * 86_400_000
+    clock.jumpTo(target, T0 + 4000)
+    expect(clock.nowMs(T0 + 4000)).toBe(target)
+    expect(clock.nowMs(T0 + 6000)).toBe(target + 2 * 3_600_000)
+    expect(clock.rate).toBe(HOUR_PER_SECOND)
+  })
+
+  it('est borné par la plage de l\'horloge, des deux côtés', () => {
+    const clock = createClock({ wallMs: T0, minMs: T0 - 1000, maxMs: T0 + 1000 })
+    clock.setRate(HOUR_PER_SECOND, T0)
+    clock.jumpTo(T0 + 5_000_000, T0)
+    expect(clock.nowMs(T0)).toBe(T0 + 1000)
+    clock.jumpTo(T0 - 5_000_000, T0)
+    expect(clock.nowMs(T0)).toBe(T0 - 1000)
+  })
+
+  it('à l\'arrêt (vitesse 0), le saut tient', () => {
+    const clock = createClock({ wallMs: T0 })
+    clock.setRate(0, T0)
+    clock.jumpTo(T0 + 123_456, T0 + 10)
+    expect(clock.nowMs(T0 + 99_999)).toBe(T0 + 123_456)
+  })
+
+  it('au ×1, un saut quitte le temps réel (l\'ISS n\'est plus valide)', () => {
+    const clock = createClock({ wallMs: T0 })
+    clock.jumpTo(T0 + 86_400_000, T0)
+    expect(clock.isRealTime()).toBe(false)
+  })
+})

@@ -9,7 +9,8 @@
  * APOD currently on show, the NEO-positions counter — which lives here.
  */
 
-import { sourcesPanelHtml } from '../neoInfo.js'
+import { escapeHtml, sourcesPanelHtml } from '../neoInfo.js'
+import { MAX_TRACKED } from '../tracking.js'
 import { FOCUSES, FOCUS_IDS } from '../focus.js'
 import { SCALE_PRESETS, SCALE_STEPS } from '../scale.js'
 import { RATE_STOPS } from '../clock.js'
@@ -56,11 +57,12 @@ function rateIndex(rate) {
   return best
 }
 
-/** The left column's three tabs, one section each (2026-10-27). */
+/** The left column's four tabs, one section each (2026-10-27; "Suivi" added the same day). */
 const INFO_TABS = [
   { id: 'iss', label: 'ISS' },
-  { id: 'neo', label: 'Astéroïdes' },
+  { id: 'neo', label: 'NEO' },
   { id: 'planets', label: 'Planètes' },
+  { id: 'tracking', label: 'Suivi' },
 ]
 
 // One formatter for the whole session: this is called every frame while the
@@ -71,6 +73,8 @@ const formatSimDate = (ms) => `${SIM_DATE_FORMAT.format(ms)} UTC`
 
 const NEO_HEADING = '<h2>Astéroïdes proches (NEO)</h2>'
 const PLANETS_HEADING = '<h2>Planètes</h2>'
+const TRACK_PLACEHOLDER = 'Apophis, 433, 2004 MN4, 20099942…'
+const TRACKING_HEADING = "<h2>Suivi d'astéroïdes</h2>"
 
 /**
  * What the panel calls the full set: the eight planets, the Earth included
@@ -110,7 +114,9 @@ function formatUpdatedAt(fetchedAt, { withDate = false } = {}) {
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed,
  *                                          allOrbits, points, venusSurface, rings, ecliptic,
- *                                          timeRate, timeReset
+ *                                          timeRate, timeReset, trackSearch, trackOpen,
+ *                                          trackApproach, trackRemove, trackRetry,
+ *                                          trackShowNeo, detailAction
  */
 /**
  * The moons line of the planets panel. Only ever shown while a planet is the
@@ -122,6 +128,8 @@ function moonsLine(moons) {
   if (!moons) return ''
   const name = FOCUSES[moons.planet].label
   if (moons.loading) return `<p class="muted">lunes de ${name}…</p>`
+  // Said before "no moon": a failed load must not read as a planet that has none.
+  if (moons.error) return `<p class="error">lunes de ${name} : ${escapeHtml(moons.error)}</p>`
   if (moons.known === 0) return `<p class="muted">${name} n'a pas de lune</p>`
   const plural = moons.known > 1 ? 's' : ''
   return `<p class="muted">${moons.known} lune${plural} de ${name} · positions réelles (JPL Horizons)</p>`
@@ -160,6 +168,18 @@ export function createPanels({ app, wheelTarget, on }) {
       <section id="planets-panel">
         ${PLANETS_HEADING}
         <p class="muted">chargement…</p>
+      </section>
+      <section id="tracking-panel">
+        ${TRACKING_HEADING}
+        <p class="muted">Jusqu'à ${MAX_TRACKED} astéroïdes, NEO ou non. Nom, numéro, désignation provisoire ou SPK-ID.</p>
+        <div class="track-search">
+          <input id="track-input" type="text" maxlength="40" autocomplete="off" spellcheck="false"
+                 placeholder="${TRACK_PLACEHOLDER}" aria-label="Rechercher un astéroïde">
+          <button id="track-search-btn" class="track-btn">Suivre</button>
+        </div>
+        <p id="track-message" class="muted"></p>
+        <ul id="track-candidates"></ul>
+        <div id="track-list"></div>
       </section>
     </div>
     <section id="apod-panel">
@@ -334,6 +354,39 @@ export function createPanels({ app, wheelTarget, on }) {
     #info-panel section.hidden { display: none; }
     #info-panel.card section + section { margin-top: 0; border-top: none; }
 
+    /* The "Suivi" tab. The search field and its messages are static markup, outside
+       #track-list: renderTracking replaces that list's innerHTML on every
+       change, and would take the typed text and the focus with it otherwise. */
+    .track-search { display: flex; gap: 6px; margin: 6px 0 2px; }
+    #track-input { flex: 1; min-width: 0; pointer-events: auto; box-sizing: border-box; background: rgba(10,22,34,.9);
+                   color: #eaf4ff; border: 1px solid #1c4d7a; border-radius: 4px; padding: 4px 8px; font-size: 12px;
+                   text-shadow: none; }
+    #track-input:focus { outline: none; border-color: #4fa8ff; }
+    #track-input:disabled { opacity: 0.5; }
+    .track-btn { pointer-events: auto; background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px;
+                 padding: 3px 9px; font-size: 11px; cursor: pointer; text-shadow: none; }
+    .track-btn:hover { background: #24608f; }
+    .track-btn:disabled { opacity: 0.4; cursor: default; }
+    #track-message:empty { display: none; }
+    #track-candidates { list-style: none; margin: 4px 0; padding: 0; max-height: 140px; overflow-y: auto; pointer-events: auto; }
+    #track-candidates:empty { display: none; }
+    #track-candidates button { display: block; width: 100%; text-align: left; background: none; border: none;
+                               border-bottom: 1px solid rgba(79,168,255,.15); color: #7fe0ff; font-size: 12px;
+                               padding: 3px 2px; cursor: pointer; text-shadow: none; }
+    #track-candidates button:hover { background: rgba(79,168,255,.15); }
+    #track-list ul { list-style: none; margin: 6px 0 0; padding: 0; }
+    .track-item { padding: 6px 0; border-top: 1px solid rgba(79,168,255,.2); }
+    .track-head { display: flex; align-items: center; gap: 4px; min-width: 0; }
+    .track-head .dot { flex: none; }
+    .track-name { flex: 1; min-width: 0; text-align: left; background: none; border: none; padding: 0; font-size: 13px;
+                  color: #7fe0ff; cursor: pointer; pointer-events: auto; text-shadow: none; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+    .track-name:hover { text-decoration: underline; }
+    .track-kind { flex: none; font-size: 10px; border: 1px solid rgba(159,210,255,.5); border-radius: 3px; padding: 0 4px; }
+    #ui .track-state { margin: 2px 0 0 15px; font-size: 12px; }
+    .track-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 0 15px; }
+    .track-actions .track-btn { padding: 2px 7px; }
+
     .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
     #iss-panel h2 .dot { margin-bottom: 2px; }
     .dot-iss { background: #ffcc33; box-shadow: 0 0 5px #ffcc33; }
@@ -450,6 +503,10 @@ export function createPanels({ app, wheelTarget, on }) {
     .orbit-compare sup { font-size: 9px; }
     .sheet .warn { color: #ffbf66; opacity: 1; }
     .sheet a { color: #7fe0ff; }
+    .sheet .sheet-action { background: #1c4d7a; color: #eaf4ff; border: 1px solid #4fa8ff; border-radius: 4px;
+                           padding: 3px 10px; font-size: 12px; cursor: pointer; }
+    .sheet .sheet-action:hover { background: #24608f; }
+    .sheet .sheet-action:disabled { opacity: 0.45; cursor: default; }
     .sheet .credits { margin-top: 14px; font-size: 11px; }
     .neo-sources { margin: 4px 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
     .neo-sources li { margin: 2px 0; }
@@ -539,6 +596,7 @@ export function createPanels({ app, wheelTarget, on }) {
     iss: ui.querySelector('#iss-panel'),
     neo: ui.querySelector('#neo-panel'),
     planets: ui.querySelector('#planets-panel'),
+    tracking: ui.querySelector('#tracking-panel'),
   }
   function setInfoTab(id) {
     for (const [tabId, section] of Object.entries(tabSections)) section.classList.toggle('hidden', tabId !== id)
@@ -565,6 +623,7 @@ export function createPanels({ app, wheelTarget, on }) {
   const issPanel = ui.querySelector('#iss-panel')
   const neoPanel = ui.querySelector('#neo-panel')
   const planetsPanel = ui.querySelector('#planets-panel')
+  const trackingPanel = ui.querySelector('#tracking-panel')
   const apodPanel = ui.querySelector('#apod-panel')
   const usageBadge = ui.querySelector('#usage-badge')
   const updateBtn = ui.querySelector('#update-btn')
@@ -694,13 +753,13 @@ export function createPanels({ app, wheelTarget, on }) {
    * not news the user needs every time they move the slider — the reasoning
    * lives in docs/echelle-reelle.md.
    *
-   * @param {{known: number, orbits: number, total: number, loading: boolean, loadingOrbits: boolean}} state
+   * @param {{known: number, orbits: number, total: number, loading: boolean, loadingOrbits: boolean, error?: ?string}} state
    * @param {{label: string, color: string}[]} legend one swatch per planet
    * @param {boolean} drawn whether the current scale and pivot put them on screen
-   * @param {{planet: string, known: number, loading: boolean} | null} moons
+   * @param {{planet: string, known: number, loading: boolean, error?: ?string} | null} moons
    *   the centred planet's moons, or null when the pivot is not a planet
    */
-  function renderPlanets({ known, orbits, total, loading, loadingOrbits }, legend, drawn, moons, venus = null) {
+  function renderPlanets({ known, orbits, total, loading, loadingOrbits, error = null }, legend, drawn, moons, venus = null) {
     const swatches = legend.map((p) => `<span class="dot" style="background:${p.color}"></span>${p.label}`)
     planetsPanel.innerHTML = `
       ${PLANETS_HEADING}
@@ -711,6 +770,7 @@ export function createPanels({ app, wheelTarget, on }) {
             ? `${PLANET_COUNT_LABEL} · positions réelles (JPL Horizons)`
             : `${known}/${total} placées — les autres n'ont pas répondu`
       }</p>
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
       ${drawn ? '' : `<p class="muted">${moons ? 'autres planètes masquées' : 'planètes masquées'}</p>`}
       <p class="muted">${
         orbits === total && !loadingOrbits
@@ -727,6 +787,179 @@ export function createPanels({ app, wheelTarget, on }) {
       }
     `
   }
+
+  // --- "Suivi" tab ----------------------------------------------------------
+
+  const trackInput = trackingPanel.querySelector('#track-input')
+  const trackSearchBtn = trackingPanel.querySelector('#track-search-btn')
+  const trackMessage = trackingPanel.querySelector('#track-message')
+  const trackCandidates = trackingPanel.querySelector('#track-candidates')
+  const trackList = trackingPanel.querySelector('#track-list')
+
+  // Purely of the overlay: whether a search is running and whether the list is full.
+  let trackBusy = false
+  let trackFull = false
+
+  function setTrackMessage(text, kind = 'muted') {
+    trackMessage.className = kind
+    trackMessage.textContent = text
+  }
+
+  function syncTrackControls() {
+    trackInput.disabled = trackFull
+    trackSearchBtn.disabled = trackFull || trackBusy
+    trackInput.placeholder = trackFull ? `${MAX_TRACKED} objets au plus` : TRACK_PLACEHOLDER
+  }
+
+  /**
+   * Runs one search through the scene (`on.trackSearch`, which also adds the
+   * object when the answer is unambiguous) and says what came of it. An
+   * ambiguous answer becomes a clickable list: a click is a new search on that
+   * entry's own designation, which resolves to exactly one match.
+   */
+  async function runTrackSearch(query) {
+    const q = query.trim().replace(/\s+/g, ' ')
+    if (q === '' || trackBusy || trackFull) return
+    trackBusy = true
+    trackCandidates.replaceChildren()
+    setTrackMessage('recherche…')
+    syncTrackControls()
+    let result
+    try {
+      result = await on.trackSearch(q)
+    } catch (err) {
+      result = { kind: 'error', message: err.message }
+    }
+    trackBusy = false
+    syncTrackControls()
+    switch (result.kind) {
+      case 'added':
+        trackInput.value = ''
+        setTrackMessage('')
+        break
+      case 'duplicate':
+        setTrackMessage(`${result.name} est déjà suivi.`)
+        break
+      case 'full':
+        setTrackMessage(`${MAX_TRACKED} objets au plus : retirez-en un d'abord.`, 'error')
+        break
+      case 'candidates': {
+        const more = result.count > result.candidates.length
+        setTrackMessage(
+          more
+            ? `${result.count} résultats, affinez (les ${result.candidates.length} premiers) :`
+            : `${result.count} résultat${result.count > 1 ? 's' : ''}, cliquez pour choisir :`,
+        )
+        trackCandidates.innerHTML = result.candidates
+          .map((c) => `<li><button data-candidate="${escapeHtml(c.pdes)}">${escapeHtml(c.name || c.pdes)}</button></li>`)
+          .join('')
+        break
+      }
+      case 'comet':
+        setTrackMessage(`${result.fullname ?? q} : comète, pas encore prise en charge.`)
+        break
+      case 'none':
+        setTrackMessage(`« ${q} » : introuvable.`)
+        break
+      default:
+        setTrackMessage(result.message, 'error')
+    }
+  }
+
+  trackInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') runTrackSearch(trackInput.value)
+    // Typing must not reach the global shortcuts (R recentres, Escape deselects).
+    event.stopPropagation()
+  })
+  trackSearchBtn.addEventListener('click', () => runTrackSearch(trackInput.value))
+
+  /** What the list says about a NEO's next close approach; a non-NEO has none to say. */
+  function approachHtml(item) {
+    if (!item.neo || item.status !== 'ready' || !item.approach) return ''
+    const { kind, timeMs, distKm } = item.approach
+    const km = distKm === null || distKm === undefined ? '' : ` · ${Math.round(distKm).toLocaleString('fr-FR')} km`
+    switch (kind) {
+      case 'in_window':
+        return `<button class="track-btn" data-approach="${item.spkid}" title="${formatSimDate(timeMs)}${km}">Aller au prochain rapprochement</button>`
+      case 'after_window':
+        return `<span class="muted">prochain rapprochement le ${formatSimDate(timeMs)}${km}, hors de la plage de l'horloge</span>`
+      case 'unavailable':
+        return `<span class="muted">rapprochements indisponibles (JPL CAD n'a pas répondu)</span>`
+      default:
+        return '<span class="muted">aucun rapprochement connu à moins de 0,05 ua</span>'
+    }
+  }
+
+  const TRACK_STATE_TEXT = {
+    loading: '<span class="muted">chargement de la table (JPL Horizons)…</span>',
+    ready: '<span class="muted">prêt</span>',
+    missing: '<span class="error">plus reconnu par JPL</span>',
+  }
+
+  /**
+   * The tracked list, redrawn whole on every change (the search field above it
+   * is static markup and survives). `showNeo` is re-stated from the scene's own
+   * state each time, never read back from the DOM.
+   *
+   * @param {{items: {spkid: string, name: string, neo: boolean, color: string,
+   *   status: 'loading'|'ready'|'error'|'missing', error: ?string,
+   *   approach: ?{kind: string, timeMs?: number, distKm?: ?number}}[],
+   *   full: boolean, showNeo: boolean}} state
+   */
+  function renderTracking({ items, full, showNeo }) {
+    trackFull = full
+    syncTrackControls()
+    if (items.length === 0) {
+      trackList.innerHTML = '<p class="muted">Aucun objet suivi : les NEO de la semaine restent affichés.</p>'
+      return
+    }
+    const rows = items
+      .map((item) => {
+        const state =
+          item.status === 'error' ? `<span class="error">${escapeHtml(item.error ?? '')}</span>` : TRACK_STATE_TEXT[item.status]
+        const retry =
+          item.status === 'error' || item.status === 'missing'
+            ? `<button class="track-btn" data-retry="${item.spkid}">Réessayer</button>`
+            : ''
+        return `
+          <li class="track-item">
+            <div class="track-head">
+              <span class="dot" style="background:${item.color}"></span>
+              <button class="track-name" data-open="${item.spkid}" title="Ouvrir la fiche">${escapeHtml(item.name)}</button>
+              <span class="track-kind">${item.neo ? 'NEO' : 'astéroïde'}</span>
+            </div>
+            <p class="track-state">${state}</p>
+            <div class="track-actions">
+              ${approachHtml(item)}${retry}
+              <button class="track-btn" data-remove="${item.spkid}">Retirer</button>
+            </div>
+          </li>`
+      })
+      .join('')
+    trackList.innerHTML = `
+      ${full ? `<p class="muted">${MAX_TRACKED} objets au plus.</p>` : ''}
+      <ul>${rows}</ul>
+      <p class="neo-toggle"><label><input type="checkbox" id="tracking-show-neo"${showNeo ? ' checked' : ''}>
+        Afficher les NEO de la semaine</label></p>`
+  }
+
+  // Delegated and bound once: everything inside #track-list is rebuilt per render.
+  trackingPanel.addEventListener('click', (event) => {
+    const button = event.target.closest('button')
+    if (!button) return
+    const { open, approach, remove, retry, candidate } = button.dataset
+    if (open) on.trackOpen(open)
+    else if (approach) on.trackApproach(approach)
+    else if (remove) on.trackRemove(remove)
+    else if (retry) on.trackRetry(retry)
+    else if (candidate) {
+      trackInput.value = candidate
+      runTrackSearch(candidate)
+    }
+  })
+  trackingPanel.addEventListener('change', (event) => {
+    if (event.target.id === 'tracking-show-neo') on.trackShowNeo(event.target.checked)
+  })
 
   let currentApod = null
 
@@ -858,6 +1091,13 @@ export function createPanels({ app, wheelTarget, on }) {
     )
   }
 
+  // Buttons inside a sheet (data-action): the body's markup is replaced on every
+  // render, so one listener on the container, bound once.
+  detailBody.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-action]')
+    if (button && !button.disabled) on.detailAction(button.dataset.action, { ...button.dataset })
+  })
+
   modal.querySelector('#modal-close').addEventListener('click', closeModal)
   detailPanel.querySelector('#detail-close').addEventListener('click', closeDetail)
   modal.addEventListener('click', (event) => {
@@ -931,6 +1171,7 @@ export function createPanels({ app, wheelTarget, on }) {
   viewPanel.querySelector('#ecliptic-toggle').addEventListener('change', (event) => on.ecliptic(event.target.checked))
 
   window.addEventListener('keydown', (event) => {
+    if (event.target instanceof HTMLElement && event.target.closest('input, textarea')) return
     if (event.key === 'r' || event.key === 'R') on.recenter()
   })
 
@@ -982,6 +1223,9 @@ export function createPanels({ app, wheelTarget, on }) {
     renderNeo,
     renderNeoPositions,
     renderPlanets,
+    renderTracking,
+    /** Opens a tab of the left column (and remembers it, like a click). */
+    showTab: (id) => setInfoTab(id),
     renderApod,
     renderScale,
     renderView,

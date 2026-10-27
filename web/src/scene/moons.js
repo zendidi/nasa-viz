@@ -162,6 +162,9 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
   /** Planets whose load has finished, so a second visit doesn't re-ask. */
   const loaded = new Set()
   let loadingPlanet = null
+  // The backend's own sentence for the last failed load, per planet, so the panel
+  // can say who is down rather than show a planet with no moon. Cleared by a retry.
+  const loadErrors = {}
 
   /**
    * Meshes are created as tables arrive rather than all 39 up front: a planet's
@@ -309,13 +312,15 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
   async function loadFor(planetId) {
     if (!planetId || loaded.has(planetId) || loadingPlanet === planetId) return
     loadingPlanet = planetId
+    delete loadErrors[planetId]
     on.changed()
 
     for (let attempt = 0; attempt < 12; attempt++) {
       let res
       try {
         res = await fetchMoons(planetId)
-      } catch {
+      } catch (err) {
+        loadErrors[planetId] = err.message
         break // retried the next time this planet is centred on
       }
       for (const moon of res.moons ?? []) {
@@ -374,7 +379,7 @@ export function createMoons({ scene, labels, traces, placeRelativeKm, minRadiusA
       const planet = focusPlanet()
       if (!planet) return null
       const mine = Object.values(tables).filter((record) => record.planet === planet.id)
-      return { planet: planet.id, known: mine.length, loading: loadingPlanet === planet.id }
+      return { planet: planet.id, known: mine.length, loading: loadingPlanet === planet.id, error: loadErrors[planet.id] ?? null }
     },
   }
 }

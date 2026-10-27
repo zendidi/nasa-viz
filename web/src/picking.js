@@ -31,26 +31,38 @@ const DRAG_TOLERANCE_PX = 5
  * @param {HTMLCanvasElement} options.canvas
  * @param {THREE.Camera}      options.camera
  * @param {THREE.Group}       options.neoGroup   the NEO meshes to raycast
+ * @param {THREE.Group}       options.trackedGroup  the tracked asteroids' markers (tracked/scene.js)
  * @param {object}            options.starfield  scene/starfield.js
  * @param {object}            options.panels     ui/panels.js, for the tooltips
  * @param {() => {center: THREE.Vector3, radius: number}[]} options.occluders
  *        bodies that currently hide stars, read fresh at each pick
- * @param {{neoClicked: (neo: object) => void, emptyClicked: () => void}} options.on
+ * @param {{neoClicked: (neo: object) => void, trackedClicked: (entry: object) => void,
+ *          emptyClicked: () => void}} options.on
  */
-export function createPicking({ canvas, camera, neoGroup, starfield, panels, occluders, on }) {
+export function createPicking({ canvas, camera, neoGroup, trackedGroup, starfield, panels, occluders, on }) {
   const raycaster = new THREE.Raycaster()
   const pointer = new THREE.Vector2()
 
-  function pickNeoAt(clientX, clientY) {
+  /**
+   * The nearest marker under the cursor: `{neo}` for a point of the week's feed,
+   * `{tracked}` for a tracked asteroid, null for neither. Both groups answer one
+   * raycast so that whichever is in front wins when they overlap.
+   */
+  function pickObjectAt(clientX, clientY) {
     const rect = canvas.getBoundingClientRect()
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1
     raycaster.setFromCamera(pointer, camera)
-    // Raycaster ignores `visible`, so NEOs without any position yet — or all of
-    // them, when the panel hides the points — are filtered out by hand.
-    if (!neoGroup.visible) return null
-    const hit = raycaster.intersectObjects(neoGroup.children, true).find((i) => i.object.parent.visible)
-    return hit ? hit.object.userData.neo : null
+    // Raycaster ignores `visible`, so objects without any position yet — or all
+    // the NEOs, when the panel hides the points — are filtered out by hand.
+    const hits = []
+    for (const group of [neoGroup, trackedGroup]) {
+      if (!group.visible) continue
+      hits.push(...raycaster.intersectObjects(group.children, true).filter((i) => i.object.parent.visible))
+    }
+    if (hits.length === 0) return null
+    const { object } = hits.reduce((best, hit) => (hit.distance < best.distance ? hit : best))
+    return object.userData.tracked ? { tracked: object.userData.tracked } : { neo: object.userData.neo }
   }
 
   const starPickWorldPos = new THREE.Vector3()
@@ -129,17 +141,19 @@ export function createPicking({ canvas, camera, neoGroup, starfield, panels, occ
     pointerDownAt = null
     if (dragged) return
 
-    const neo = pickNeoAt(event.clientX, event.clientY)
-    if (neo) on.neoClicked(neo)
+    const picked = pickObjectAt(event.clientX, event.clientY)
+    if (picked?.neo) on.neoClicked(picked.neo)
+    else if (picked?.tracked) on.trackedClicked(picked.tracked)
     else on.emptyClicked()
   })
 
   canvas.addEventListener('pointermove', (event) => {
-    const neo = pickNeoAt(event.clientX, event.clientY)
-    if (neo) {
+    const picked = pickObjectAt(event.clientX, event.clientY)
+    if (picked) {
       canvas.style.cursor = 'pointer'
       // Named on hover: at true scale every NEO is an anonymous dot otherwise.
-      panels.showStarTooltip(neo.name + neoTooltipSuffix(neo), event.clientX, event.clientY)
+      const text = picked.neo ? picked.neo.name + neoTooltipSuffix(picked.neo) : picked.tracked.rec.fullname
+      panels.showStarTooltip(text, event.clientX, event.clientY)
       starfield.highlight(null)
       showConstellation(null)
       return

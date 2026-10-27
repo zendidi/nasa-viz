@@ -133,6 +133,37 @@ export function fetchNeoDetails(designations) {
   return getJson(`/neo/details?${new URLSearchParams({ designations: designations.join(',') })}`)
 }
 
+/**
+ * Resolves a name, number, provisional designation or SPK-ID to one asteroid
+ * (JPL SBDB, keyless — nothing here touches the NASA quota). Three shapes, all
+ * HTTP 200: `{match}`, `{match: null, candidates, count}` and `{match: null}`,
+ * the last possibly with `rejected: {reason: 'comet'}` (backend/API.md).
+ *
+ * @param {string} q
+ */
+export function searchSmallBody(q) {
+  return getJson(`/small-body/search?${new URLSearchParams({ q })}`)
+}
+
+/**
+ * The precise geocentric table of **one** tracked asteroid (backend/API.md):
+ * `objects[spkid]` is the object, or null when SBDB or Horizons don't know that
+ * SPK-ID any more. One id per call on purpose — five cold NEOs in one call
+ * overran the backend's execution limit.
+ *
+ * A response on any clock but UTC is refused, like the other tables: it would
+ * place the object 69 s off, ~2 000 km on a NEO's table.
+ *
+ * @param {string} spkid
+ */
+export async function fetchSmallBodyPositions(spkid) {
+  const res = await getJson(`/small-body/positions?${new URLSearchParams({ spkid })}`)
+  if (res.time_scale !== TIME_SCALE) {
+    throw new Error(`échelle de temps inattendue (${res.time_scale ?? 'absente'}, ${TIME_SCALE} attendu)`)
+  }
+  return res
+}
+
 /** @returns {Promise<{title:string, date:string, explanation:string, media_type:string, url:string, hd_url:?string}>} */
 export function fetchApod() {
   return getJson('/apod')

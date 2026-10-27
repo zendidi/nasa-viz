@@ -264,10 +264,11 @@ export function diameterHtml(measured, estimated) {
   return `${m(estimated.min)} – ${m(estimated.max)} <span class="muted">(estimé d'après sa magnitude H, albédo supposé entre 0,25 et 0,05 ; dessiné à ${m((estimated.min + estimated.max) / 2)})</span>`
 }
 
-export function orbitComparisonHtml(details) {
+export function orbitComparisonHtml(details, { neo = true } = {}) {
   const orbits = details.orbits
   if (!orbits) return ''
-  const sources = Object.keys(ORBIT_SOURCE_LABELS).filter((key) => orbits[key])
+  // ESA NEOCC covers near-Earth objects only: no column for it on a plain asteroid.
+  const sources = Object.keys(ORBIT_SOURCE_LABELS).filter((key) => orbits[key] && (neo || key !== 'esa'))
   if (sources.length === 0) return ''
 
   const comparison = details.orbit_comparison
@@ -304,66 +305,108 @@ export function orbitComparisonHtml(details) {
 }
 
 /**
+ * Which rows of the sheet a given object gets, in order. Pure and separate from
+ * the markup so the NEO / not-a-NEO split is testable: a tracked asteroid is not
+ * always a NEO, and the MOID, Sentry and ESA lines only mean something for one
+ * (Sentry and ESA NEOCC list near-Earth objects only; a main-belt MOID is not a
+ * risk figure).
+ *
+ * @param {object} details a non-null sheet
+ * @param {{neo?: boolean}} [options]
+ * @returns {string[]}
+ */
+export function sheetRowKeys(details, { neo = true } = {}) {
+  const keys = []
+  if (details.orbit_class) keys.push('orbit_class')
+  if (!neo) keys.push('not_neo')
+  if (details.taxonomy) keys.push('taxonomy')
+  if (details.diameter_km) keys.push('diameter')
+  if (details.albedo) keys.push('albedo')
+  if (details.absolute_magnitude_h !== null) keys.push('magnitude_h')
+  if (neo && details.moid_earth_au !== null) keys.push('moid_earth')
+  if (details.rotation_period_h !== null) keys.push('rotation')
+  if (details.mass_kg !== null) keys.push('mass')
+  if (details.density_kg_m3 !== null) keys.push('density')
+  if (neo && details.impact_risk) keys.push('impact_risk')
+  return keys
+}
+
+export const NOT_NEO_LINE =
+  '<p><strong>NEO</strong> non — orbite hors de la zone des géocroiseurs (périhélie ≥ 1,3 ua)</p>'
+
+/**
  * "Fiche" block from /api/neo/details.
  *
  * @param {object|null|undefined} details undefined = not loaded yet, null = unknown to the catalogues
  * @param {{loading: boolean, error: ?string}} state
+ * @param {{neo?: boolean}} [options] false for a tracked asteroid that is not a NEO
  */
-export function detailsBlockHtml(details, { loading, error }) {
+export function detailsBlockHtml(details, { loading, error }, { neo = true } = {}) {
   if (details === undefined) {
     if (error) return `<h3>Fiche</h3><p class="error">${escapeHtml(error)}</p>`
-    return `<h3>Fiche</h3><p class="muted">${loading ? 'chargement (JPL SBDB, IMCCE SsODNet, Sentry)…' : 'non chargée'}</p>`
+    return `<h3>Fiche</h3><p class="muted">${loading ? `chargement (JPL SBDB, IMCCE SsODNet${neo ? ', Sentry' : ''})…` : 'non chargée'}</p>`
   }
   if (details === null) {
-    return '<h3>Fiche</h3><p class="muted">Objet inconnu de JPL SBDB et d\'IMCCE SsODNet.</p>'
+    return "<h3>Fiche</h3><p class=\"muted\">Objet inconnu de JPL SBDB et d'IMCCE SsODNet.</p>"
   }
 
-  const rows = []
-  const row = (label, value) => rows.push(`<p><strong>${label}</strong> ${value}</p>`)
-
-  if (details.orbit_class) row('Classe orbitale', escapeHtml(details.orbit_class.name))
-  if (details.taxonomy) {
-    const key = taxonomyKey(details.taxonomy.complex)
-    row(
-      'Type spectral',
-      `<span class="dot" style="background:${cssColor(TAXONOMY[key].color)}"></span>${escapeHtml(details.taxonomy.class)} <span class="muted">(${TAXONOMY[key].label})</span>`,
-    )
+  const renderers = {
+    orbit_class: () => ['Classe orbitale', escapeHtml(details.orbit_class.name)],
+    taxonomy: () => {
+      const key = taxonomyKey(details.taxonomy.complex)
+      return [
+        'Type spectral',
+        `<span class="dot" style="background:${cssColor(TAXONOMY[key].color)}"></span>${escapeHtml(details.taxonomy.class)} <span class="muted">(${TAXONOMY[key].label})</span>`,
+      ]
+    },
+    diameter: () => {
+      const { value, sigma, source } = details.diameter_km
+      return ['Diamètre mesuré', `${fmt(value * 1000, 0)} m${sigma ? ` ± ${fmt(sigma * 1000, 0)} m` : ''} <span class="muted">(${source === 'ssocard' ? 'IMCCE' : 'JPL'})</span>`]
+    },
+    albedo: () => ['Albédo', fmt(details.albedo.value, 3)],
+    magnitude_h: () => ['Magnitude absolue H', fmt(details.absolute_magnitude_h, 2)],
+    moid_earth: () => [
+      'MOID Terre',
+      `${fmt(details.moid_earth_au, 5)} ua <span class="muted">(${km(details.moid_earth_au * 149_597_870.7)} km, distance minimale entre les orbites)</span>`,
+    ],
+    rotation: () => ['Rotation', `${fmt(details.rotation_period_h, 2)} h`],
+    mass: () => ['Masse', `${details.mass_kg.toExponential(2).replace('.', ',')} kg`],
+    density: () => ['Densité', `${fmt(details.density_kg_m3, 0)} kg/m³`],
+    impact_risk: () => {
+      const risk = details.impact_risk
+      return [
+        "Risque d'impact (Sentry)",
+        `probabilité ${risk.probability.toExponential(1).replace('.', ',')} · Palerme ${fmt(risk.palermo_cum, 2)} · Turin ${risk.torino_max}${risk.range ? ` · ${escapeHtml(risk.range)}` : ''}`,
+      ]
+    },
   }
-  if (details.diameter_km) {
-    const { value, sigma, source } = details.diameter_km
-    row('Diamètre mesuré', `${fmt(value * 1000, 0)} m${sigma ? ` ± ${fmt(sigma * 1000, 0)} m` : ''} <span class="muted">(${source === 'ssocard' ? 'IMCCE' : 'JPL'})</span>`)
-  }
-  if (details.albedo) row('Albédo', fmt(details.albedo.value, 3))
-  if (details.absolute_magnitude_h !== null) row('Magnitude absolue H', fmt(details.absolute_magnitude_h, 2))
-  if (details.moid_earth_au !== null) {
-    row('MOID Terre', `${fmt(details.moid_earth_au, 5)} ua <span class="muted">(${km(details.moid_earth_au * 149_597_870.7)} km, distance minimale entre les orbites)</span>`)
-  }
-  if (details.rotation_period_h !== null) row('Rotation', `${fmt(details.rotation_period_h, 2)} h`)
-  if (details.mass_kg !== null) row('Masse', `${details.mass_kg.toExponential(2).replace('.', ',')} kg`)
-  if (details.density_kg_m3 !== null) row('Densité', `${fmt(details.density_kg_m3, 0)} kg/m³`)
-
-  const risk = details.impact_risk
-  if (risk) {
-    row(
-      "Risque d'impact (Sentry)",
-      `probabilité ${risk.probability.toExponential(1).replace('.', ',')} · Palerme ${fmt(risk.palermo_cum, 2)} · Turin ${risk.torino_max}${risk.range ? ` · ${escapeHtml(risk.range)}` : ''}`,
-    )
-  }
+  const rows = sheetRowKeys(details, { neo }).map((key) => {
+    if (key === 'not_neo') return NOT_NEO_LINE
+    const [label, value] = renderers[key]()
+    return `<p><strong>${label}</strong> ${value}</p>`
+  })
 
   const unknownPhysics = !details.diameter_km && !details.taxonomy
   const links = [
     `<a href="${escapeHtml(details.links.jpl)}" target="_blank" rel="noopener">JPL</a>`,
     details.links.ssocard ? `<a href="${escapeHtml(details.links.ssocard)}" target="_blank" rel="noopener">SsODNet</a>` : null,
-    details.links.esa ? `<a href="${escapeHtml(details.links.esa)}" target="_blank" rel="noopener">ESA NEOCC</a>` : null,
+    neo && details.links.esa ? `<a href="${escapeHtml(details.links.esa)}" target="_blank" rel="noopener">ESA NEOCC</a>` : null,
   ].filter(Boolean)
 
   return `
     <h3>Fiche</h3>
     ${rows.join('')}
-    ${unknownPhysics ? '<p class="muted">Ni taxonomie ni diamètre mesuré : fréquent pour les petits NEO.</p>' : ''}
+    ${unknownPhysics ? `<p class="muted">Ni taxonomie ni diamètre mesuré : fréquent pour les petits ${neo ? 'NEO' : 'astéroïdes'}.</p>` : ''}
     <p class="muted">${links.join(' · ')}</p>
-    ${orbitComparisonHtml(details)}
+    ${orbitComparisonHtml(details, { neo })}
   `
+}
+
+/** Credits of a tracked asteroid's sheet: NeoWs is never consulted for it, and ESA / Sentry only for a NEO. */
+export function trackedCredits(neo) {
+  return neo
+    ? "Données : NASA/JPL (SBDB, Horizons, CAD, Sentry) · ESA NEOCC · LTE's SsODNet VO service (IMCCE)"
+    : "Données : NASA/JPL (SBDB, Horizons) · LTE's SsODNet VO service (IMCCE)"
 }
 
 export const NEO_CREDITS =

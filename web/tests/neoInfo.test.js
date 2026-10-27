@@ -10,6 +10,7 @@ import {
   escapeHtml,
   neoTooltipSuffix,
   orbitComparisonHtml,
+  sheetRowKeys,
   sourcesBlockHtml,
   sourcesPanelHtml,
   taxonomyKey,
@@ -847,5 +848,70 @@ describe('diameterHtml', () => {
     expect(html).toContain('100 m – 300 m')
     expect(html).toContain('albédo supposé')
     expect(html).toContain('dessiné à 200 m')
+  })
+})
+
+describe('fiche NEO / astéroïde qui n\'est pas un NEO', () => {
+  // Épinglé : un astéroïde suivi n'est pas forcément un NEO. MOID Terre, Sentry et
+  // ESA NEOCC n'ont de sens que pour un géocroiseur ; un non-NEO le dit en toutes
+  // lettres au lieu de les taire sans explication.
+  const full = {
+    orbit_class: { code: 'ATE', name: 'Aten' },
+    taxonomy: null,
+    diameter_km: null,
+    albedo: null,
+    absolute_magnitude_h: 19.1,
+    moid_earth_au: 0.0002,
+    rotation_period_h: null,
+    mass_kg: null,
+    density_kg_m3: null,
+    impact_risk: { probability: 1e-5, palermo_cum: -3, palermo_max: -3, torino_max: 0, range: '2060-2100' },
+    links: { jpl: 'https://example.test/jpl', ssocard: null, esa: 'https://example.test/esa' },
+    orbits: {
+      sbdb: { a_au: 1, e: 0.1, i_deg: 1, node_deg: 1, peri_deg: 1, period_days: 365, epoch_jd: 2461000.5 },
+      esa: { a_au: 1, e: 0.1, i_deg: 1, node_deg: 1, peri_deg: 1, period_days: 365, epoch_jd: 2461000.5 },
+    },
+  }
+  const state = { loading: false, error: null }
+
+  it('NEO : MOID, Sentry, lien ESA et colonne ESA présents, pas de « pas un NEO »', () => {
+    const keys = sheetRowKeys(full, { neo: true })
+    expect(keys).toContain('moid_earth')
+    expect(keys).toContain('impact_risk')
+    expect(keys).not.toContain('not_neo')
+    const html = detailsBlockHtml(full, state, { neo: true })
+    expect(html).toContain('MOID Terre')
+    expect(html).toContain('Sentry')
+    expect(html).toContain('ESA NEOCC')
+    expect(html).not.toContain('NEO</strong> non')
+  })
+
+  it('le défaut est NEO : les appelants existants ne changent pas', () => {
+    expect(detailsBlockHtml(full, state)).toBe(detailsBlockHtml(full, state, { neo: true }))
+  })
+
+  it('non-NEO : ni MOID, ni Sentry, ni ESA (lien et colonne), et la mention « non »', () => {
+    const keys = sheetRowKeys(full, { neo: false })
+    expect(keys).not.toContain('moid_earth')
+    expect(keys).not.toContain('impact_risk')
+    expect(keys).toContain('not_neo')
+    const html = detailsBlockHtml(full, state, { neo: false })
+    expect(html).not.toContain('MOID')
+    expect(html).not.toContain('Sentry')
+    expect(html).not.toContain('ESA NEOCC')
+    expect(html).toContain('NEO</strong> non')
+    expect(html).toContain('JPL SBDB')
+  })
+
+  it('texte neutre quand la physique est inconnue : « petits astéroïdes » hors NEO', () => {
+    const bare = { ...full, orbits: undefined }
+    expect(detailsBlockHtml(bare, state, { neo: true })).toContain('petits NEO')
+    const html = detailsBlockHtml(bare, state, { neo: false })
+    expect(html).toContain('petits astéroïdes')
+    expect(html).not.toContain('petits NEO')
+  })
+
+  it('le chargement ne promet pas Sentry à un non-NEO', () => {
+    expect(detailsBlockHtml(undefined, { loading: true, error: null }, { neo: false })).not.toContain('Sentry')
   })
 })

@@ -354,6 +354,11 @@ export function createPlanets({
 
   let loading = false
   let loadingOrbits = false
+  // Why a load stopped, in the backend's own words ("JPL Horizons est en panne : ..."),
+  // kept for the panel instead of swallowed: "les autres n'ont pas répondu" alone
+  // never said who. Cleared when the next attempt starts.
+  let loadError = null
+  let orbitsError = null
 
   /** @type {PlanetBody[]} */
   /** Gives a body its own ellipsoid once its record says how flat it is (see `shapeOf`). */
@@ -679,13 +684,15 @@ export function createPlanets({
   async function load() {
     const missing = bodies.filter((body) => !tables[body.id])
     loading = missing.length > 0
+    loadError = null
     on.changed()
 
     for (const body of missing) {
       let res
       try {
         res = await fetchSolarSystemBody(body.id)
-      } catch {
+      } catch (err) {
+        loadError = err.message
         break // the rest stay unplaced; retried on the next page load
       }
       const served = res.bodies[0]
@@ -726,13 +733,15 @@ export function createPlanets({
   async function loadOrbits() {
     const missing = bodies.filter((body) => !orbitTables[body.id])
     loadingOrbits = missing.length > 0
+    orbitsError = null
     on.changed()
 
     for (const body of missing) {
       let res
       try {
         res = await fetchSolarSystemOrbit(body.id)
-      } catch {
+      } catch (err) {
+        orbitsError = err.message
         break // the rest go undrawn; retried on the next page load
       }
       if (!res.positions) continue
@@ -814,6 +823,7 @@ export function createPlanets({
         total: bodies.length,
         loading,
         loadingOrbits,
+        error: loadError ?? orbitsError,
       }
     },
     /**
