@@ -43,7 +43,7 @@ import {
   sceneDistanceToKm,
   sunRadius,
   worldPerPixel,
-} from '../src/scale.js'
+} from '../../src/view/scale.js'
 
 // Ce fichier n'epingle pas la formule de scale.js -- il epingle ce que les
 // docblocks promettent : monotonie des courbes de compression, continuite et

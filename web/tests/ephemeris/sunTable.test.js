@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 
-import { createMoonTable, createSunTable, orbitWindowIndices } from '../src/sunTable.js'
+import { createMoonTable, createSunTable, orbitWindowIndices } from '../../src/ephemeris/sunTable.js'
 
 // Ce qui est épinglé ici : les conventions que l'œil ne voit pas. Une table
 // ICRF [x, y, z] devient des axes de scène (x, z, -y) -- un signe ou un axe

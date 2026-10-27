@@ -8,14 +8,14 @@
  * It owns the loading, the tables and the drawings; it does not own the list
  * (main.js holds it and persists it) and it knows nothing of the panels: what
  * the panels must redraw it announces through `on`. The pure rules — which
- * table an instant reads, how a search answer is read — live in tracking.js.
+ * table an instant reads, how a search answer is read — live in tracking/model.js.
  */
 
 import * as THREE from 'three'
-import { fetchSmallBodyPositions, searchSmallBody } from '../api.js'
-import { escapeHtml } from '../neoInfo.js'
+import { fetchSmallBodyPositions, searchSmallBody } from '../data/api.js'
+import { escapeHtml } from '../neo/info.js'
 import { icrfToScene } from '../scene/geo.js'
-import { flybyArcTimes, interpretSearch, positionAt, tableAt } from '../tracking.js'
+import { flybyArcTimes, interpretSearch, positionAt, tableAt } from './model.js'
 
 // Same logic as the NEO dots: a floor in pixels, because at true scale the
 // object itself is sub-pixel. The hit sphere is wider so a speck stays clickable.
@@ -35,7 +35,7 @@ const hitMaterial = new THREE.MeshBasicMaterial({ visible: false })
 
 /**
  * @typedef {{
- *   rec: import('../tracking.js').TrackedRecord,
+ *   rec: import('./model.js').TrackedRecord,
  *   status: 'loading'|'ready'|'error'|'missing', error: string|null, object: object|null,
  *   group: THREE.Group, mesh: THREE.Mesh, hit: THREE.Mesh,
  *   flybyTrace: object, helioTrace: object, labelEl: HTMLElement,

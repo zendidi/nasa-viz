@@ -11,7 +11,7 @@ import {
   raySphereDistance,
   setBodyOrientation,
 } from '../../src/scene/geo.js'
-import { AU_KM } from '../../src/scale.js'
+import { AU_KM } from '../../src/view/scale.js'
 
 // Ce que ces tests gardent, ce sont les *conventions* que les commentaires de
 // geo.js disent avoir ete mesurees plutot que devinees -- l'orientation des

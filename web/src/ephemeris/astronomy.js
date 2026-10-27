@@ -7,7 +7,7 @@
  * the same helper already used for star placement (RA/dec).
  */
 
-import { AU_KM } from './scale.js'
+import { AU_KM } from '../view/scale.js'
 
 const J2000 = Date.UTC(2000, 0, 1, 12, 0, 0) // 2000-01-01T12:00:00Z
 const DAY_MS = 86400000

@@ -14,10 +14,10 @@ import {
   sourcesBlockHtml,
   sourcesPanelHtml,
   taxonomyKey,
-} from '../src/neoInfo.js'
-import { diameterHtml } from '../src/neoInfo.js'
+} from '../../src/neo/info.js'
+import { diameterHtml } from '../../src/neo/info.js'
 
-// neoInfo.js met en forme des donnees qui viennent de trois catalogues (JPL,
+// neo/info.js met en forme des donnees qui viennent de trois catalogues (JPL,
 // NASA NeoWs, ESA NEOCC) et deux fiches (JPL SBDB, IMCCE ssoCard) qui ne
 // remplissent pas les memes champs. Le vrai mode de defaillance d'un
 // formateur est la donnee manquante : null, undefined, 0, chaine vide, champ

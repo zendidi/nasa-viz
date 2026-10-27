@@ -1,19 +1,19 @@
 /**
  * The "Suivi" tab's controller: the tracked list (the only thing persisted —
- * tracking.js says why), the user's choice to keep the week's NEO points on
+ * tracking/model.js says why), the user's choice to keep the week's NEO points on
  * screen while something is tracked, the "Suivre" button of a weekly NEO's
  * sheet, and which tracked object's sheet the detail panel shows. The scene
- * module (tracked/scene.js) loads the tables and draws; this one decides.
+ * module (tracking/scene.js) loads the tables and draws; this one decides.
  *
  * The NEO of the week stays what it was: a tracked asteroid is a different
  * object, NEO or not. The weekly NEO's own sheet stays with main.js, which hears
  * back through `on` whenever this changes something that sheet shows.
  */
 
-import { searchSmallBody } from '../api.js'
-import { loadCached, saveCached } from '../cache.js'
-import { cssColor } from '../neoInfo.js'
-import { createTrackedScene } from '../tracked/scene.js'
+import { searchSmallBody } from '../data/api.js'
+import { loadCached, saveCached } from '../data/cache.js'
+import { cssColor } from '../neo/info.js'
+import { createTrackedScene } from './scene.js'
 import {
   MAX_TRACKED,
   TRACKED_CACHE_KEY,
@@ -24,12 +24,12 @@ import {
   nextApproach,
   readTrackedList,
   removeTracked,
-} from '../tracking.js'
+} from './model.js'
 import { trackButtonHtml, trackedSheetHtml } from '../ui/sheets.js'
 
 /**
  * @param {object} options
- * @param {object} options.sceneOptions  what tracked/scene.js needs, minus `on`
+ * @param {object} options.sceneOptions  what tracking/scene.js needs, minus `on`
  * @param {object} options.neoScene  neo/scene.js — the points it hides, the sheets it loads
  * @param {object} options.panels  ui/panels.js
  * @param {object} options.clock  clock.js
@@ -42,7 +42,7 @@ import { trackButtonHtml, trackedSheetHtml } from '../ui/sheets.js'
  *   - `neoPolicyChanged`: the week's points were just shown or hidden.
  */
 export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs, afterTimeJump, on }) {
-  /** @type {import('../tracking.js').TrackedRecord[]} */
+  /** @type {import('./model.js').TrackedRecord[]} */
   let list = []
   /** The user's choice, while something is tracked, to keep the week's NEO points on screen. */
   let showNeoWhileTracking = false

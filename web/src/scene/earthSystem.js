@@ -10,10 +10,10 @@
  */
 
 import * as THREE from 'three'
-import { getEarthPoleJ2000, getEarthRotationAngle } from '../astronomy.js'
-import { issAt } from '../iss.js'
-import { LABEL_WHEN_SMALLER_THAN_PX } from '../labels.js'
-import { EARTH_RADIUS, ISS_READABLE_RADIUS, earthSystemScale, issOrbitRadius, issRadius } from '../scale.js'
+import { getEarthPoleJ2000, getEarthRotationAngle } from '../ephemeris/astronomy.js'
+import { issAt } from '../ephemeris/iss.js'
+import { LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
+import { EARTH_RADIUS, ISS_READABLE_RADIUS, earthSystemScale, issOrbitRadius, issRadius } from '../view/scale.js'
 import { MOON_RADIUS, cloudDriftAt, makeGlobe, makeIssMarker, makeMoon } from './bodies.js'
 import { EARTH_POSITION_KM } from './frame.js'
 import { icrfToScene, latLngToVector3 } from './geo.js'

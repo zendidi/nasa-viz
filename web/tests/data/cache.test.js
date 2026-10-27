@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { loadCached, saveCached } from '../src/cache.js'
+import { loadCached, saveCached } from '../../src/data/cache.js'
 
 // cache.js est le chemin normal pour des données fraîches sans dépenser le
 // quota NASA : il doit être best-effort -- ne jamais lever, quel que soit

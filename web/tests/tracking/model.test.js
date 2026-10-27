@@ -16,7 +16,7 @@ import {
   removeTracked,
   replaceSpkid,
   tableAt,
-} from '../src/tracking.js'
+} from '../../src/tracking/model.js'
 
 // Ce qui est épinglé : les règles que l'œil ne voit pas casser. Quelle table lit-on
 // à un instant donné (une erreur de 34 000 km à 40 000 km de la Terre ne se voit

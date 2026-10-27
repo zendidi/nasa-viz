@@ -1,9 +1,9 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
-import { TIME_SCALE } from '../src/api.js'
-import { defaultMinMs } from '../src/clock.js'
-import { TABLE_MARGIN_MS, sampleKm, tableCovers, tableEndSeconds, tablePositionKm } from '../src/positionTable.js'
-import { icrfToScene } from '../src/scene/geo.js'
+import { TIME_SCALE } from '../../src/data/api.js'
+import { defaultMinMs } from '../../src/ephemeris/clock.js'
+import { TABLE_MARGIN_MS, sampleKm, tableCovers, tableEndSeconds, tablePositionKm } from '../../src/ephemeris/positionTable.js'
+import { icrfToScene } from '../../src/scene/geo.js'
 
 // What is pinned: the rules every Horizons table in the scene shares. None shows
 // on screen when it breaks — a table kept one day too long draws a planet a day

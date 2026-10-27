@@ -4,9 +4,9 @@
  * and Shift+wheel.
  */
 
-import { FOCUSES, FOCUS_IDS } from '../focus.js'
-import { SCALE_PRESETS, SCALE_STEPS } from '../scale.js'
-import { RATE_STOPS } from '../clock.js'
+import { FOCUSES, FOCUS_IDS } from '../view/focus.js'
+import { SCALE_PRESETS, SCALE_STEPS } from '../view/scale.js'
+import { RATE_STOPS } from '../ephemeris/clock.js'
 import { formatSimDate } from './format.js'
 
 /**

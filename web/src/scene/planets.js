@@ -14,14 +14,14 @@
  */
 
 import * as THREE from 'three'
-import { TIME_SCALE, fetchSolarSystemBody, fetchSolarSystemOrbit } from '../api.js'
-import { loadCached, saveCached } from '../cache.js'
+import { TIME_SCALE, fetchSolarSystemBody, fetchSolarSystemOrbit } from '../data/api.js'
+import { loadCached, saveCached } from '../data/cache.js'
 import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift } from './geo.js'
-import { polylinePointAt, subdivideClosedLoop } from '../interpolate.js'
+import { polylinePointAt, subdivideClosedLoop } from '../ephemeris/interpolate.js'
 import { orientBody } from './orientation.js'
-import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, tableCovers, tablePositionKm } from '../positionTable.js'
-import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../scale.js'
+import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, tableCovers, tablePositionKm } from '../ephemeris/positionTable.js'
+import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../view/scale.js'
 
 /**
  * French label and colour per body, in the order the backend lists them
@@ -30,7 +30,7 @@ import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../scale.js'
  * `ui/panels.js` made between the scene's state and what is shown of it.
  *
  * Colours are the eye's, not a measurement: recognisable hues (rust Mars,
- * blue Neptune), kept clear of the NEO palette (`neoInfo.js` — cyan default,
+ * blue Neptune), kept clear of the NEO palette (`neo/info.js` — cyan default,
  * red hazard, and the four taxonomy colours) so a planet is never mistaken
  * for an asteroid.
  */

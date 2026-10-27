@@ -12,7 +12,7 @@ import {
   orbitSchematicSvg,
   sampleOrbit,
   sampleOrbitBetween,
-} from '../src/orbit.js'
+} from '../../src/neo/orbit.js'
 
 // orbit.js propage une ellipse képlérienne (fait géométrique, vérifiable
 // indépendamment du code : la distance au foyer d'une ellipse d'éléments

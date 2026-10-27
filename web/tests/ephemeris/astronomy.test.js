@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { getEarthPoleJ2000, getEarthRotationAngle, getGreenwichSiderealTime, getMoonEquatorial, getSunEquatorial } from '../src/astronomy.js'
+import { getEarthPoleJ2000, getEarthRotationAngle, getGreenwichSiderealTime, getMoonEquatorial, getSunEquatorial } from '../../src/ephemeris/astronomy.js'
 
 // astronomy.js est une série analytique basse précision (docblock : "accurate
 // to a few degrees"). Ces tests n'épinglent donc pas ses formules internes --

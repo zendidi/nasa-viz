@@ -18,14 +18,14 @@
  */
 
 import * as THREE from 'three'
-import { fetchMoons } from '../api.js'
-import { loadCached, saveCached } from '../cache.js'
+import { fetchMoons } from '../data/api.js'
+import { loadCached, saveCached } from '../data/cache.js'
 import { loadColorMap, makeLitBodyMaterial } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift, setBodyOrientation } from './geo.js'
 import { poleOf } from './orientation.js'
-import { moonRadius } from '../scale.js'
-import { subdivideTable } from '../interpolate.js'
-import { ORBIT_SMOOTHING, tableCovers, tablePositionKm } from '../positionTable.js'
+import { moonRadius } from '../view/scale.js'
+import { subdivideTable } from '../ephemeris/interpolate.js'
+import { ORBIT_SMOOTHING, tableCovers, tablePositionKm } from '../ephemeris/positionTable.js'
 
 /** French names, by backend id. The backend owns the physics, this owns the wording. */
 const MOON_LABELS = {

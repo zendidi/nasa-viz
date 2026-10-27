@@ -7,8 +7,8 @@
 
 import * as THREE from 'three'
 import { makeSunMarker } from './bodies.js'
-import { LABEL_WHEN_SMALLER_THAN_PX } from '../labels.js'
-import { SUN_READABLE_RADIUS, isRealScale, sunRadius } from '../scale.js'
+import { LABEL_WHEN_SMALLER_THAN_PX } from './labels.js'
+import { SUN_READABLE_RADIUS, isRealScale, sunRadius } from '../view/scale.js'
 
 // Distances and sizes of everything but the Earth depend on the "réalisme"
 // scale (scaleT, see scale.js and docs/echelle-reelle.md): readable at 0,

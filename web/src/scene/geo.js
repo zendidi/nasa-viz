@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three'
-import { AU_KM } from '../scale.js'
+import { AU_KM } from '../view/scale.js'
 
 /**
  * Where a surface point sits in a body's **own** axes — and, with it, the

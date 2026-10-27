@@ -9,8 +9,8 @@
  */
 
 import * as THREE from 'three'
-import { fetchSolarSystemOrientation } from '../api.js'
-import { loadCached, saveCached } from '../cache.js'
+import { fetchSolarSystemOrientation } from '../data/api.js'
+import { loadCached, saveCached } from '../data/cache.js'
 import { icrfToScene, setBodyOrientation } from './geo.js'
 
 const CACHE_KEY = 'solar-system-orientation'

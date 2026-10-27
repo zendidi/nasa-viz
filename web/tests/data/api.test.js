@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchSmallBodyPositions, searchSmallBody, upstreamErrorMessage } from '../src/api.js'
+import { fetchSmallBodyPositions, searchSmallBody, upstreamErrorMessage } from '../../src/data/api.js'
 
 describe('upstreamErrorMessage', () => {
   it('names the provider the backend says is down', () => {

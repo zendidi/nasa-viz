@@ -13,7 +13,7 @@
  * each from its own cache in ~0,1 s.
  */
 
-import { sampleCatmullRom } from './interpolate.js'
+import { sampleCatmullRom } from '../ephemeris/interpolate.js'
 
 /** Hard ceiling on tracked objects (decided with the user, 2026-10-27). */
 export const MAX_TRACKED = 5

@@ -11,7 +11,7 @@
 
 import * as THREE from 'three'
 import { OBLIQUITY_RAD } from './geo.js'
-import { EARTH_RADIUS, EARTH_RADIUS_KM, ISS_READABLE_RADIUS, KM_TO_UNITS, MOON_RADIUS_KM, SUN_READABLE_RADIUS } from '../scale.js'
+import { EARTH_RADIUS, EARTH_RADIUS_KM, ISS_READABLE_RADIUS, KM_TO_UNITS, MOON_RADIUS_KM, SUN_READABLE_RADIUS } from '../view/scale.js'
 
 /**
  * The Earth's ellipsoid (WGS84: 6 378,137 / 6 356,752 km) against the 6 371 km

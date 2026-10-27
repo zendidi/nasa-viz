@@ -9,8 +9,8 @@
  */
 
 import * as THREE from 'three'
-import { raySphereDistance } from './scene/geo.js'
-import { worldPerPixel } from './scale.js'
+import { raySphereDistance } from './geo.js'
+import { worldPerPixel } from '../view/scale.js'
 
 /** A body wider than this reads as itself; below it, it's a dot that needs naming. */
 export const LABEL_WHEN_SMALLER_THAN_PX = 6

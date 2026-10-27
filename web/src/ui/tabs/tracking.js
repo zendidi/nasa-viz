@@ -3,8 +3,8 @@
  * or a list of candidates), and the tracked list with each object's actions.
  */
 
-import { escapeHtml } from '../../neoInfo.js'
-import { MAX_TRACKED } from '../../tracking.js'
+import { escapeHtml } from '../../neo/info.js'
+import { MAX_TRACKED } from '../../tracking/model.js'
 import { formatSimDate } from '../format.js'
 
 const TRACK_PLACEHOLDER = 'Apophis, 433, 2004 MN4, 20099942…'

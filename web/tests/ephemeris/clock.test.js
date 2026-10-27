@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CLOCK_RATES, HISTORY_MONTHS, RATE_STOPS, createClock, defaultMaxMs, defaultMinMs } from '../src/clock.js'
+import { CLOCK_RATES, HISTORY_MONTHS, RATE_STOPS, createClock, defaultMaxMs, defaultMinMs } from '../../src/ephemeris/clock.js'
 
 // Ce qui est épinglé ici : les invariants que l'œil ne voit pas au moment où ils
 // cassent. Un changement de vitesse qui fait sauter le temps, c'est une planète

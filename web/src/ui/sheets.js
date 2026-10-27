@@ -4,8 +4,8 @@
  * hands it over as plain values, the panel draws what comes back
  * (`panels.openDetail`). The buttons carry `data-action`, wired in ui/panels.js.
  */
-import { orbitSchematicSvg } from '../orbit.js'
-import { MAX_TRACKED } from '../tracking.js'
+import { orbitSchematicSvg } from '../neo/orbit.js'
+import { MAX_TRACKED } from '../tracking/model.js'
 import {
   NEO_CREDITS,
   trackedCredits,
@@ -13,7 +13,7 @@ import {
   sourcesBlockHtml,
   detailsBlockHtml,
   diameterHtml,
-} from '../neoInfo.js'
+} from '../neo/info.js'
 
 const formatUtc = (seconds) =>
   `${new Date(seconds * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'UTC' })} UTC`
@@ -88,7 +88,7 @@ export function neoSheetHtml({ neo, designation, sheet, trackButton, positionHtm
 /**
  * The close-approach lines of a tracked NEO's sheet.
  *
- * @param {object|null} next  `nextApproach()` (tracking.js), null when there is
+ * @param {object|null} next  `nextApproach()` (tracking/model.js), null when there is
  *   nothing to say (not a NEO, or its tables not loaded yet)
  * @param {string} spkid  for the "Y aller" button
  */

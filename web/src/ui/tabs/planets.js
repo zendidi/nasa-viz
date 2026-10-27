@@ -1,7 +1,7 @@
 /** The "Planètes" tab of the left column: tables, orbits, legend, the pivot's moons, Venus's surface box. */
 
-import { FOCUSES } from '../../focus.js'
-import { escapeHtml } from '../../neoInfo.js'
+import { FOCUSES } from '../../view/focus.js'
+import { escapeHtml } from '../../neo/info.js'
 
 const PLANETS_HEADING = '<h2>Planètes</h2>'
 

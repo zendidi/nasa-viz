@@ -3,7 +3,7 @@
  * positions counter, the points and all-orbits boxes, the colour legend.
  */
 
-import { sourcesPanelHtml } from '../../neoInfo.js'
+import { sourcesPanelHtml } from '../../neo/info.js'
 import { formatUpdatedAt } from '../format.js'
 
 const NEO_HEADING = '<h2>Astéroïdes proches (NEO)</h2>'

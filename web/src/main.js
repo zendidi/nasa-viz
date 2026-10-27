@@ -1,22 +1,22 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './api.js'
-import { loadCached, saveCached } from './cache.js'
-import { createClock, defaultMaxMs, defaultMinMs } from './clock.js'
-import { createMoonTable, createSunTable } from './sunTable.js'
-import { FOCUSES, neoEllipsesVisible } from './focus.js'
+import { fetchIssPosition, fetchNeoFeed, fetchApod, fetchUsage } from './data/api.js'
+import { loadCached, saveCached } from './data/cache.js'
+import { createClock, defaultMaxMs, defaultMinMs } from './ephemeris/clock.js'
+import { createMoonTable, createSunTable } from './ephemeris/sunTable.js'
+import { FOCUSES, neoEllipsesVisible } from './view/focus.js'
 import { createPanels } from './ui/panels.js'
 import { neoSheetHtml } from './ui/sheets.js'
 import { createStarfield } from './scene/starfield.js'
-import { createPicking } from './picking.js'
+import { createPicking } from './scene/picking.js'
 import { createOrbitTraces } from './scene/orbitTrace.js'
 import { createCameraRig } from './app/camera.js'
 import { createViewFrame } from './scene/frame.js'
 import { createEarthSystem } from './scene/earthSystem.js'
 import { createSun } from './scene/sun.js'
 import { createNeoScene, designationOf } from './neo/scene.js'
-import { createTracking } from './app/tracking.js'
-import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX } from './labels.js'
+import { createTracking } from './tracking/controller.js'
+import { createSceneLabels, LABEL_RING_MIN_RADIUS_PX } from './scene/labels.js'
 import { createDistanceRings, createEclipticPlane } from './scene/bodies.js'
 import { createPlanets } from './scene/planets.js'
 import { createMoons } from './scene/moons.js'
@@ -27,14 +27,14 @@ import {
   TAXONOMY,
   taxonomyKey,
   cssColor,
-} from './neoInfo.js'
+} from './neo/info.js'
 import {
   AU_KM,
   LUNAR_DISTANCE_KM,
   stepToT,
   sceneDistance,
   describeScale,
-} from './scale.js'
+} from './view/scale.js'
 
 const app = document.getElementById('app')
 
@@ -612,7 +612,7 @@ const orbitMarkerLabels = {
 
 // --- suivi d'astéroïdes (onglet « Suivi ») ------------------------------------------
 //
-// app/tracking.js: the list, its policy towards the week's NEO points, the
+// tracking/controller.js: the list, its policy towards the week's NEO points, the
 // "Suivre" button and the tracked sheet. The weekly NEO's own sheet stays here.
 
 const tracking = createTracking({

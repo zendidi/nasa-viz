@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { EARTH_POSITION_KM, createViewFrame } from '../../src/scene/frame.js'
-import { AU_KM } from '../../src/scale.js'
+import { AU_KM } from '../../src/view/scale.js'
 
 // What is pinned: the sign conventions between the three frames a sample can
 // come in, and that the pivot is the origin. Each one, inverted, still draws a

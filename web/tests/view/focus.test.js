@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { FOCUSES, FOCUS_IDS, PLANET_FOCUS_IDS, hidesPlanets, neoEllipsesVisible } from '../src/focus.js'
-import { AU_KM, readableDistance } from '../src/scale.js'
+import { FOCUSES, FOCUS_IDS, PLANET_FOCUS_IDS, hidesPlanets, neoEllipsesVisible } from '../../src/view/focus.js'
+import { AU_KM, readableDistance } from '../../src/view/scale.js'
 
 // FOCUSES est une table de config, pas un algorithme : son vrai mode de
 // defaillance est une entree ajoutee a laquelle il manque un champ, ou dont la

@@ -13,8 +13,8 @@
  */
 
 import * as THREE from 'three'
-import { FOCUSES, hidesPlanets } from '../focus.js'
-import { EARTH_RADIUS, pivotRadius, sceneDistance, sunRadius } from '../scale.js'
+import { FOCUSES, hidesPlanets } from '../view/focus.js'
+import { EARTH_RADIUS, pivotRadius, sceneDistance, sunRadius } from '../view/scale.js'
 
 /** The Earth, in the geocentric km every body position is expressed in. */
 export const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { trackButtonHtml, trackedApproachHtml } from '../../src/ui/sheets.js'
-import { MAX_TRACKED } from '../../src/tracking.js'
+import { MAX_TRACKED } from '../../src/tracking/model.js'
 
 const idle = { designation: null, busy: false, message: '' }
 

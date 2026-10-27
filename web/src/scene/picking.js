@@ -10,8 +10,8 @@
  */
 
 import * as THREE from 'three'
-import { raySphereDistance } from './scene/geo.js'
-import { neoTooltipSuffix } from './neoInfo.js'
+import { raySphereDistance } from './geo.js'
+import { neoTooltipSuffix } from '../neo/info.js'
 
 // Star picking is done by hand in screen space rather than via
 // Raycaster.intersectObject(the star points): that built-in path tests a fixed
@@ -31,7 +31,7 @@ const DRAG_TOLERANCE_PX = 5
  * @param {HTMLCanvasElement} options.canvas
  * @param {THREE.Camera}      options.camera
  * @param {THREE.Group}       options.neoGroup   the NEO meshes to raycast
- * @param {THREE.Group}       options.trackedGroup  the tracked asteroids' markers (tracked/scene.js)
+ * @param {THREE.Group}       options.trackedGroup  the tracked asteroids' markers (tracking/scene.js)
  * @param {object}            options.starfield  scene/starfield.js
  * @param {object}            options.panels     ui/panels.js, for the tooltips
  * @param {() => {center: THREE.Vector3, radius: number}[]} options.occluders

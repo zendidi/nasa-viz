@@ -10,10 +10,10 @@
  * the route says none is missing) and only the rules live here.
  */
 
-import { TIME_SCALE } from './api.js'
+import { TIME_SCALE } from '../data/api.js'
 import { defaultMinMs } from './clock.js'
 import { sampleCatmullRom } from './interpolate.js'
-import { icrfToScene } from './scene/geo.js'
+import { icrfToScene } from '../scene/geo.js'
 
 /**
  * A yearly table is refetched once "now" comes within this of its end, rather

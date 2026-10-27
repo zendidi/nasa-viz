@@ -20,11 +20,11 @@
  */
 
 import * as THREE from 'three'
-import { fetchSolarSystemBody } from './api.js'
-import { loadCached, saveCached } from './cache.js'
+import { fetchSolarSystemBody } from '../data/api.js'
+import { loadCached, saveCached } from '../data/cache.js'
 import { subdivideTable } from './interpolate.js'
 import { getMoonEquatorial, getSunEquatorial } from './astronomy.js'
-import { icrfToScene, latLngToVector3 } from './scene/geo.js'
+import { icrfToScene, latLngToVector3 } from '../scene/geo.js'
 import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, sampleKm, tableCovers, tableEndSeconds, tableIndexAt } from './positionTable.js'
 
 // Refetched once "now" comes within TABLE_MARGIN_MS of the table's end — same rule as the planets'.

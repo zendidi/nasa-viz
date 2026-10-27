@@ -11,7 +11,7 @@
  */
 
 import * as THREE from 'three'
-import { SCALE_STEPS, lerpLog, remapCameraDistance, sceneDistance, sceneDistanceToKm, stepToT, worldPerPixel } from '../scale.js'
+import { SCALE_STEPS, lerpLog, remapCameraDistance, sceneDistance, sceneDistanceToKm, stepToT, worldPerPixel } from '../view/scale.js'
 
 const SCALE_TRANSITION_MS = 1500
 

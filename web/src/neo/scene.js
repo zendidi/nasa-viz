@@ -16,9 +16,9 @@
  */
 
 import * as THREE from 'three'
-import { TIME_SCALE, fetchNeoDetails, fetchNeoPositions } from '../api.js'
-import { loadCached, saveCached } from '../cache.js'
-import { NEO_DEFAULT_COLOR, NEO_HAZARD_COLOR, TAXONOMY, taxonomyKey } from '../neoInfo.js'
+import { TIME_SCALE, fetchNeoDetails, fetchNeoPositions } from '../data/api.js'
+import { loadCached, saveCached } from '../data/cache.js'
+import { NEO_DEFAULT_COLOR, NEO_HAZARD_COLOR, TAXONOMY, taxonomyKey } from './info.js'
 import {
   sampleOrbit,
   sampleOrbitBetween,
@@ -28,11 +28,11 @@ import {
   orbitPosition,
   julianDate,
   edgeBlendWeight,
-} from '../orbit.js'
+} from './orbit.js'
 import { eclipticAuToSceneKm, hashToDirection, icrfToScene } from '../scene/geo.js'
-import { sampleKm } from '../positionTable.js'
-import { neoEllipsesVisible } from '../focus.js'
-import { NEO_FLOOR_PX, neoFloorFactor, neoFloorPx, neoRadius } from '../scale.js'
+import { sampleKm } from '../ephemeris/positionTable.js'
+import { neoEllipsesVisible } from '../view/focus.js'
+import { NEO_FLOOR_PX, neoFloorFactor, neoFloorPx, neoRadius } from '../view/scale.js'
 
 // Unit spheres shared by every NEO, scaled per frame in update().
 const neoGeometry = new THREE.SphereGeometry(1, 10, 10)

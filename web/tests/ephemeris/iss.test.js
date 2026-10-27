@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { issAt } from '../src/iss.js'
+import { issAt } from '../../src/ephemeris/iss.js'
 
 // Ce qui est épinglé : qu'on place l'ISS à l'instant demandé et pas au dernier
 // relevé (le défaut de l'audit du 2026-10-21), qu'on refuse de la placer hors
