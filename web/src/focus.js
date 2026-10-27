@@ -14,17 +14,24 @@
 import { AU_KM, EARTH_CURVE, LUNAR_DISTANCE_KM, SUN_CURVE, isRealScale, moonSystemCurve, orbitingCurve } from './scale.js'
 
 const lunarRing = (count, label) => ({ km: count * LUNAR_DISTANCE_KM, label })
-const auRing = (au) => ({ km: au * AU_KM, label: `${au.toLocaleString('fr-FR')} ua` })
+/**
+ * Every ring outside the Earth's view is labelled in au, two decimals, always
+ * (2026-10-27, user's call): "0,50 UA", "2,00 UA". Kept strict even where it
+ * rounds to "0,00 UA" — the moon-system rings around a planet are a few
+ * thousandths of an au at most, and the user preferred one uniform reading to
+ * a power of ten. The Earth's rings stay in lunar distances.
+ */
+const auLabel = (km) =>
+  `${(km / AU_KM).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} UA`
+
+const auRing = (au) => ({ km: au * AU_KM, label: auLabel(au * AU_KM) })
 
 /**
  * Same circle, for a distance that falls out of a computation instead of being
- * chosen: 0,19355 au reads as noise, so it is rounded to two significant
- * digits. These rings are a yardstick for the eye, not a measurement.
+ * chosen (0,19355 au): the two fixed decimals of `auLabel` round it the same
+ * way. These rings are a yardstick for the eye, not a measurement.
  */
-const scaledRing = (au) => ({
-  km: au * AU_KM,
-  label: `${au.toLocaleString('fr-FR', { maximumSignificantDigits: 2 })} ua`,
-})
+const scaledRing = auRing
 
 /**
  * @typedef {{
@@ -101,6 +108,9 @@ const PLANET_AU = {
   saturn: 9.5388,
   uranus: 19.1819,
   neptune: 30.058,
+  // Dwarf planet shown as a planet (user's call, 2026-10-16). Mean a, not the
+  // current distance (29,7 to 49,3 au, e = 0,25) - see the note above.
+  pluto: 39.48,
 }
 
 /** French labels, in the order the backend lists them (outward from the Sun). */
@@ -112,6 +122,7 @@ const PLANET_LABELS = {
   saturn: 'Saturne',
   uranus: 'Uranus',
   neptune: 'Neptune',
+  pluto: 'Pluton',
 }
 
 /**
@@ -135,6 +146,7 @@ const PLANET_MOON_ANCHOR = {
   saturn: 1_221_870, // Titan
   uranus: 436_300, // Titania
   neptune: 354_759, // Triton
+  pluto: 19_591, // Charon
 }
 
 /**
@@ -153,10 +165,7 @@ const PLANET_MOON_ANCHOR = {
  * all**, which is exactly the limit that was documented as accepted on
  * 2026-09-29. The new curve lifted it.
  */
-const moonRing = (km) => ({
-  km: Math.round(km),
-  label: `${Math.round(km).toLocaleString('fr-FR', { maximumSignificantDigits: 2 })} km`,
-})
+const moonRing = (km) => ({ km: Math.round(km), label: auLabel(km) })
 
 export const PLANET_FOCUS_IDS = Object.keys(PLANET_AU)
 
@@ -177,9 +186,9 @@ for (const id of PLANET_FOCUS_IDS) {
     // one system is bigger than another, all the scaled ones being pinned to
     // land in the same place whichever pivot you choose.
     rings: anchorKm
-      ? [{ km: AU_KM, label: '1 ua (Terre)', absolute: true }, moonRing(0.3 * anchorKm), moonRing(3 * anchorKm)]
+      ? [{ km: AU_KM, label: `${auLabel(AU_KM)} (Terre)`, absolute: true }, moonRing(0.3 * anchorKm), moonRing(3 * anchorKm)]
       : [
-          { km: AU_KM, label: '1 ua (Terre)', absolute: true },
+          { km: AU_KM, label: `${auLabel(AU_KM)} (Terre)`, absolute: true },
           scaledRing(0.5 * au),
           scaledRing(2 * au),
           scaledRing(5 * au),
@@ -193,6 +202,21 @@ for (const id of PLANET_FOCUS_IDS) {
  * then the planets outward from the Sun.
  */
 export const FOCUS_IDS = ['earth', 'sun', ...PLANET_FOCUS_IDS]
+
+/**
+ * Whether this point of view hides the planets (and every planetary orbit line)
+ * below 100 % réel. Every pivot but the Sun: the Earth since 2026-09-29, and the
+ * planets themselves since 2026-10-16 (user's call, replacing "centred on Mars
+ * the scene draws the planets at every scale") — the compressed curves of a
+ * pivot-centred view interleave the planets with the NEOs. The Sun's view keeps
+ * them at every scale (`SUN_CURVE` is built for that range). The pivot planet
+ * itself is never hidden: planets.js exempts it, this only says "the others".
+ *
+ * @param {string} focusId
+ */
+export function hidesPlanets(focusId) {
+  return focusId !== 'sun'
+}
 
 /**
  * Whether the NEO ellipses (the selected one's and the opt-in bundle) are drawn.

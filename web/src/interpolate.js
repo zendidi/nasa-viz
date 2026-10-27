@@ -171,3 +171,26 @@ export function subdivideTable(positions, factor) {
   return out
 }
 
+
+/**
+ * The point of a drawn polyline at fractional vertex index `g`: the straight
+ * chord between vertices floor(g) and floor(g) + 1, exactly what the GPU draws.
+ * `flat` is x, y, z per vertex (a trace's `km`). For a `subdivideClosedLoop`
+ * result, sample f of the source table is vertex f * factor.
+ *
+ * @param {ArrayLike<number>} flat
+ * @param {number} g clamped to the polyline
+ * @param {{x: number, y: number, z: number}} out
+ */
+export function polylinePointAt(flat, g, out) {
+  const last = flat.length / 3 - 1
+  const gc = g < 0 ? 0 : g > last ? last : g
+  const k = Math.min(Math.floor(gc), last - 1)
+  const u = gc - k
+  const a = k * 3
+  const b = a + 3
+  out.x = flat[a] + (flat[b] - flat[a]) * u
+  out.y = flat[a + 1] + (flat[b + 1] - flat[a + 1]) * u
+  out.z = flat[a + 2] + (flat[b + 2] - flat[a + 2]) * u
+  return out
+}

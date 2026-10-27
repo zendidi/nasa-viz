@@ -11,7 +11,18 @@
 
 import * as THREE from 'three'
 import { OBLIQUITY_RAD } from './geo.js'
-import { EARTH_RADIUS, ISS_READABLE_RADIUS, KM_TO_UNITS, MOON_RADIUS_KM, SUN_READABLE_RADIUS } from '../scale.js'
+import { EARTH_RADIUS, EARTH_RADIUS_KM, ISS_READABLE_RADIUS, KM_TO_UNITS, MOON_RADIUS_KM, SUN_READABLE_RADIUS } from '../scale.js'
+
+/**
+ * The Earth's ellipsoid (WGS84: 6 378,137 / 6 356,752 km) against the 6 371 km
+ * mean radius the scene is built on — the globe and its cloud layer are
+ * stretched by it like the planets (`shapeOf` in planets.js), the pole being
+ * the globe's local +Y. 0,3 % only, but there is no reason left to draw the one
+ * planet everybody knows as the only perfectly round one.
+ */
+const EARTH_SHAPE = [6378.137 / EARTH_RADIUS_KM, 6356.752 / EARTH_RADIUS_KM]
+const oblateSphere = (radius, segments) =>
+  new THREE.SphereGeometry(radius, segments, segments).scale(EARTH_SHAPE[0], EARTH_SHAPE[1], EARTH_SHAPE[0])
 
 /** The Moon's true radius in scene units — its readable size is a scale factor on top. */
 export const MOON_RADIUS = MOON_RADIUS_KM * KM_TO_UNITS
@@ -29,6 +40,15 @@ export const MOON_RADIUS = MOON_RADIUS_KM * KM_TO_UNITS
  */
 const WHITE_PIXEL = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
 WHITE_PIXEL.needsUpdate = true
+
+/**
+ * The default ring band of a ringed planet's shader: one fully transparent texel.
+ * `WHITE_PIXEL` would be wrong here — its alpha is 1, so until the real band
+ * decoded the planet would wear a ring shadow cast by a solid disc. Alpha 0 means
+ * "no ring yet, no shadow", with no extra uniform and no branch.
+ */
+const CLEAR_PIXEL = new THREE.DataTexture(new Uint8Array([255, 255, 255, 0]), 1, 1)
+CLEAR_PIXEL.needsUpdate = true
 
 /** @type {Map<string, Promise<THREE.Texture>>} */
 const colorMaps = new Map()
@@ -112,7 +132,7 @@ const EARTH_MAPS = {
 const CLOUD_ALTITUDE = 1.003
 
 /**
- * How far the cloud sphere turns per day, on top of the globe's own GMST
+ * How far the cloud sphere turns per day, on top of the globe's own ERA
  * rotation. A rigid drift is a **visual convention, not weather** — real
  * systems move at different speeds in different latitude bands — so it is kept
  * slow enough to read as motion over a minute of watching without ever
@@ -126,7 +146,7 @@ const CLOUD_DRIFT_DEG_PER_DAY = 7
  * fragment's world-space normal faces the real Sun direction
  * (`sunDirection`, updated in updateAstronomy() from real RA/dec — see the
  * "astronomy" section above). Everything here works in world space, so the
- * globe's real rotation (animate()'s `globe.rotation.y = ...GMST...`)
+ * globe's real rotation (animate()'s `globe.rotation.y = ...ERA...`)
  * naturally sweeps the terminator across the texture via the standard
  * `modelMatrix` transform — no extra per-frame bookkeeping needed. Normal
  * mapping (for the subtle terrain relief the old MeshPhongMaterial had) is
@@ -233,7 +253,7 @@ export function makeGlobe() {
 
   // Only this mesh is enlarged by the on-screen size floor, not the group —
   // the ISS marker is a child of the group and must keep its own orbit radius.
-  const sphere = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 64, 64), material)
+  const sphere = new THREE.Mesh(oblateSphere(EARTH_RADIUS, 64), material)
   group.add(sphere)
 
   /**
@@ -241,7 +261,7 @@ export function makeGlobe() {
    * the whole thing free of per-frame bookkeeping: the sphere is the mesh the
    * pixel floor scales, so hanging off it means the layer tracks the Earth's
    * drawn radius at every scale by inheritance, and it inherits the group's
-   * GMST rotation too — leaving its own `rotation.y` free to carry nothing but
+   * ERA rotation too — leaving its own `rotation.y` free to carry nothing but
    * the drift (set in main.js's animate()). The ISS marker is the counter-case
    * and the reason this distinction exists: it must *not* follow the floor, so
    * it hangs off the group.
@@ -297,7 +317,7 @@ export function makeGlobe() {
       }
     `,
   })
-  const clouds = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS * CLOUD_ALTITUDE, 64, 64), cloudMaterial)
+  const clouds = new THREE.Mesh(oblateSphere(EARTH_RADIUS * CLOUD_ALTITUDE, 64), cloudMaterial)
   sphere.add(clouds)
 
   // The material carries the `sunDirection` uniform the terminator reads, the
@@ -353,6 +373,9 @@ export function makeSunMarker() {
     new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0.25 }),
   )
   group.add(glow)
+  // Faded out towards true scale by main.js (applyScale): a halo of 5/3 R☉ left
+  // at t = 1 made the Sun look 0,89° wide instead of 0,53°.
+  group.userData.glow = glow
 
   let asked = false
   group.userData.loadTexture = () => {
@@ -459,9 +482,20 @@ const absoluteRingMaterial = new THREE.LineBasicMaterial({
  *
  * `uOpacity` rather than `material.opacity`: a hand-written ShaderMaterial gets
  * no automatic opacity, the fragment has to write the alpha itself.
+ *
+ * **`ringShadow: true` compiles the ring-shadow variant** (a `#define`, so a
+ * second program for Saturn only; the other bodies keep the lean one and pay
+ * nothing). The fragment finds its local position (the mesh is a unit sphere, so
+ * that is also its normal), walks the ray to the Sun until it crosses the
+ * equatorial plane y = 0 (the ring plane after `makeRing`'s rotateX), and if the
+ * crossing lies between the ring's radii it reads the band's alpha at that radius
+ * and darkens the daylight by it. The three ring uniforms are filled by
+ * `planets.js`: `uRingRadii` (inner, outer in planet radii) when the ring is built,
+ * `uRingMap` when the band decodes. Until then it is `CLEAR_PIXEL`, alpha 0, no shadow.
  */
-export function makeLitBodyMaterial(color, map = null) {
+export function makeLitBodyMaterial(color, map = null, { ringShadow = false } = {}) {
   return new THREE.ShaderMaterial({
+    defines: ringShadow ? { RING_SHADOW: '' } : {},
     uniforms: {
       uColor: { value: new THREE.Color(color) },
       uSunDir: { value: new THREE.Vector3(1, 0, 0) },
@@ -469,6 +503,13 @@ export function makeLitBodyMaterial(color, map = null) {
       // Swappable at any time — see `WHITE_PIXEL`. A body gets its map when it
       // arrives, not when the mesh is built.
       uMap: { value: map ?? WHITE_PIXEL },
+      // Slides the map's u, in turns, for maps whose left edge is not 180 deg
+      // (the USGS Pluto/Charon ones: 0 deg) - see `mapUShift` in geo.js. 0 for
+      // everything else, so the SSS maps are sampled exactly as before.
+      uMapShift: { value: 0 },
+      // Only read under RING_SHADOW; declared always so planets.js needs no branch.
+      uRingMap: { value: CLEAR_PIXEL },
+      uRingRadii: { value: new THREE.Vector2(1, 2) },
     },
     // Required by the renderer's logarithmicDepthBuffer — a hand-written
     // ShaderMaterial doesn't get these chunks automatically, and without them a
@@ -479,11 +520,23 @@ export function makeLitBodyMaterial(color, map = null) {
       #include <logdepthbuf_pars_vertex>
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      #ifdef RING_SHADOW
+        uniform vec3 uSunDir;
+        varying vec3 vLocalPos;
+        varying vec3 vSunLocal;
+      #endif
       void main() {
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         // uv needs no declaration: three.js prepends it for a ShaderMaterial,
         // and SphereGeometry already carries the attribute.
         vUv = uv;
+        #ifdef RING_SHADOW
+          vLocalPos = position;
+          // World -> local for a rotation times a uniform scale is the transpose
+          // (the scale cancels in the normalize). No inverse() needed, and no new
+          // uniform fed from JS: the Sun direction stays the one planets.js writes.
+          vSunLocal = normalize(transpose(mat3(modelMatrix)) * uSunDir);
+        #endif
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         #include <logdepthbuf_vertex>
       }
@@ -493,8 +546,15 @@ export function makeLitBodyMaterial(color, map = null) {
       uniform vec3 uSunDir;
       uniform float uOpacity;
       uniform sampler2D uMap;
+      uniform float uMapShift;
+      uniform sampler2D uRingMap;
+      uniform vec2 uRingRadii;
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      #ifdef RING_SHADOW
+        varying vec3 vLocalPos;
+        varying vec3 vSunLocal;
+      #endif
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
@@ -503,7 +563,32 @@ export function makeLitBodyMaterial(color, map = null) {
         // night side stays a dark disc instead of a hole in the starfield — a
         // planet is never truly unlit here, and at a few pixels across a hard
         // black half would just read as the wrong shape.
-        float lit = 0.12 + 0.88 * smoothstep(-0.15, 0.6, sunFacing);
+        float day = 0.88 * smoothstep(-0.15, 0.6, sunFacing);
+        #ifdef RING_SHADOW
+          // Ring shadow: from this surface point, t to the plane y = 0 along the
+          // Sun ray. t > 0 means the ring plane lies between us and the Sun; a ray
+          // parallel to the plane (|S.y| tiny) has no crossing. Measured 2026: the
+          // Sun is ~7 degrees off the plane, so a point at latitude phi crosses at
+          // r ~ cos(phi) + sin(phi)/tan(7 deg), inside 1,15..2,34 (Saturn's 69 289..141 055 km
+          // over 60 268) only within ~10 degrees of the equator: a thin band, on the
+          // hemisphere AWAY from the Sun (the ring sits between that ground and the Sun).
+          // The surface point as drawn, not normalised: on a flattened planet it
+          // is not on the unit sphere (its geometry carries the shape).
+          vec3 p = vLocalPos;
+          vec3 s = normalize(vSunLocal);
+          float t = -p.y / (abs(s.y) < 1e-4 ? 1e-4 : s.y);
+          float r = length(p.xz + t * s.xz);
+          float u = (r - uRingRadii.x) / (uRingRadii.y - uRingRadii.x);
+          float inside = step(0.0, t) * step(0.0, u) * step(u, 1.0);
+          // Sampled unconditionally (outside the ring the clamped edge texel is
+          // read, then multiplied by 0), to avoid a divergent texture fetch.
+          float ringAlpha = texture2D(uRingMap, vec2(clamp(u, 0.0, 1.0), 0.5)).a * inside;
+          // 0,85 and not 1: a visual choice, a pitch-black stripe would look drawn
+          // on, and the thin C ring / Cassini division already carry alpha well below 1.
+          // Applied to the day term only, so the night floor is not darkened twice.
+          day *= 1.0 - 0.85 * ringAlpha;
+        #endif
+        float lit = 0.12 + day;
         // A plain multiply, and the caller decides what it means: an untextured
         // body samples white and keeps its flat uColor; a textured one is given
         // uColor white (TEXTURED_TINT in planets.js) so the multiply becomes a
@@ -511,7 +596,7 @@ export function makeLitBodyMaterial(color, map = null) {
         // photograph by a legend hue was the other option and it saturates
         // twice - Mars is already rust.
         // (No backticks in here: this is inside a template literal.)
-        vec3 albedo = uColor * texture2D(uMap, vUv).rgb;
+        vec3 albedo = uColor * texture2D(uMap, vec2(vUv.x + uMapShift, vUv.y)).rgb;
         gl_FragColor = vec4(albedo * lit, uOpacity);
         // Custom fragment shaders don't get the automatic linear->output
         // colorspace encode that built-in materials do.
@@ -541,7 +626,7 @@ export function makeLitBodyMaterial(color, map = null) {
  * the two edges, the interpolator does exactly the right thing across the whole
  * width, and a subdivided annulus would only add vertices that change nothing.
  */
-export function makeRing({ innerRadius, outerRadius, segments = 180 }) {
+export function makeRing({ innerRadius, outerRadius, shape = [1, 1], segments = 180 }) {
   const geometry = new THREE.RingGeometry(innerRadius, outerRadius, segments, 1)
   geometry.rotateX(-Math.PI / 2)
 
@@ -553,7 +638,9 @@ export function makeRing({ innerRadius, outerRadius, segments = 180 }) {
   }
   uv.needsUpdate = true
 
-  return new THREE.Mesh(geometry, makeRingMaterial())
+  const material = makeRingMaterial()
+  material.uniforms.uShape.value.set(shape[0], shape[1], shape[0])
+  return new THREE.Mesh(geometry, material)
 }
 
 /**
@@ -580,6 +667,9 @@ function makeRingMaterial() {
       uMap: { value: WHITE_PIXEL },
       uSunDir: { value: new THREE.Vector3(1, 0, 0) },
       uOpacity: { value: 1 },
+      // The planet's ellipsoid in its own local axes (equator, pole, equator),
+      // in mean radii — see `shapeOf` in planets.js. (1, 1, 1) is a ball.
+      uShape: { value: new THREE.Vector3(1, 1, 1) },
     },
     transparent: true,
     side: THREE.DoubleSide,
@@ -592,11 +682,21 @@ function makeRingMaterial() {
     vertexShader: `
       #include <common>
       #include <logdepthbuf_pars_vertex>
+      uniform vec3 uSunDir;
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      varying vec3 vLocalPos;
+      varying vec3 vSunLocal;
       void main() {
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         vUv = uv;
+        // The ring is a child of the planet mesh, so its local space IS the planet's:
+        // the planet is the unit sphere at the origin stretched by uShape (its
+        // flattening, baked into its geometry since 2026-10-21; the mesh scale
+        // stays uniform), and the ring's radii are already in mean planet radii. World -> local = transpose (rotation x uniform
+        // scale, the scale cancels in the normalize).
+        vLocalPos = position;
+        vSunLocal = normalize(transpose(mat3(modelMatrix)) * uSunDir);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         #include <logdepthbuf_vertex>
       }
@@ -605,14 +705,32 @@ function makeRingMaterial() {
       uniform sampler2D uMap;
       uniform vec3 uSunDir;
       uniform float uOpacity;
+      uniform vec3 uShape;
       varying vec3 vWorldNormal;
       varying vec2 vUv;
+      varying vec3 vLocalPos;
+      varying vec3 vSunLocal;
       #include <logdepthbuf_pars_fragment>
       void main() {
         #include <logdepthbuf_fragment>
         vec4 texel = texture2D(uMap, vUv);
         float facing = abs(dot(normalize(vWorldNormal), normalize(uSunDir)));
         float lit = 0.30 + 0.70 * facing;
+        // The planet's shadow: this fragment is in it if the Sun lies behind the
+        // planet as seen from here (dot(d, S) < 0) and the line d + tS passes
+        // closer to the centre than one radius. The smoothstep (+-1,5 % of a
+        // radius) only hides the 48-segment sphere / aliasing at the edge; the
+        // real penumbra at Saturn (Sun 0,055 deg wide) is thinner than a pixel.
+        // Tested against the ellipsoid by squashing space back to the unit
+        // sphere: point and Sun ray both divided by uShape.
+        vec3 q = vLocalPos / uShape;
+        vec3 s = normalize(vSunLocal / uShape);
+        float along = dot(q, s);
+        float miss = length(q - s * along);
+        float shadow = (along < 0.0 ? 1.0 : 0.0) * (1.0 - smoothstep(0.985, 1.015, miss));
+        // Down to 12 % of the lit value, the same floor as a planet's night side,
+        // and not to 0: the rings stay faintly visible in their own shadow.
+        lit *= 1.0 - 0.88 * shadow;
         gl_FragColor = vec4(texel.rgb * lit, texel.a * uOpacity);
         // The alpha channel is what carries the gaps. Discarding the empty
         // texels rather than blending them keeps the Cassini division from
@@ -652,6 +770,53 @@ export function createDistanceRings(scene) {
         group.add(line)
         return { line, distanceKm: km, label, absolute }
       })
+    },
+  }
+}
+
+/**
+ * The ecliptic plane (2026-10-27), off by default, the "Plan de l'écliptique"
+ * box of the view panel: a faint disc with a polar grid, so the tilt of an
+ * orbit (a NEO's, Pluto's) reads against something.
+ *
+ * Same orientation trick as the distance rings: drawn in XZ, the group turned
+ * by the obliquity about X. It is the plane *through the Sun*, so main.js
+ * slides it along the ecliptic pole to wherever the Sun is placed — nothing
+ * for the Earth and the Sun, which both lie in it; a little for a planet off
+ * the ecliptic. Exact at 100 % réel; below it the scale curve compresses
+ * distances radially from the pivot, so for a planet pivot the plane through
+ * the placed Sun is the closest flat stand-in, not a measurement.
+ */
+const ECLIPTIC_POLE_SCENE = new THREE.Vector3(0, Math.cos(OBLIQUITY_RAD), Math.sin(OBLIQUITY_RAD))
+
+export function createEclipticPlane(scene) {
+  const group = new THREE.Group()
+  group.rotation.x = OBLIQUITY_RAD
+  group.visible = false
+  // Translucent and never writing depth: a plane this size crosses everything,
+  // and must not hide what sits behind or under it.
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1, 128).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x4fa8ff, transparent: true, opacity: 0.05, side: THREE.DoubleSide, depthWrite: false }),
+  )
+  const grid = new THREE.PolarGridHelper(1, 12, 10, 128, 0x4fa8ff, 0x4fa8ff)
+  for (const material of [grid.material].flat()) {
+    material.transparent = true
+    material.opacity = 0.18
+    material.depthWrite = false
+  }
+  group.add(disc, grid)
+  scene.add(group)
+
+  return {
+    group,
+    /**
+     * @param {THREE.Vector3} sunScenePos where the Sun is drawn this frame
+     * @param {number} radius how far the plane must reach, in scene units
+     */
+    update(sunScenePos, radius) {
+      group.position.copy(ECLIPTIC_POLE_SCENE).multiplyScalar(sunScenePos.dot(ECLIPTIC_POLE_SCENE))
+      group.scale.setScalar(radius)
     },
   }
 }

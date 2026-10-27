@@ -22,7 +22,15 @@ const CACHE_KEY = 'solar-system-orientation'
  */
 const ORIENTATION_FRAME = 'ICRF'
 
-/** First of the current UTC month, in seconds — the route's own anchor (`SolarSystemClient::windowStart`). */
+/**
+ * First of the current UTC month, in seconds — the route's own anchor (`SolarSystemClient::windowStart`).
+ *
+ * Wall clock on purpose, even under the simulated clock: this picks which
+ * record is *fetched and cached*, and the route only serves the real current
+ * month. `orientBody` then propagates that record to whatever date the scene
+ * shows (rate × elapsed days), which stays exact for a rigid body; only the
+ * pole is held fixed, and it moves far too slowly to show within a year.
+ */
 function currentEpochSeconds() {
   const now = new Date()
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000
@@ -119,4 +127,16 @@ export function orientBody(quaternion, id, nowSeconds) {
   meridianScene.applyAxisAngle(poleScene, THREE.MathUtils.degToRad(record.rateDegPerDay * days))
   setBodyOrientation(quaternion, poleScene, meridianScene)
   return true
+}
+
+/**
+ * A body's north pole in scene axes (unit vector), or null while its record has
+ * not landed. Exists for the moons that are locked to their planet and so take
+ * the planet's pole (Charon, orbiting in Pluto's equator): the pole is the one
+ * thing they need from this module, the rest being computed from their position.
+ */
+export function poleOf(id, out) {
+  const record = records[id]
+  if (!record) return null
+  return icrfToScene(record.pole[0], record.pole[1], record.pole[2], out).normalize()
 }

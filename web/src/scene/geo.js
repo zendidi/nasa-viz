@@ -28,8 +28,8 @@ import { AU_KM } from '../scale.js'
  * the body's frame, so the prime meridian is its local +X and the pole its
  * local +Y. That is the frame `setBodyOrientation` builds, and it is what this
  * function has returned since lot 1 — the ISS is placed with it, and the
- * globe's `rotation.y = GMST` says the same thing a third time, since the
- * result is RA = GMST + east longitude.
+ * globe's `rotation.y = ERA` says the same thing a third time, since the
+ * result is RA = ERA + east longitude (in the J2000 axes; GMST until 2026-10-21).
  */
 export function latLngToVector3(lat, lng, radius) {
   const phi = (90 - lat) * (Math.PI / 180)
@@ -39,6 +39,29 @@ export function latLngToVector3(lat, lng, radius) {
     radius * Math.cos(phi),
     radius * Math.sin(phi) * Math.sin(theta),
   )
+}
+
+/** Longitude of the left edge of the Solar System Scope maps — the convention the mesh above is read in. */
+export const SSS_MAP_LEFT_EDGE_LON = 180
+
+/**
+ * How far to slide a map's `u` so that it reads in the convention above, in
+ * turns (0..1), for a map whose **left edge is at `leftEdgeLonDeg` east**.
+ *
+ * The USGS/New Horizons maps of Pluto and Charon run 0→360° E with the left
+ * edge at **0°**, where the SSS maps start at 180°. Wear one unshifted and
+ * Sputnik Planitia (≈175° E) lands at the sub-Charon end of Pluto instead of the
+ * far side — still a perfectly good sphere, which is the whole danger.
+ *
+ * The mesh puts east longitude λ at `u = (λ + 180) / 360`; a map whose left edge
+ * is L has longitude L + 360 u' at column u'. The column to read is therefore
+ * `u' = u − (180 + L) / 360`, i.e. `shift = −(180 + L) / 360 mod 1`: 0 for L = 180,
+ * 0.5 for L = 0. Added to `vUv.x` in the lit-body shader (a ShaderMaterial gets
+ * no `texture.offset` for free) and relies on `RepeatWrapping` for the wrap.
+ */
+export function mapUShift(leftEdgeLonDeg) {
+  const shift = -(180 + leftEdgeLonDeg) / 360
+  return shift - Math.floor(shift)
 }
 
 const bodyNorth = new THREE.Vector3()

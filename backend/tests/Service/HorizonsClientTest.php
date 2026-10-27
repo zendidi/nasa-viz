@@ -41,6 +41,27 @@ final class HorizonsClientTest extends TestCase
         self::assertStringContainsString('COMMAND=%27DES%3D2014%20SU1%3B%27', $requestedUrls[0]);
     }
 
+    public function testVectorTablesAreAskedInUtWithSeconds(): void
+    {
+        // Horizons' VECTORS default is TDB, and every client reads `start` as
+        // Unix (UTC) seconds: without TIME_TYPE the whole scene ran 69,184 s late
+        // (measured 2026-10-21). And a moon window can start at :30, which a
+        // minute-only START_TIME silently dropped.
+        $requestedUrls = [];
+        $http = new MockHttpClient(function (string $method, string $url) use (&$requestedUrls) {
+            $requestedUrls[] = $url;
+
+            return new MockResponse(json_encode(['result' => self::VECTOR_RESULT]));
+        });
+        $client = new HorizonsClient($http, 'https://horizons.test/api');
+        $start = new \DateTimeImmutable('2026-09-16 00:00:30', new \DateTimeZone('UTC'));
+
+        $client->getMajorBodyVectors(['io' => '501'], $start, $start->modify('+1 day'), '1h', HorizonsClient::centreOf('599'));
+
+        self::assertStringContainsString('TIME_TYPE=%27UT%27', $requestedUrls[0]);
+        self::assertStringContainsString('START_TIME=%272026-09-16%2000%3A00%3A30%27', $requestedUrls[0]);
+    }
+
     public function testNon200IsATransportErrorNotANotFound(): void
     {
         $http = new MockHttpClient(new MockResponse('{"message":"bad"}', ['http_code' => 400]));

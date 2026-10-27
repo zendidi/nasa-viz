@@ -26,11 +26,19 @@ Cached 5s server-side. Poll at most every 5s from clients.
   "longitude": -69.76,
   "altitude_km": 440.79,
   "velocity_kmh": 27523.33,
-  "timestamp": 1788290449
+  "timestamp": 1788290449,
+  "track": [[1788290449, -51.31, -69.76, 440.79], [1788290509, -50.9, -64.2, 440.6], "… 10 in all"]
 }
 ```
 
 `timestamp` is Unix seconds (UTC) of the position reading.
+
+Since 2026-10-21 the response also carries **`track`**: ten samples a minute
+apart, from `timestamp` on, each `[unix seconds, latitude °, east longitude °,
+altitude km]` (wheretheiss.at `/positions`, computed from the TLE; one upstream
+request either way). Interpolate it to place the ISS at the real "now" — the
+flat reading alone is up to a poll interval old (~460 km a minute) — and draw
+nothing once "now" is past the last sample. The flat fields are the first sample.
 
 ## `GET /api/neo?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
 
@@ -251,7 +259,7 @@ place each NEO of the feed on its real path rather than on a schematic one.
   per requested designation.
 - `positions` is a table of `[x, y, z]` in km, ICRF equatorial, Earth-centred
   — the same frame as `/api/solar-system/positions`. Sample *n* is at
-  `start + n * step_seconds` (Unix seconds, TDB ≈ UTC + 69 s). Hourly step, from
+  `start + n * step_seconds` (Unix seconds, **UTC**). Hourly step, from
   `start_date` 00:00 to the day **after** `end_date`, so the last day of the
   feed is fully covered. Interpolate linearly between the two samples around
   the moment shown.
@@ -262,16 +270,17 @@ place each NEO of the feed on its real path rather than on a schematic one.
 - HTTP 502 when Horizons itself can't be reached — nothing is known about any
   object then.
 
-## `GET /api/solar-system/positions?body=mars` (ou `body=sun`)
+## `GET /api/solar-system/positions?body=mars` (ou `body=sun`, `body=moon`)
 
 One planet's real geocentric positions, from JPL Horizons — keyless, not on
 the NASA quota. `body` is required and must be one of `mercury`, `venus`,
-`mars`, `jupiter`, `saturn`, `uranus`, `neptune`; anything else is a 400
+`mars`, `jupiter`, `saturn`, `uranus`, `neptune`, `pluto`, `sun`, `moon`; anything else is a 400
 listing them. Cached server-side 40 days per planet.
 
 ```json
 {
   "frame": "ICRF geocentric",
+  "time_scale": "UTC",
   "units": "km",
   "start": 1788220800,
   "step_seconds": 86400,
@@ -288,12 +297,15 @@ listing them. Cached server-side 40 days per planet.
 
 - `positions` is a table of `[x, y, z]` in km, ICRF equatorial, Earth-centred
   — the same frame as `/api/neo/positions`. Sample *n* is at
-  `start + n * step_seconds` (Unix seconds, TDB ≈ UTC + 69 s). 366 samples: a
-  daily step over a year. Interpolate linearly between the two samples around
+  `start + n * step_seconds` (Unix seconds, **UTC**). About 458 samples: a
+  daily step from three months back to a year ahead (the Moon, Mercury and Venus
+  every 6 h, about 1 830 samples — see `body=moon`). Interpolate linearly between the two samples around
   "now" — measured worst case on Mars is 5 645 km, 0.002 % of its distance.
-- `start` is **the first of the current UTC month**, not the day of the call.
-  Planets are fetched one at a time, and this is what makes their tables line
-  up sample for sample anyway. A table therefore always covers "now"; it does
+- `start` is **the first of the UTC month three months back** (since 2026-10-27,
+  `SolarSystemClient::HISTORY_MONTHS`, so a client clock can run backwards), and
+  the table ends a year after the first of the *current* month. Never the day of
+  the call: planets are fetched one at a time, and this is what makes their
+  tables line up sample for sample anyway. A table therefore always covers "now"; it does
   not need refetching until it nears its end, roughly eleven months later.
 - **One body per call**, on purpose: a Horizons ephemeris request costs 5 to
   16 s whatever its size (measured 2026-09-22), so asking for several at once
@@ -309,10 +321,31 @@ listing them. Cached server-side 40 days per planet.
   cache it with the positions rather than refetching for it.
 
 
+### `time_scale` (every Horizons-backed route, since 2026-10-21)
+
+`/api/solar-system/positions`, `/orbit`, `/moons` and `/api/neo/positions` all
+carry `"time_scale": "UTC"`, and their tables are asked of Horizons with
+`TIME_TYPE='UT'`. Until 2026-10-21 they were TDB — Horizons' default for vector
+tables — while every client read `start` as Unix seconds: the whole scene ran
+**69,184 s late**, ~2 000 km on every planet, 10 to 200 times the interpolation
+error (measured against Horizons on 49 bodies). A client that caches tables
+should reject any stored without `time_scale: "UTC"`; the server's own cache keys
+carry the scale, so it never serves an old TDB table.
+
+### `body=moon`
+
+Same shape as the Sun's, on a **6-hour step** (`step_seconds: 21600`, 1 461
+samples): the Moon turns 13° a day, and Catmull-Rom on a daily table cost 320 km
+at worst (3′ from the Earth). At 6 h: 1,9 km at worst, 0,9 km median, ~1″
+(50 instants over the year, 2026-10-21). `radius_km` is 1 737,4. It replaces the
+web client's low-precision series, which was 0,38° (2 500 km) off on median —
+three quarters of it the precession since J2000, as for the Sun below. Not
+accepted by the orbit or moons routes.
+
 ### `body=sun`
 
 The Sun rides on this route because its table has exactly a planet's shape:
-geocentric, ICRF, daily, a year long, renewed monthly. `radius_km` is 696 340.
+geocentric, ICRF, daily, a year long, renewed monthly. `radius_km` is 695 700 (IAU 2015 nominal; 696 340 until 2026-10-21). Every body also carries `equatorial_radius_km` and `polar_radius_km` (IAU 2015) — equal to `radius_km` for a body drawn as a sphere.
 
 It is served at all because the web client used to compute the Sun from a
 low-precision series working in the **equinox of date**, where the scene's axes
@@ -368,13 +401,20 @@ per planet.
   0,55 au away and sweeps ~4° a day. Only a finer positions step would help it.
 - Neptune's 165-year orbit fits in one request because Horizons reads a
   *unitless* `STEP_SIZE` as a number of intervals, not a duration.
+- **Pluto (248 years, step 251,6 days)** goes through the same path — 361 samples,
+  90 560 d, `stop` in 2274 for a 2026 start — but is drawn from the **Pluto-system
+  barycentre** (Horizons id `9`, DE441) and not from the body (`999`): the body's
+  ephemeris (plu060) ends on 2199-12-29 and Horizons answers *"No ephemeris for
+  target Pluto after A.D. 2199"* for a full period. The two differ by Pluto's
+  wobble around the Pluto-Charon barycentre, ~2 100 km, against a chord error
+  of the order of 10^5 km: invisible. Positions stay on `999`.
 - The curve does **not** close exactly: the orbit precesses between the first
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.
 
 ## `GET /api/solar-system/orientation?body=mars`
 
-How one body is turned in space. `body` takes the seven planets **and `moon`** —
+How one body is turned in space. `body` takes the nine planets (Pluto included) **and `moon`** —
 not `sun`, which is not a rigid body and whose surface rotates differentially.
 
 The Moon is here rather than in the moons route because what it needs is exactly
@@ -404,7 +444,10 @@ position table no client reads.
 - `prime_meridian` — where the body's zero of longitude pointed at `epoch`, also
   an ICRF unit vector, and perpendicular to `pole` to 1e-16.
 - `rotation_deg_per_day` — **signed**. Negative for Venus (−1,48) and Uranus
-  (−501,16), which turn backwards.
+  (−501,16), which turn backwards. **Pluto is +56,3625** although it also turns
+  backwards against its orbit: the IAU pole it is given (RA 132,993°, Dec −6,163°)
+  is the one it rotates prograde about, so that is already in `pole`. Rotate
+  `prime_meridian` about `pole` by the signed rate, as for any body.
 - `epoch` — first of the current UTC month, the same anchor as the positions and
   orbit routes.
 
@@ -464,7 +507,7 @@ which is the truth and not an error. The Earth's Moon is **not** served here —
 the web client computes it locally and it costs no request at all.
 
 At most 9 moons per planet: all of them when the planet has 9 or fewer (Mars),
-otherwise the 9 largest. 38 bodies in all.
+otherwise the 9 largest. Pluto has Charon alone (the four small ones are 5 to 20 km). 39 bodies in all.
 
 ```json
 {
@@ -533,7 +576,7 @@ the moons of planets a visitor has actually centred on, before anyone asks.
 - **Lazy fill, eager refresh.** The route records which planets get looked at; the
   command refreshes only those. A moon nobody has ever looked at is never fetched,
   and a planet untouched for 90 days drops off on its own. `--all-moons` forces
-  all 38 (use once after a deploy, not on a cron); `--dry-run` lists and fetches
+  all 39 (use once after a deploy, not on a cron); `--dry-run` lists and fetches
   nothing.
 - **It is a CLI command on purpose.** `max_execution_time` is 0 here against 30 s
   for a web request, so the one-body-per-call rule does not apply and it can work
@@ -616,7 +659,7 @@ knowing:
   such problem — `bodies` is a plain array, so `JsonUtility` handles it.
 - `/api/solar-system/positions` is the one route worth calling on startup and
   then leaving alone: its tables cover a year and cost nothing in quota, so a
-  VR client can fetch the seven planets once, keep them, and interpolate
+  VR client can fetch the nine planets once, keep them, and interpolate
   locally rather than polling.
 - A VR client can ignore `comparison` entirely; it only says how the three
   sources agree. `sources` on an object is the cheap version: an object with a

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { FOCUSES, FOCUS_IDS, PLANET_FOCUS_IDS, neoEllipsesVisible } from '../src/focus.js'
+import { FOCUSES, FOCUS_IDS, PLANET_FOCUS_IDS, hidesPlanets, neoEllipsesVisible } from '../src/focus.js'
 import { AU_KM, readableDistance } from '../src/scale.js'
 
 // FOCUSES est une table de config, pas un algorithme : son vrai mode de
@@ -23,7 +23,7 @@ function findUndefined(value, path = '') {
 
 describe('FOCUSES', () => {
   it('a une entree par frame de reference et par planete, et rien d autre', () => {
-    // 2 frames (Terre, Soleil) + 7 planetes = 9, comme le documente CLAUDE.md.
+    // 2 frames (Terre, Soleil) + 7 planetes + Pluton = 10.
     expect(Object.keys(FOCUSES).length).toBe(2 + PLANET_FOCUS_IDS.length)
     expect(Object.keys(FOCUSES).sort()).toEqual([...FOCUS_IDS].sort())
   })
@@ -126,7 +126,7 @@ describe('FOCUSES', () => {
     }
   })
 
-  it('les distances au Soleil des pivots planetaires croissent de Mercure a Neptune', () => {
+  it('les distances au Soleil des pivots planetaires croissent de Mercure a Pluton', () => {
     // PLANET_FOCUS_IDS liste les planetes dans l'ordre du backend, c-a-d en
     // s'eloignant du Soleil (cf. commentaire de PLANET_LABELS dans focus.js).
     // reference.km, pour un pivot planetaire, est justement sa distance au
@@ -156,11 +156,34 @@ describe('FOCUSES', () => {
 
   it('formate les nombres a la francaise dans les libelles d anneau (virgule, pas point)', () => {
     // Contrat de mise en forme pin sur une entree ecrite a la main (pas
-    // generee en boucle) : 0,5 ua et pas "0.5 ua".
+    // generee en boucle) : 0,50 UA et pas "0.50 UA".
     const ring = FOCUSES.sun.rings.find((r) => r.label.includes('0,5'))
     expect(ring).toBeDefined()
-    expect(ring.label).toBe('0,5 ua')
+    expect(ring.label).toBe('0,50 UA')
     expect(ring.label).not.toMatch(/\./)
+  })
+
+  // 2026-10-27 : hors vue Terre, tout cercle s'ecrit en UA a deux decimales
+  // strictes, sans croix et sans km -- meme ceux des lunes, qui tombent a 0,00.
+  it('hors vue Terre, chaque cercle s ecrit "d,dd UA", jamais en km', () => {
+    for (const id of FOCUS_IDS.filter((f) => f !== 'earth')) {
+      for (const ring of FOCUSES[id].rings) {
+        expect(ring.label, `${id} ${ring.label}`).toMatch(/^\d+,\d{2} UA( \(Terre\))?$/)
+      }
+    }
+    expect(FOCUSES.mars.rings.map((r) => r.label)).toContain('0,00 UA')
+  })
+})
+
+describe('Pluton', () => {
+  it('est le dernier pivot planetaire, apres Neptune, avec Charon pour ancre lunaire', () => {
+    expect(PLANET_FOCUS_IDS.at(-1)).toBe('pluto')
+    expect(PLANET_FOCUS_IDS.at(-2)).toBe('neptune')
+    expect(FOCUSES.pluto.label).toBe('Pluton')
+    // ancre Charon (19 591 km) a 12 unites, comme toute planete a lunes : le
+    // plus gros anneau relatif (3x l'ancre) est donc au-dela de 12.
+    expect(readableDistance(19_591, FOCUSES.pluto.curve)).toBeCloseTo(12, 9)
+    expect(FOCUSES.pluto.rings.some((r) => r.km === Math.round(0.3 * 19_591))).toBe(true)
   })
 })
 
@@ -207,5 +230,15 @@ describe('neoEllipsesVisible', () => {
     for (const id of FOCUS_IDS.filter((id) => id !== 'sun')) {
       expect(neoEllipsesVisible(id, 1)).toBe(false)
     }
+  })
+})
+
+describe('hidesPlanets', () => {
+  // Decision utilisateur 2026-10-16 : seul le Soleil garde les planetes a toute
+  // echelle ; la Terre et toute planete pivot les masquent sous 100 % reel.
+  it('masque depuis la Terre et depuis chaque planete, jamais depuis le Soleil', () => {
+    expect(hidesPlanets('sun')).toBe(false)
+    expect(hidesPlanets('earth')).toBe(true)
+    for (const id of PLANET_FOCUS_IDS) expect(hidesPlanets(id)).toBe(true)
   })
 })

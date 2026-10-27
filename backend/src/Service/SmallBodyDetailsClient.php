@@ -206,8 +206,10 @@ final class SmallBodyDetailsClient
     private static function normalize(string $designation, ?array $sbdb, ?array $ssocard, ?array $sentry, ?array $esaOrbit, array $sources): array
     {
         $physical = [];
+        $physicalSigma = [];
         foreach ($sbdb['phys_par'] ?? [] as $parameter) {
             $physical[$parameter['name']] = $parameter['value'];
+            $physicalSigma[$parameter['name']] = $parameter['sigma'] ?? null;
         }
         $ssoPhysical = $ssocard['parameters']['physical'] ?? [];
         $ssoDynamical = $ssocard['parameters']['dynamical'] ?? [];
@@ -226,11 +228,19 @@ final class SmallBodyDetailsClient
             $taxonomy = ['class' => $class, 'complex' => self::taxonomyComplex($class), 'source' => isset($physical['spec_B']) ? 'sbdb_smassii' : 'sbdb_tholen'];
         }
 
+        // With its 1σ, km, when the source gives one (2026-10-21): a measured
+        // diameter without its uncertainty reads as exact, and SBDB's own sigma
+        // used to be dropped here. ssoCard gives an asymmetric interval; the
+        // larger half stands for it.
         $diameter = null;
         if (($d = $value($ssoPhysical['diameter'] ?? null)) !== null) {
-            $diameter = ['value' => $d, 'source' => 'ssocard'];
+            $error = $ssoPhysical['diameter']['error'] ?? null;
+            $sigma = is_array($error) && (is_numeric($error['min'] ?? null) || is_numeric($error['max'] ?? null))
+                ? max(abs((float) ($error['min'] ?? 0)), abs((float) ($error['max'] ?? 0)))
+                : null;
+            $diameter = ['value' => $d, 'sigma' => $sigma ?: null, 'source' => 'ssocard'];
         } elseif (($d = $float($physical['diameter'] ?? null)) !== null) {
-            $diameter = ['value' => $d, 'source' => 'sbdb'];
+            $diameter = ['value' => $d, 'sigma' => $float($physicalSigma['diameter'] ?? null), 'source' => 'sbdb'];
         }
         $albedo = null;
         if (($a = $value($ssoPhysical['albedo'] ?? null)) !== null) {

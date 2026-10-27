@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   EARTH_ORBIT,
+  EDGE_BLEND_DAYS,
   bundleOrbitSamples,
+  edgeBlendWeight,
   julianDate,
   orbitApsides,
   orbitNodes,
@@ -382,5 +384,23 @@ describe('orbitSchematicSvg', () => {
       expect(y).toBeGreaterThanOrEqual(0)
       expect(y).toBeLessThanOrEqual(260)
     }
+  })
+})
+
+// Raccord table Horizons → Kepler (2026-10-27) : au bord de la table le poids
+// vaut 1, donc l'écart mesuré y est rajouté en entier et la position ne saute
+// pas ; loin du bord il doit tomber à zéro, sinon un décalage mesuré près de la
+// Terre resterait collé à l'objet à l'autre bout de son orbite.
+describe('edgeBlendWeight', () => {
+  it('vaut 1 au bord, quel que soit le côté', () => {
+    expect(edgeBlendWeight(0)).toBe(1)
+    expect(edgeBlendWeight(-0)).toBe(1)
+  })
+
+  it('décroît de la même façon avant et après la table, jusqu\'à s\'éteindre', () => {
+    expect(edgeBlendWeight(-3)).toBe(edgeBlendWeight(3))
+    expect(edgeBlendWeight(EDGE_BLEND_DAYS)).toBeCloseTo(Math.exp(-1), 12)
+    expect(edgeBlendWeight(10)).toBeLessThan(edgeBlendWeight(5))
+    expect(edgeBlendWeight(60)).toBeLessThan(1e-3)
   })
 })

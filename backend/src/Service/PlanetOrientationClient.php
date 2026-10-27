@@ -64,6 +64,13 @@ final class PlanetOrientationClient
         'saturn' => 810.7939024,
         'uranus' => -501.1600928,
         'neptune' => 541.1397757,
+        // Pluto, IAU 2015: W = 302,695 + 56,3625225 d, and the sign is POSITIVE even
+        // though Pluto turns backwards against its orbit: the IAU pole it is given
+        // (RA 132,993, Dec -6,163) is the one Pluto rotates prograde about, so the
+        // retrograde-ness lives in the pole, not in the rate. Measured against
+        // Horizons: a negative rate misses ObsSub-LON by 47 degrees after 10 days.
+        // The pole itself comes from Horizons like every planet's.
+        'pluto' => 56.3625225,
         // The Moon, tidally locked: one turn per sidereal month, so its
         // sub-Earth longitude stays near zero and only librates. It is here
         // rather than in the moons route because what it needs is exactly this
@@ -95,11 +102,13 @@ final class PlanetOrientationClient
     /**
      * Bodies whose IAU longitudes are counted **east** even though they rotate
      * prograde — the traditional exception the IAU grants the Earth, the Moon
-     * and the Sun, and the one place the rule below breaks down.
+     * and the Sun, and the one place the rule below breaks down. Pluto is in it
+     * too, but by measurement and not by tradition: Horizons' ObsSub-LON for it
+     * decreases at |rate|, which is what an east-counted prograde body does.
      *
      * The rule everywhere else is that planetographic longitude runs *opposite*
      * to the rotation: west on a prograde body, east on a retrograde one. So the
-     * sign of the rate was enough to place the prime meridian, and for the seven
+     * sign of the rate was enough to place the prime meridian, and for the nine
      * planets it still is. The Moon rotates prograde and is nevertheless counted
      * east — which is why its gazetteer runs 0–360° E and Mare Crisium sits at
      * 59° E.
@@ -112,6 +121,7 @@ final class PlanetOrientationClient
      */
     private const EAST_POSITIVE_LONGITUDE = [
         'moon' => true,
+        'pluto' => true,
     ];
 
     /**
@@ -211,7 +221,15 @@ final class PlanetOrientationClient
         // Venus hides the bug (retrograde but 0,004 deg of term), Jupiter hides
         // it (29,8 deg of term but prograde).
         $lightTimeDays = $row['delta_au'] * self::AU_KM / self::C_KM_S / 86400.0;
-        $longitude = fmod($row['sub_lon'] + abs($rate) * $lightTimeDays, 360.0);
+        //
+        // The direction of that advance is the direction the reported longitude
+        // itself drifts: +|rate| for every body whose longitude grows with time
+        // (so `abs()` was exact for the seven planets), but -|rate| for Pluto,
+        // whose ObsSub-LON *decreases* — Horizons counts it east although it
+        // turns prograde about its IAU pole. `longitudeSign * rate` is both
+        // at once: 11,4 degrees of light-time on Pluto are worth 22,8 degrees of
+        // error if applied the wrong way (measured against the IAU W, 2026-10-16).
+        $longitude = fmod($row['sub_lon'] + self::longitudeSign($id) * $rate * $lightTimeDays + 360.0, 360.0);
 
         // The body-to-Earth direction, flattened into the body's equatorial
         // plane: the sub-Earth point lies on that meridian by definition, which
@@ -221,7 +239,7 @@ final class PlanetOrientationClient
 
         // Walk back along the meridians by the sub-Earth longitude to land on
         // the prime meridian. Which way round depends on how that longitude is
-        // counted — against the rotation for the seven planets, east for the
+        // counted — against the rotation for the nine planets, east for the
         // Moon (`longitudeSign`).
         $primeMeridian = self::rotateAbout($inEquator, $pole, self::longitudeSign($id) * $longitude);
 

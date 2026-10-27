@@ -146,6 +146,8 @@ final class MoonClient
         'thalassa' => ['804', 'neptune', 'Thalassa', 40.7, 0.311485, 50075],
         'naiad' => ['803', 'neptune', 'Naiad', 33.0, 0.294396, 48227],
         'halimede' => ['809', 'neptune', 'Halimede', 31.0, 1879.08, 16611000],
+        // Pluto - Charon only; Nix, Hydra, Kerberos, Styx are 5 to 20 km.
+        'charon' => ['901', 'pluto', 'Charon', 606.0, 6.387, 19591],
     ];
 
     /** Horizons id of each planet a moon can belong to — its CENTER. */
@@ -155,6 +157,7 @@ final class MoonClient
         'saturn' => '699',
         'uranus' => '799',
         'neptune' => '899',
+        'pluto' => '999',
     ];
 
     public function __construct(private readonly HorizonsClient $horizons)
@@ -194,7 +197,13 @@ final class MoonClient
      */
     public static function stepSeconds(string $id): int
     {
-        $minutes = max(1, (int) round(self::MOONS[$id][4] * 86400 / self::SAMPLES_PER_ORBIT / 60));
+        // A 45th of the period, or — for a moon whose window the year caps — the
+        // step that spends the whole sample budget on that year, whichever is
+        // finer (2026-10-21). The cap used to leave those moons on a 45th of a
+        // period they never complete: Nereid (e ≈ 0,75) on an 8-day step, 41 000 km
+        // off at periapsis, using 46 of its 500 samples.
+        $seconds = min(self::MOONS[$id][4] * 86400 / self::SAMPLES_PER_ORBIT, self::MAX_WINDOW_SECONDS / (self::SAMPLE_BUDGET - 1));
+        $minutes = max(1, (int) round($seconds / 60));
 
         return $minutes * 60;
     }
@@ -217,7 +226,7 @@ final class MoonClient
 
     /**
      * Whether one table spans a whole orbit, i.e. whether a closed loop can be
-     * drawn from it. True for 34 of the 38; false for Pasiphae, Phoebe, Sycorax
+     * drawn from it. True for 35 of the 39; false for Pasiphae, Phoebe, Sycorax
      * and Halimede, whose periods (2 to 5 years) outrun the one-year cap.
      */
     public static function coversFullOrbit(string $id): bool
@@ -228,7 +237,9 @@ final class MoonClient
     /** Samples spanning exactly one orbit, for the drawn loop. Meaningless unless coversFullOrbit(). */
     public static function orbitSampleCount(string $id): int
     {
-        return min(self::sampleCount($id), self::SAMPLES_PER_ORBIT + 1);
+        // One period in steps, not SAMPLES_PER_ORBIT: a year-capped moon now has a
+        // finer step than a 45th of its period (see stepSeconds).
+        return min(self::sampleCount($id), (int) round(self::MOONS[$id][4] * 86400 / self::stepSeconds($id)) + 1);
     }
 
     /**

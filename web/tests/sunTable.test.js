@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 
-import { createSunTable } from '../src/sunTable.js'
+import { createMoonTable, createSunTable } from '../src/sunTable.js'
 
 // Ce qui est épinglé ici : les conventions que l'œil ne voit pas. Une table
 // ICRF [x, y, z] devient des axes de scène (x, z, -y) -- un signe ou un axe
@@ -10,12 +10,15 @@ import { createSunTable } from '../src/sunTable.js'
 
 const NOW = Date.UTC(2026, 9, 15, 12) // 2026-10-15T12:00Z
 const STEP = 86_400
-const DAYS = 60
+const DAYS = 160
+// Une table servie depuis 2026-10-27 commence 3 mois avant le 1er du mois.
+const HISTORY_START = Date.UTC(2026, 6, 1) / 1000
 
-/** Table de 60 jours démarrant 10 jours avant NOW ; valeurs distinctes sur chaque axe. */
+/** Table de 160 jours démarrant le 1er juillet (jusqu'au 7 décembre) ; valeurs distinctes sur chaque axe. */
 function makeRecord(overrides = {}) {
   return {
-    start: NOW / 1000 - 10 * STEP,
+    timeScale: 'UTC',
+    start: HISTORY_START,
     stepSeconds: STEP,
     positions: Array.from({ length: DAYS }, (_, i) => [1.0e8 + 1.0e5 * i, 2.0e7 + 3.0e4 * i, 5.0e6 - 1.0e4 * i]),
     ...overrides,
@@ -75,7 +78,7 @@ describe('createSunTable — table en cache', () => {
   it('hors fenêtre de la table, retombe sur la série (~1 UA), pas sur l’origine ni sur la table', () => {
     stubStorage(seed(makeRecord()))
     const sun = make()
-    const before = sun.positionKmAt(new Date(NOW - 30 * 86_400_000), new THREE.Vector3())
+    const before = sun.positionKmAt(new Date(HISTORY_START * 1000 - 30 * 86_400_000), new THREE.Vector3())
     const after = sun.positionKmAt(new Date(NOW + 200 * 86_400_000), new THREE.Vector3())
     for (const p of [before, after]) {
       expect(p.length()).toBeGreaterThan(1.46e8)
@@ -110,11 +113,18 @@ describe('createSunTable — sans table utilisable', () => {
   })
 
   it('cache expiré, trop proche de sa fin (marge 30 j) ou pas commencé : ignoré', () => {
-    stubStorage(seed(makeRecord({ start: NOW / 1000 - 100 * STEP }))) // finie depuis 41 j
+    stubStorage(seed(makeRecord({ start: NOW / 1000 - 200 * STEP }))) // finie depuis 41 j
     expect(make().known).toBe(false)
-    stubStorage(seed(makeRecord({ start: NOW / 1000 - 40 * STEP }))) // fin dans 19 j < 30 j
+    stubStorage(seed(makeRecord({ start: NOW / 1000 - 140 * STEP }))) // fin dans 19 j < 30 j
     expect(make().known).toBe(false)
     stubStorage(seed(makeRecord({ start: NOW / 1000 + STEP }))) // commence demain
+    expect(make().known).toBe(false)
+  })
+
+  // Une table stockée avant l'historique de 3 mois couvre bien « maintenant »,
+  // mais bloquerait la marche arrière au 1er du mois : elle doit être refaite.
+  it('cache qui ne remonte pas 3 mois avant le 1er du mois : ignoré', () => {
+    stubStorage(seed(makeRecord({ start: Date.UTC(2026, 9, 1) / 1000 })))
     expect(make().known).toBe(false)
   })
 
@@ -122,12 +132,22 @@ describe('createSunTable — sans table utilisable', () => {
     stubStorage(seed(makeRecord({ positions: [] })))
     expect(make().known).toBe(false)
   })
+
+  // Avant le 2026-10-21 le backend servait du TDB, lu comme de l'UTC : 69 s de
+  // retard, ~2 000 km. Une table stockée alors n'a pas de timeScale -- elle doit
+  // être refusée, sinon elle survit jusqu'à un an dans localStorage.
+  it('cache sans timeScale UTC (table TDB d’avant le correctif) : ignoré', () => {
+    stubStorage(seed(makeRecord({ timeScale: undefined })))
+    expect(make().known).toBe(false)
+    stubStorage(seed(makeRecord({ timeScale: 'TDB' })))
+    expect(make().known).toBe(false)
+  })
 })
 
 describe('createSunTable — load', () => {
   const served = (record) => ({
     ok: true,
-    json: async () => ({ start: record.start, step_seconds: STEP, bodies: [{ positions: record.positions }] }),
+    json: async () => ({ time_scale: record.timeScale, start: record.start, step_seconds: STEP, bodies: [{ positions: record.positions }] }),
   })
 
   it('récupère la table, la met en cache et prévient on.changed', async () => {
@@ -160,5 +180,31 @@ describe('createSunTable — load', () => {
     await sun.load()
     expect(sun.known).toBe(false)
     expect(map.has('nasa-viz:sun')).toBe(false)
+  })
+})
+
+describe('createMoonTable', () => {
+  it('sa propre clé de cache, et un repli sur la série lunaire (~384 000 km), pas solaire', () => {
+    stubStorage(seed(makeRecord())) // une table *Soleil* en cache ne doit pas servir la Lune
+    const moon = createMoonTable({ on: { changed: vi.fn() } })
+    expect(moon.known).toBe(false)
+    const len = moon.positionKmAt(new Date(NOW), new THREE.Vector3()).length()
+    expect(len).toBeGreaterThan(356_000)
+    expect(len).toBeLessThan(407_000)
+  })
+
+  it('demande ?body=moon et range sous nasa-viz:moon', async () => {
+    const map = stubStorage()
+    const urls = []
+    const record = makeRecord()
+    vi.stubGlobal('fetch', async (url) => {
+      urls.push(url)
+      return { ok: true, json: async () => ({ time_scale: 'UTC', start: record.start, step_seconds: STEP, bodies: [{ positions: record.positions }] }) }
+    })
+    const moon = createMoonTable({ on: { changed: vi.fn() } })
+    await moon.load()
+    expect(moon.known).toBe(true)
+    expect(urls[0]).toContain('body=moon')
+    expect(map.has('nasa-viz:moon')).toBe(true)
   })
 })

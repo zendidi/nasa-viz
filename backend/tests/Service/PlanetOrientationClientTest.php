@@ -83,6 +83,17 @@ final class PlanetOrientationClientTest extends TestCase
                 [30.0, 62.38269, 20.85718, 305.255291, 18.5468458847798, 257.31100, -15.17500],
                 [40.0, 61.98293, 20.78770, 276.337417, 18.4833519530985, 257.31100, -15.17500],
             ], 0.001],
+            // Pluto: 35 au out so 11,4 deg of light-time; its positive rate is
+            // the trap (see ROTATION_DEG_PER_DAY), and a pole Horizons serves as exactly the IAU 2015
+            // 132,993 / -6,163. Measured 2026-10-16 on body 999 (Pluto itself, not
+            // its barycentre).
+            'pluto — retrograde against its orbit but prograde about its IAU pole, 11,4 deg of light-time' => ['pluto', [
+                [0.0, 306.09586, -23.71979, 337.506826, 35.172249250196, 132.993, -6.163],
+                [10.0, 306.04471, -23.72497, 134.023147, 35.340097414152, 132.993, -6.163],
+                [20.0, 306.04281, -23.71834, 290.461508, 35.515799403763, 132.993, -6.163],
+                [30.0, 306.09137, -23.7003, 86.817864, 35.694205504737, 132.993, -6.163],
+                [40.0, 306.18995, -23.67146, 243.090708, 35.870417393091, 132.993, -6.163],
+            ], 0.001],
             // Prograde and counted east all the same, and the only body here
             // whose IAU rotation carries periodic terms. Its ObsSub-LON barely
             // leaves zero because it is tidally locked: what swings it by eight
@@ -148,7 +159,7 @@ final class PlanetOrientationClientTest extends TestCase
         );
 
         $lightTimeDays = $rows[0][4] * self::AU_KM / self::C_KM_S / 86400.0;
-        $expected = self::shortestWayRound(abs(PlanetOrientationClient::rateOf($id)) * $lightTimeDays);
+        $expected = self::shortestWayRound(PlanetOrientationClient::longitudeSign($id) * PlanetOrientationClient::rateOf($id) * $lightTimeDays);
 
         self::assertEqualsWithDelta($expected, $shift, 0.001, $id.': the light-time term is the wrong size or the wrong way round');
     }
@@ -191,8 +202,13 @@ final class PlanetOrientationClientTest extends TestCase
      * IAU's traditional treatment of the Earth, the Moon and the Sun puts its
      * longitudes east. A body added here without that check reproduces the
      * 12 deg error the Moon showed on 2026-09-29.
+     *
+     * Pluto joined it on 2026-10-16, for a different reason: its IAU rate is
+     * positive, and Horizons reports its ObsSub-LON *decreasing* at 56,36 deg/day
+     * (156,4 deg per ten days in the fixture, not the 203,6 a west-counted body
+     * would show).
      */
-    public function testOnlyTheMoonIsProgradeAndStillCountedEast(): void
+    public function testOnlyTheMoonAndPlutoAreProgradeAndStillCountedEast(): void
     {
         $progradeButEast = array_values(array_filter(
             PlanetOrientationClient::ids(),
@@ -200,7 +216,30 @@ final class PlanetOrientationClientTest extends TestCase
                 && PlanetOrientationClient::longitudeSign($id) < 0,
         ));
 
-        self::assertSame(['moon'], $progradeButEast);
+        self::assertSame(['pluto', 'moon'], $progradeButEast);
+    }
+
+    /**
+     * The one check here that does not lean on Horizons' own ObsSub-LON: Pluto's
+     * prime meridian rebuilt from the IAU 2015 formula alone (pole 132,993 /
+     * -6,163, W = 302,695 + 56,3625225 d, d counted from J2000 to 2026-10-01
+     * 00:00 TDB) and turned into an ICRF vector. The reconstruction from
+     * Horizons agrees to 3e-6 degree. It earned its place by catching two errors
+     * the 40-day test cannot see: a longitude counted the wrong way mirrors the
+     * meridian about the sub-Earth direction (45 deg off), and a light-time term
+     * applied the wrong way leaves it 22,9 deg off — both of which still
+     * reproduce a self-consistent ObsSub-LON.
+     */
+    public function testPlutoPrimeMeridianMatchesTheIauFormulaIndependently(): void
+    {
+        $rows = self::bodies()['pluto — retrograde against its orbit but prograde about its IAU pole, 11,4 deg of light-time'][1];
+        $built = PlanetOrientationClient::build('pluto', self::row($rows[0]));
+
+        $iau = [0.4792364107, 0.5479984210, 0.6855874804];
+        $dot = $built['prime_meridian'][0] * $iau[0] + $built['prime_meridian'][1] * $iau[1] + $built['prime_meridian'][2] * $iau[2];
+
+        self::assertEqualsWithDelta(0.0, rad2deg(acos(min(1.0, $dot))), 0.001);
+        self::assertSame(56.3625225, $built['rotation_deg_per_day']);
     }
 
     /**
@@ -214,7 +253,7 @@ final class PlanetOrientationClientTest extends TestCase
     {
         $lightTimeDays = $row[4] * self::AU_KM / self::C_KM_S / 86400.0;
 
-        return fmod($row[3] + abs(PlanetOrientationClient::rateOf($id)) * $lightTimeDays + 720.0, 360.0);
+        return fmod($row[3] + PlanetOrientationClient::longitudeSign($id) * PlanetOrientationClient::rateOf($id) * $lightTimeDays + 720.0, 360.0);
     }
 
     /** Signed shortest way round, so 359,9 against 0,1 reads as 0,2 and not 359,8. */

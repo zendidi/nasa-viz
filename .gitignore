@@ -22,3 +22,6 @@ Thumbs.db
 /tools/derniere-url.txt
 /tools/calibration/.cache/
 /tools/calibration/__pycache__/
+
+# Deployment checklist — kept local, the way this instance is hosted is private (2026-10-27).
+/DEPLOYMENT.md

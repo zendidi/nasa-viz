@@ -2,8 +2,11 @@
 
 namespace App\Tests\Service;
 
+use App\Service\HorizonsClient;
 use App\Service\MoonClient;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 /**
  * The sampling arithmetic, which is the whole of MoonClient's judgement and the
@@ -17,7 +20,7 @@ final class MoonClientTest extends TestCase
     private static function allMoons(): array
     {
         $ids = [];
-        foreach (['mars', 'jupiter', 'saturn', 'uranus', 'neptune'] as $planet) {
+        foreach (['mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'] as $planet) {
             foreach (MoonClient::forPlanet($planet) as $id) {
                 $ids[] = [$id, $planet];
             }
@@ -34,6 +37,8 @@ final class MoonClientTest extends TestCase
         foreach (['jupiter', 'saturn', 'uranus', 'neptune'] as $planet) {
             self::assertCount(9, MoonClient::forPlanet($planet), $planet);
         }
+        // Pluto has Charon alone: Nix, Hydra, Kerberos and Styx are 5 to 20 km.
+        self::assertSame(['charon'], MoonClient::forPlanet('pluto'));
         // Mercury and Venus have none, and that is not a failure to report.
         self::assertSame([], MoonClient::forPlanet('mercury'));
         self::assertSame([], MoonClient::forPlanet('venus'));
@@ -120,5 +125,48 @@ final class MoonClientTest extends TestCase
 
         self::assertTrue(MoonClient::isKnown('phobos'));
         self::assertFalse(MoonClient::isKnown('moon'));
+    }
+
+    /**
+     * Charon is asked of Horizons as 901 around Pluto's body centre (999), not
+     * the barycentre (9): the barycentre lies between the two, outside Pluto, so
+     * the table would be Charon relative to empty space. Measured 2026-10-16:
+     * 19 596 km from 999, against the 19 591 km of its mean orbit.
+     */
+    public function testCharonIsAskedForAroundPlutoNotAroundTheBarycentre(): void
+    {
+        /** @var \ArrayObject<int, string> $urls */
+        $urls = new \ArrayObject();
+        $http = new MockHttpClient(function (string $method, string $url) use ($urls) {
+            $urls[] = $url;
+
+            return new MockResponse(json_encode(['result' => "\$\$SOE\n2461314.5, A.D. 2026-Oct-01 00:00:00.0000, -1.0409E+04, -7.493E+03, 1.4816E+04,\n\$\$EOE"]));
+        });
+        $moons = new MoonClient(new HorizonsClient($http, 'https://horizons.test/api'));
+
+        $table = $moons->getPositions('charon', new \DateTimeImmutable('2026-10-01', new \DateTimeZone('UTC')));
+
+        self::assertStringContainsString('COMMAND=%27901%27', $urls[0]);
+        self::assertStringContainsString('CENTER=%27500%40999%27', $urls[0]);
+        self::assertSame(12240, $table['step_seconds']);
+        self::assertSame([[-10409, -7493, 14816]], $table['positions']);
+    }
+
+    /**
+     * Charon's 6,387-day orbit is synchronous with Pluto's rotation. At a 45th
+     * of the period the step is 204 min, the 500-sample budget spans 70,7 days
+     * (eleven orbits, well under the year cap), and the drawn loop is the first
+     * 46 samples — so, like every fast moon, it needs no second request.
+     */
+    public function testCharonIsAFastMoonWithAFullDrawnOrbit(): void
+    {
+        self::assertSame(12240, MoonClient::stepSeconds('charon'));
+        self::assertSame(500, MoonClient::sampleCount('charon'));
+        self::assertTrue(MoonClient::coversFullOrbit('charon'));
+        self::assertSame(MoonClient::SAMPLES_PER_ORBIT + 1, MoonClient::orbitSampleCount('charon'));
+        self::assertSame(
+            ['id' => 'charon', 'planet' => 'pluto', 'name' => 'Charon', 'radius_km' => 606.0, 'orbit_km' => 19591],
+            MoonClient::describe('charon'),
+        );
     }
 }

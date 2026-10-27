@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { subdivideTable, sampleCatmullRom, subdivideClosedLoop } from '../src/interpolate.js'
+import { subdivideTable, sampleCatmullRom, subdivideClosedLoop, polylinePointAt } from '../src/interpolate.js'
 
 const poly = (t) => [1 + 2 * t - 3 * t ** 2 + 0.5 * t ** 3, -4 + t ** 3, 7 - 2 * t ** 2]
 const table = Array.from({ length: 8 }, (_, t) => poly(t))
@@ -135,3 +135,74 @@ describe('subdivideTable', () => {
   })
 })
 
+
+describe('sampleCatmullRom on Io\'s orbit at the hourly step', () => {
+  // Measured invariant (2026-10-16): circle r = 421 700 km, period 1,769 d, one
+  // sample per 3 600 s. A lerp between samples is off by 1 154 km (sagitta);
+  // the cubic by 22 km interior, 88 km on the edge intervals. Bounds below sit
+  // above the measured values with margin, and well under the lerp's error.
+  const R = 421_700
+  const w = (2 * Math.PI) / (1.769 * 86_400)
+  const at = (s) => [R * Math.cos(w * s), R * Math.sin(w * s), 0]
+  const n = 120
+  const io = Array.from({ length: n }, (_, i) => at(i * 3600))
+  const worst = (from, to) => {
+    let max = 0
+    const out = [0, 0, 0]
+    for (let f = from; f <= to; f += 0.05) {
+      sampleCatmullRom(io, f, out)
+      const want = at(f * 3600)
+      max = Math.max(max, Math.hypot(out[0] - want[0], out[1] - want[1]))
+    }
+    return max
+  }
+
+  it('stays under 40 km in the interior, where a lerp is off by over 1 000', () => {
+    expect(worst(2, n - 3)).toBeLessThan(40)
+    const f = 10.5
+    const a = io[10]
+    const b = io[11]
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+    const want = at(f * 3600)
+    expect(Math.hypot(mid[0] - want[0], mid[1] - want[1])).toBeGreaterThan(1000)
+  })
+
+  it('stays under 120 km on the first and last intervals (quadratic edge)', () => {
+    expect(worst(0, 1)).toBeLessThan(120)
+    expect(worst(n - 2, n - 1)).toBeLessThan(120)
+  })
+})
+
+describe('polylinePointAt', () => {
+  // Cercle ferme : le sommet f * facteur de subdivideClosedLoop EST l'echantillon
+  // f, c'est ce qui permet a planets.js de retrouver "ou est la ligne a l'instant t".
+  const R = 1e6
+  const samples = Array.from({ length: 13 }, (_, i) => [R * Math.cos((i / 12) * 2 * Math.PI), R * Math.sin((i / 12) * 2 * Math.PI), 0])
+  const flat = Float64Array.from(subdivideClosedLoop(samples, 8).flat())
+  const out = { x: 0, y: 0, z: 0 }
+
+  it('retombe sur l\'echantillon f au sommet f * facteur', () => {
+    for (const f of [0, 3, 7, 12]) {
+      polylinePointAt(flat, f * 8, out)
+      expect(out.x).toBeCloseTo(samples[f][0], 4)
+      expect(out.y).toBeCloseTo(samples[f][1], 4)
+    }
+  })
+
+  it('suit la corde entre deux sommets et borne aux extremites', () => {
+    polylinePointAt([0, 0, 0, 10, 20, 30, 20, 40, 60], 1.5, out)
+    expect([out.x, out.y, out.z]).toEqual([15, 30, 45])
+    polylinePointAt([0, 0, 0, 10, 20, 30], 9, out)
+    expect([out.x, out.y, out.z]).toEqual([10, 20, 30])
+  })
+
+  it('le corps est sur la ligne translatee de (corps - point de ligne)', () => {
+    const body = { x: R * Math.cos(1.0), y: R * Math.sin(1.0), z: 0 } // entre deux echantillons
+    const g = (1.0 / ((2 * Math.PI) / 12)) * 8
+    polylinePointAt(flat, g, out)
+    const offset = { x: body.x - out.x, y: body.y - out.y, z: body.z - out.z }
+    polylinePointAt(flat, g, out)
+    expect(Math.hypot(out.x + offset.x - body.x, out.y + offset.y - body.y)).toBeLessThan(1e-6)
+    expect(Math.hypot(offset.x, offset.y)).toBeLessThan(R * 5e-3) // un petit decalage, pas un saut
+  })
+})

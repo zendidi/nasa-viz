@@ -22,7 +22,7 @@
 - **Backend** : fonctionnel — `GET /api/iss/position`, `GET /api/neo`, `GET /api/neo/positions`, `GET /api/neo/details`, `GET /api/apod`, plus les routes système solaire `GET /api/solar-system/positions`, `/orbit`, `/moons` et `/orientation`. Cache + CORS en place. Voir `backend/API.md` pour le contrat complet (utile pour Unity plus tard).
 - **Système solaire** : positions, orbites, lunes et orientations viennent de **JPL Horizons**, qui est **sans clé et hors quota NASA**. Une requête par corps et par mois pour l'orientation, une par an pour les positions.
 - **Sources NEO** : `/api/neo` interroge **JPL CAD** (référence), **NASA NeoWs** et **ESA NEOCC** en parallèle, les fusionne et signale les écarts ; le détail est journalisé dans `var/log/neo-comparison.jsonl` (`php bin/console app:neo:comparison-report`). Seul NeoWs consomme le quota NASA.
-- **Web** : fonctionnel — globe Three.js texturé jour/nuit, marqueur ISS animé (poll 5s), points NEO cliquables avec orbite tracée, ciel réel, Lune, Soleil, les sept planètes et leurs lunes, anneau de Saturne, curseur d'échelle « lisible → réel » et choix du corps au centre de la scène.
+- **Web** : fonctionnel — globe Three.js texturé jour/nuit, marqueur ISS animé (poll 5s), points NEO cliquables avec orbite tracée, ciel réel, Lune, Soleil, les huit autres planètes (Pluton comprise) et leurs lunes, horloge simulée (×1 / 1 h/s / 1 j/s), anneau de Saturne, curseur d'échelle « lisible → réel » et choix du corps au centre de la scène.
 - **VR** : non commencé (voir `unity-vr/README.md`).
 
 ## Pour démarrer
@@ -37,7 +37,7 @@ Copier le dossier du projet sur la machine, puis :
    dans le presse-papiers et ouvre le navigateur. Un seul processus PHP sert la page *et* l'API.
 
 Arguments : `Lancer-NASA-Viz.bat 8010 --no-open`, ou `--dev` pour lancer aussi le serveur Vite
-(demande Node). Détails et limites : `DEPLOYMENT.md`.
+(demande Node).
 
 ### Backend (proxy)
 ```bash
@@ -73,6 +73,3 @@ web/        → Vitrine web Three.js (ISS + astéroïdes)
 unity-vr/   → Projet Unity VR (Quest, OpenXR)
 ```
 
-## Mise en prod
-Voir `DEPLOYMENT.md` (checklist et guide, pas encore exécuté — le projet est encore en
-développement).

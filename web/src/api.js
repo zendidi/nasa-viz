@@ -1,5 +1,14 @@
 const BASE = '/api'
 
+/**
+ * The clock every Horizons table is on, in the backend's own words
+ * (`time_scale` on each response). A table stored without it, or with another
+ * value, dates from before 2026-10-21, when the backend still served TDB that
+ * every client read as UTC — 69 s late, ~2 000 km on every planet. Rejecting it
+ * costs one refetch and self-heals, like the orbit route's `frame` guard.
+ */
+export const TIME_SCALE = 'UTC'
+
 async function getJson(path) {
   const res = await fetch(`${BASE}${path}`)
   if (!res.ok) {
@@ -76,7 +85,7 @@ export function fetchSolarSystemOrbit(id) {
  * longitude and the light-time correction — 29,8° on Jupiter — are settled once
  * server-side instead of in every client (backend/API.md).
  *
- * @param {string} id one of the seven planets; not `sun`, which has no rigid surface
+ * @param {string} id one of the seven planets (Earth excluded), `pluto` or `moon`; not `sun`, which has no rigid surface
  * @returns {Promise<{frame:string, epoch:number, bodies:{id:string, name:string,
  *   radius_km:number, pole:?number[], prime_meridian:?number[],
  *   rotation_deg_per_day:?number}[]}>}

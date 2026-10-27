@@ -241,6 +241,29 @@ function comparisonNote(sources, comparison) {
     ne mesurerait plus que l'écart de dates.</p>`
 }
 
+/**
+ * A NEO's diameter as the modal states it, saying how it is known (2026-10-21).
+ *
+ * Measured: with its 1σ when the source gives one (`diameter_km.sigma`) — a bare
+ * "340 m" reads as exact. Estimated: from the absolute magnitude H, which only
+ * gives a diameter once an albedo is assumed, and the range spans the two ends
+ * NeoWs uses (0,25 → small end, 0,05 → large end). The scene draws the middle of
+ * that range, which amounts to an albedo of ~0,10 — said here, since a
+ * professional's first question about an estimated size is "for which albedo?".
+ *
+ * @param {{value: number, sigma?: number | null, source: string} | null | undefined} measured  `details.diameter_km`
+ * @param {{min: number, max: number}} estimated  the feed's `estimated_diameter_km`
+ */
+export function diameterHtml(measured, estimated) {
+  const m = (km) => `${fmt(km * 1000, 0)} m`
+  if (measured) {
+    const sigma = measured.sigma ? ` ± ${m(measured.sigma)}` : ''
+    return `${m(measured.value)}${sigma} <span class="muted">(mesuré, ${measured.source === 'ssocard' ? 'IMCCE' : 'JPL'})</span>`
+  }
+  if (estimated.min === estimated.max) return `~${m(estimated.min)} <span class="muted">(estimé)</span>`
+  return `${m(estimated.min)} – ${m(estimated.max)} <span class="muted">(estimé d'après sa magnitude H, albédo supposé entre 0,25 et 0,05 ; dessiné à ${m((estimated.min + estimated.max) / 2)})</span>`
+}
+
 export function orbitComparisonHtml(details) {
   const orbits = details.orbits
   if (!orbits) return ''
@@ -307,7 +330,8 @@ export function detailsBlockHtml(details, { loading, error }) {
     )
   }
   if (details.diameter_km) {
-    row('Diamètre mesuré', `${fmt(details.diameter_km.value * 1000, 0)} m <span class="muted">(${details.diameter_km.source === 'ssocard' ? 'IMCCE' : 'JPL'})</span>`)
+    const { value, sigma, source } = details.diameter_km
+    row('Diamètre mesuré', `${fmt(value * 1000, 0)} m${sigma ? ` ± ${fmt(sigma * 1000, 0)} m` : ''} <span class="muted">(${source === 'ssocard' ? 'IMCCE' : 'JPL'})</span>`)
   }
   if (details.albedo) row('Albédo', fmt(details.albedo.value, 3))
   if (details.absolute_magnitude_h !== null) row('Magnitude absolue H', fmt(details.absolute_magnitude_h, 2))

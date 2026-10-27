@@ -10,6 +10,7 @@ NEO détectés. Planifié le 2026-09-16, choix utilisateur ci-dessous.
 |---|---|
 | Molette | **Découplée** : molette = zoom caméra seulement ; **Shift+molette = un cran d'échelle** |
 | Crans | **9 crans** (`t = k/8`, k = 0…8) sur un slider + 3 presets : « Lisible » (k=0), « Intermédiaire » (k=4), « 100 % réel » (k=8) |
+| Crans (révisé **2026-10-27**) | Toujours **9 crans**, mais le slider part de l'ancien « Intermédiaire » : `t = 0,5 + 0,5·k/8` (`stepToT`, `SCALE_MIN_T` dans `scale.js`). Ce qui était entre l'ancien lisible et l'intermédiaire « perturbait trop la représentation » (utilisateur). Les courbes vont toujours de t = 0 à 1 ; seul ce que le slider atteint change. La session s'ouvre **sur le Soleil, à 100 % réel**. |
 | Périmètre | **Tout d'un coup** : échelle + vraies positions 3D des NEO (JPL Horizons) dans la même livraison |
 | ISS | Polling **1 min** (wheretheiss.at, hors quota) |
 | Ciel | Étoiles + constellations en **skybox** ; survol étoile + tracé/nom de constellation **conservés** |

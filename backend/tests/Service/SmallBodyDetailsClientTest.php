@@ -76,7 +76,8 @@ final class SmallBodyDetailsClientTest extends TestCase
         self::assertSame(['code' => 'ATE', 'name' => 'Aten'], $details['orbit_class']);
         self::assertTrue($details['is_pha']);
         self::assertSame(['class' => 'S', 'complex' => 'S', 'source' => 'ssocard'], $details['taxonomy']);
-        self::assertSame(['value' => 0.34, 'source' => 'ssocard'], $details['diameter_km']);
+        // With its 1σ: ssoCard gives ±0,04 km for Apophis (radar), and it used to be dropped.
+        self::assertSame(['value' => 0.34, 'sigma' => 0.04, 'source' => 'ssocard'], $details['diameter_km']);
         self::assertSame(0.000107917, $details['moid_earth_au']);
         self::assertSame(0.9223592206975018, $details['orbit']['a_au']);
         self::assertSame(2461200.5, $details['orbit']['epoch_jd']);

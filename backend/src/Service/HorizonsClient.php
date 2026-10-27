@@ -14,8 +14,17 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * geocentric positions as tables of vectors.
  *
  * Output frame is ICRF, Earth-centred, km — the same equatorial frame the web
- * viewer's star sphere uses. Times are TDB (the API rejects TIME_TYPE) —
- * ~69 s off UTC, negligible here.
+ * viewer's star sphere uses. Vector tables are asked for in **UT**
+ * (`TIME_TYPE='UT'`): Horizons' default for VECTORS is TDB, and every client
+ * reads a table's `start` as Unix (UTC) seconds. Left on TDB, the whole scene
+ * ran 69,184 s late — ~2 000 km on every planet, 10 to 200 times the
+ * interpolation error (measured 2026-10-21 against Horizons on 49 bodies). An
+ * older note here said the API rejects TIME_TYPE; it accepts it. OBSERVER
+ * tables (orientation) are UT by default.
+ *
+ * Start and stop carry their **seconds**: a moon window can start at :30
+ * (`MoonClient::windowStart`), and truncating it to the minute put five moons
+ * a further 30 s late against their own `start`.
  *
  * Two kinds of body, one request shape: only COMMAND and STEP_SIZE differ. A
  * small body is addressed by the designation the catalogues agree on
@@ -25,6 +34,16 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 final class HorizonsClient
 {
     public const STEP_SECONDS = 3600;
+
+    /**
+     * The clock every vector table is on, stated in each response (`time_scale`)
+     * and folded into each cache key. In the key, so a table cached under TDB
+     * before 2026-10-21 is simply never read again rather than served for the
+     * rest of its 40-day TTL; in the response, so a client can reject what it
+     * stored itself from before the fix — the same "the side that knows says
+     * it" guard as the orbit route's `frame`.
+     */
+    public const TIME_SCALE = 'UTC';
 
     /** Earth centre — the frame every table shared until moons needed their own planet. */
     public const GEOCENTRIC = '500@399';
@@ -141,8 +160,8 @@ final class HorizonsClient
                 'MAKE_EPHEM' => 'YES',
                 'EPHEM_TYPE' => 'OBSERVER',
                 'CENTER' => sprintf("'%s'", self::GEOCENTRIC),
-                'START_TIME' => sprintf("'%s'", $at->format('Y-m-d H:i')),
-                'STOP_TIME' => sprintf("'%s'", $at->modify('+1 hour')->format('Y-m-d H:i')),
+                'START_TIME' => sprintf("'%s'", $at->format('Y-m-d H:i:s')),
+                'STOP_TIME' => sprintf("'%s'", $at->modify('+1 hour')->format('Y-m-d H:i:s')),
                 'STEP_SIZE' => "'1h'",
                 'QUANTITIES' => "'1,14,20,32'",
                 'ANG_FORMAT' => "'DEG'",
@@ -222,8 +241,9 @@ final class HorizonsClient
                 'MAKE_EPHEM' => 'YES',
                 'EPHEM_TYPE' => 'VECTORS',
                 'CENTER' => sprintf("'%s'", $center),
-                'START_TIME' => sprintf("'%s'", $start->format('Y-m-d H:i')),
-                'STOP_TIME' => sprintf("'%s'", $stop->format('Y-m-d H:i')),
+                'START_TIME' => sprintf("'%s'", $start->format('Y-m-d H:i:s')),
+                'STOP_TIME' => sprintf("'%s'", $stop->format('Y-m-d H:i:s')),
+                'TIME_TYPE' => "'UT'",
                 'STEP_SIZE' => sprintf("'%s'", $stepSize),
                 'VEC_TABLE' => '1',
                 'REF_PLANE' => 'FRAME',

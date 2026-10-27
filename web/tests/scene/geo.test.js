@@ -7,6 +7,7 @@ import {
   hashToDirection,
   icrfToScene,
   latLngToVector3,
+  mapUShift,
   raySphereDistance,
   setBodyOrientation,
 } from '../../src/scene/geo.js'
@@ -235,5 +236,42 @@ describe('hashToDirection', () => {
     const a = hashToDirection('2015 BK509')
     const b = hashToDirection('2017 RP15')
     expect(a.distanceTo(b)).toBeGreaterThan(1e-6)
+  })
+})
+
+describe('mapUShift', () => {
+  // Lit le vrai buffer de SphereGeometry (pas la formule du commentaire) : pour
+  // chaque sommet, la longitude est celle du point (est = vers -Z, cf. latLngToVector3)
+  // et la colonne lue est celle de `u` decale. Une carte dont le bord gauche est a L
+  // porte la longitude L + 360 u' en u' : le sommet doit y retrouver SA longitude.
+  const geometry = new THREE.SphereGeometry(1, 72, 36)
+  const position = geometry.attributes.position
+  const uv = geometry.attributes.uv
+
+  function readLongitudeError(leftEdgeLon, shift) {
+    let worst = 0
+    for (let i = 0; i < position.count; i++) {
+      const lat = Math.asin(Math.min(1, Math.max(-1, position.getY(i))))
+      if (Math.abs(lat) > 1.4) continue // pres des poles la longitude n'est plus definie
+      const lon = (Math.atan2(-position.getZ(i), position.getX(i)) * 180) / Math.PI
+      const read = leftEdgeLon + 360 * ((((uv.getX(i) + shift) % 1) + 1) % 1)
+      const diff = Math.abs((((read - lon + 540) % 360) + 360) % 360 - 180)
+      worst = Math.max(worst, diff)
+    }
+    return worst
+  }
+
+  it('vaut 0 pour une carte Solar System Scope (bord gauche a 180 deg) : rien a decaler', () => {
+    expect(mapUShift(180)).toBeCloseTo(0, 12)
+    expect(readLongitudeError(180, mapUShift(180))).toBeLessThan(1e-3) // buffers float32
+  })
+
+  it('vaut un demi-tour pour une carte USGS (bord gauche a 0 deg E), la convention Pluton/Charon', () => {
+    expect(mapUShift(0)).toBeCloseTo(0.5, 12)
+    expect(readLongitudeError(0, mapUShift(0))).toBeLessThan(1e-3) // buffers float32
+  })
+
+  it('sans decalage une carte USGS serait fausse de 180 deg : le cas que ce test garde', () => {
+    expect(readLongitudeError(0, 0)).toBeGreaterThan(179)
   })
 })
