@@ -10,6 +10,7 @@ use App\Service\NasaUsageTracker;
 use App\Service\NeoOrbitComparisonLog;
 use App\Service\PlanetOrientationClient;
 use App\Service\SmallBodyDetailsClient;
+use App\Service\SmallBodySearchClient;
 use App\Service\SolarSystemClient;
 use Psr\Cache\CacheItemPoolInterface;
 use Psr\Log\LoggerInterface;
@@ -473,6 +474,39 @@ final class SpaceDataController
         }
 
         return new JsonResponse(['objects' => $objects]);
+    }
+
+    /**
+     * Name / designation → asteroid, any non-comet small body (not only NEOs,
+     * hence not under /api/neo). JPL SBDB, keyless: spends no NASA quota.
+     */
+    #[Route('/api/small-body/search', name: 'api_small_body_search', methods: ['GET'])]
+    public function smallBodySearch(
+        Request $request,
+        SmallBodySearchClient $client,
+        #[Autowire(service: 'cache.app')] CacheItemPoolInterface $pool,
+    ): JsonResponse {
+        $query = SmallBodySearchClient::normalizeQuery((string) $request->query->get('q', ''));
+        if ($query === null) {
+            return new JsonResponse(['error' => 'q must be 1 to 40 characters: letters, digits, spaces and \' / ( ) . -'], 400);
+        }
+
+        $item = $pool->getItem(SmallBodySearchClient::cacheKey($query));
+        if ($item->isHit()) {
+            return new JsonResponse($item->get());
+        }
+        try {
+            $result = $client->search($query);
+        } catch (ExceptionInterface $e) {
+            // Not cached: an outage must not turn into an hour of "not found".
+            return $this->upstreamError('small-body/search', $e);
+        }
+        // An object gets renumbered (SPK-ID 5xxxxxxx → 2xxxxxxx), so even a match is short-lived;
+        // an unknown name may be a fresh discovery, so it is the shortest.
+        $found = $result['match'] !== null || isset($result['candidates']) || isset($result['rejected']);
+        $pool->save($item->set($result)->expiresAfter($found ? 86400 : 3600));
+
+        return new JsonResponse($result);
     }
 
     #[Route('/api/apod', name: 'api_apod', methods: ['GET'])]

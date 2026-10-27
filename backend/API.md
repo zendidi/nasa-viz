@@ -226,6 +226,48 @@ SBDB, ssoCard or Sentry is down — ESA is excluded from that check, see below).
   on its own — it's a bonus comparison point the sheet doesn't depend on.
 - HTTP 502 only when both SBDB and ssoCard are unreachable.
 
+## `GET /api/small-body/search?q=Apophis`
+
+Resolves a name or designation to one **asteroid** (any non-comet small body,
+not only NEOs — hence not under `/api/neo`) through JPL SBDB. Keyless: spends
+no NASA quota. `q` accepts a name (`Apophis`), a number (`99942`), a
+provisional designation (`2004 MN4`, `2004MN4`) or an SPK-ID (`20099942`).
+
+`q` is trimmed and inner spaces collapsed; 1 to 40 characters among letters,
+digits, space and `' / ( ) . -`. No `*` — the route adds it itself. Anything
+else is HTTP 400 `{"error": …}`.
+
+Three shapes, always HTTP 200:
+
+```json
+{"match": {"spkid": "20099942", "des": "99942", "fullname": "99942 Apophis (2004 MN4)",
+           "shortname": "99942 Apophis", "kind": "an", "neo": true, "pha": true,
+           "orbit_class": {"code": "ATE", "name": "Aten"}}}
+
+{"match": null, "candidates": [{"pdes": "1862", "name": "1862 Apollo (1932 HA)"}], "count": 7}
+
+{"match": null}
+```
+
+- `neo` and `pha` are SBDB's own flags (`neo`: perihelion < 1.3 au); any field
+  SBDB doesn't give is `null`. `spkid` is a string. It changes when an object
+  gets numbered (`5xxxxxxx` → `2xxxxxxx`), so don't store it long-term.
+- Lookup order: `sstr=q`; if SBDB says "not found", **one** retry with `q*`
+  (`Apo` → 7 candidates). A single hit on either is a `match`.
+- `candidates` is capped at 20; **`count` is the total of non-comet
+  candidates SBDB found**, so `count > candidates.length` means "refine your
+  query". `{pdes, name}`: pass `pdes` back as `q` to get the match.
+- **Comets are out of scope for now.** A query that resolves to a comet answers
+  `{"match": null, "rejected": {"reason": "comet", "fullname": "1P/Halley"}}`;
+  comets (`1P`, `73P-B`, `C/…`, `P/…`, `D/…`, `X/…`, `I/…`) are dropped from
+  `candidates` and from `count`. A list made only of comets is `{"match": null}`.
+  `A/2017 U1`-style designations are asteroids and are kept.
+- Cache: match and candidates 1 day, `rejected` 1 day, nothing found 1 hour;
+  keyed on the normalised query, case-insensitive.
+- HTTP 502 when SBDB is unreachable, answers 5xx or sends garbage — never
+  cached. (SBDB answers an ambiguous query with HTTP 300 and a body; that is
+  handled, not an error.)
+
 ## `GET /api/neo/positions?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&designations=2026 RB39,2021 LC`
 
 Real geocentric positions of NEOs over the feed's date range, from JPL
