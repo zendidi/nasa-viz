@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=NASA Viz
+Comment=Lance NASA Viz en local et ouvre le navigateur
+# %k est le chemin de ce fichier : le lanceur est cherché à côté de lui, où que
+# le dossier du projet ait été copié. Double échappement voulu par la spec
+# Desktop Entry (une fois pour la valeur, une fois pour les guillemets d'Exec).
+Exec=bash -c "exec bash \\"\\$(dirname \\"\\$1\\")/lancer-nasa-viz.sh\\"" nasa-viz %k
+Terminal=true
+Icon=applications-science
+Categories=Science;Education;

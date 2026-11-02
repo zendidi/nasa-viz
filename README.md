@@ -39,6 +39,14 @@ Copier le dossier du projet sur la machine, puis :
 Arguments : `Lancer-NASA-Viz.bat 8010 --no-open`, ou `--dev` pour lancer aussi le serveur Vite
 (demande Node).
 
+### En un clic (Linux)
+
+Double-cliquer **`LINUX/NASA-Viz.desktop`** (ou `bash LINUX/lancer-nasa-viz.sh`). Mêmes options que
+sous Windows. Au premier lancement, le script installe PHP avec le gestionnaire de paquets si besoin
+(mot de passe demandé). Il télécharge aussi Composer et Node dans `LINUX/.local/`, puis construit
+le site. Tout fonctionne depuis un simple `git clone`. Détails et dépannage :
+[`LINUX/LISEZMOI.md`](LINUX/LISEZMOI.md).
+
 ### Backend (proxy)
 ```bash
 cd backend

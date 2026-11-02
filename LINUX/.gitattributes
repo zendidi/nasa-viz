@@ -1,0 +1,3 @@
+# Fins de ligne LF forcées : un script bash en CRLF casse à la première ligne
+# (« bash\r: not found »), et ce dossier est édité depuis Windows.
+* text eol=lf
