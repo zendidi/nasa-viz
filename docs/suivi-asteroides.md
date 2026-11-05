@@ -253,7 +253,7 @@ L'outil phare du projet. Choix validés :
   curseur). Une table horaire sur 5 ans d'une traite (~44 000 lignes, ~27 s extrapolées) ne tient
   pas dans le délai de 20 s de `HorizonsClient` ni dans le mur PHP de 30 s.
 
-Contexte complet pour l'agent : `docs/briefs/lot2-outil-trajectoire.md` (fichier de travail, supprimé
+Contexte de travail pour l'agent : `docs/briefs/lot2-outil-trajectoire.md` (fichier de travail, supprimé
 au merge de la branche).
 
 ### Lot 2 — livré le 2026-11-05 (code et vérifications automatiques ; rendu à valider à l'œil)

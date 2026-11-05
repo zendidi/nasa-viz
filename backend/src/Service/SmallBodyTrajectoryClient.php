@@ -6,7 +6,7 @@ use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 
 /**
- * The tracked-object trajectory tool (lot 2 of docs/briefs/lot2-outil-trajectoire.md):
+ * The tracked-object trajectory tool (lot 2, docs/suivi-asteroides.md, "Lot 2 — livré le 2026-11-05"):
  * three tables, all on the same fixed range of six calendar years.
  *
  * - trajectory: one DAILY geocentric table of the whole range, for any
