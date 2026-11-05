@@ -34,8 +34,18 @@ function approachHtml(item) {
 }
 
 /**
+ * The object's dot: plain in its colour, or striped for a dashed trace (2026-11-05)
+ * — the pattern is in panels.css, the colour reaches it through `--dot`.
+ */
+function dotHtml(item) {
+  return item.dashed
+    ? `<span class="dot dashed" style="--dot:${item.color}" title="trait pointillé"></span>`
+    : `<span class="dot" style="background:${item.color}" title="trait plein"></span>`
+}
+
+/**
  * @param {HTMLElement} section  the tab's own `<section>`, filled here
- * @param {object} on  trackSearch, trackAdd, trackOpen, trackApproach, trackRemove, trackRetry, trackShowNeo
+ * @param {object} on  trackSearch, trackAdd, trackOpen, trackApproach, trackRemove, trackRetry, trackKeep, trackShowNeo
  */
 export function createTrackingTab(section, on) {
   section.innerHTML = `
@@ -151,7 +161,7 @@ export function createTrackingTab(section, on) {
    * is static markup and survives). `showNeo` is re-stated from the scene's own
    * state each time, never read back from the DOM.
    *
-   * @param {{items: {spkid: string, name: string, neo: boolean, color: string,
+   * @param {{items: {spkid: string, name: string, neo: boolean, color: string, dashed: boolean, saved: boolean,
    *   status: 'loading'|'ready'|'error'|'missing', error: ?string,
    *   approach: ?{kind: string, timeMs?: number, distKm?: ?number}}[],
    *   full: boolean, showNeo: boolean}} state
@@ -174,13 +184,15 @@ export function createTrackingTab(section, on) {
         return `
           <li class="track-item">
             <div class="track-head">
-              <span class="dot" style="background:${item.color}"></span>
+              ${dotHtml(item)}
               <button class="track-name" data-open="${item.spkid}" title="Ouvrir la fiche">${escapeHtml(item.name)}</button>
               <span class="track-kind">${item.neo ? 'NEO' : 'astéroïde'}</span>
             </div>
             <p class="track-state">${state}</p>
             <div class="track-actions">
               ${approachHtml(item)}${retry}
+              <button class="track-btn track-keep" data-keep="${item.spkid}" aria-pressed="${item.saved}"
+                      title="Garder cet objet d'une session à l'autre (dans ce navigateur)">Garder</button>
               <button class="track-btn" data-remove="${item.spkid}">Retirer</button>
             </div>
           </li>`
@@ -197,7 +209,7 @@ export function createTrackingTab(section, on) {
   section.addEventListener('click', (event) => {
     const button = event.target.closest('button')
     if (!button) return
-    const { open, approach, remove, retry, candidate, offer } = button.dataset
+    const { open, approach, remove, retry, candidate, offer, keep } = button.dataset
     if (offer) {
       if (!offered) return
       const result = on.trackAdd(offered)
@@ -214,6 +226,7 @@ export function createTrackingTab(section, on) {
       }
     } else if (open) on.trackOpen(open)
     else if (approach) on.trackApproach(approach)
+    else if (keep) on.trackKeep(keep, button.getAttribute('aria-pressed') !== 'true')
     else if (remove) on.trackRemove(remove)
     else if (retry) on.trackRetry(retry)
     else if (candidate) {

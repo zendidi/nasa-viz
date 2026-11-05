@@ -2,8 +2,10 @@
  * The asteroids the user tracks (docs/suivi-asteroides.md): for each, a marker
  * in its own colour at its real position and a trace over the whole window of
  * the clock (heliocentric, plus its flybys from the Earth's view, see buildTraces), both read from the precise table that
- * `/api/small-body/positions` serves — one request per object, independent,
- * each object appearing as soon as its own answer lands.
+ * `/api/small-body/positions` serves — one request per object, each object
+ * appearing as soon as its own answer lands (the requests go one at a time since
+ * 2026-11-05, see the loading queue). An object whose slot is a dashed one has
+ * dashed traces.
  *
  * It owns the loading, the tables and the drawings; it does not own the list
  * (main.js holds it and persists it) and it knows nothing of the panels: what
@@ -15,7 +17,15 @@ import * as THREE from 'three'
 import { fetchSmallBodyPositions, searchSmallBody } from '../data/api.js'
 import { escapeHtml } from '../neo/info.js'
 import { icrfToScene } from '../scene/geo.js'
-import { flybyArcTimes, interpretSearch, positionAt, tableAt } from './model.js'
+import {
+  DASH_FLYBY_SECONDS,
+  DASH_HELIO_SECONDS,
+  dashKeepsSegment,
+  flybyArcTimes,
+  interpretSearch,
+  positionAt,
+  tableAt,
+} from './model.js'
 
 // Same logic as the NEO dots: a floor in pixels, because at true scale the
 // object itself is sub-pixel. The hit sphere is wider so a speck stays clickable.
@@ -100,7 +110,7 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     mesh.userData.tracked = entry
     hit.userData.tracked = entry
     entries.set(rec.spkid, entry)
-    load(entry)
+    enqueue(entry)
     return entry
   }
 
@@ -108,6 +118,8 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     const entry = entries.get(spkid)
     if (!entry) return
     entry.removed = true
+    const waiting = queue.findIndex((job) => job.entry === entry)
+    if (waiting !== -1) queue.splice(waiting, 1)
     entries.delete(spkid)
     group.remove(entry.group)
     entry.mesh.material.dispose()
@@ -146,34 +158,83 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
         sunPositionKmAt(new Date((start + i * step) * 1000), sunKm),
       ),
     )
-    traces.setKm(entry.helioTrace, helio, () => true)
+    // A dashed object keeps only the segments in an "on" slot of the time pattern
+    // (dashKeepsSegment): the dashes are cut the way the below-ecliptic ones are, in setKm.
+    const dashed = entry.rec.dashed
+    traces.setKm(
+      entry.helioTrace,
+      helio,
+      dashed ? (i) => dashKeepsSegment(start + indices[i] * step, start + indices[i + 1] * step, DASH_HELIO_SECONDS) : () => true,
+    )
 
     const end = start + (positions.length - 1) * step
     const arcs = flybyArcTimes((object.close_approaches ?? []).map((a) => a.time), start, end)
     const samples = []
+    const sampleTimes = []
     /** Index of each arc's first sample: the segment leading into it would join two flybys. */
     const arcStarts = new Set()
     const icrf = [0, 0, 0]
     for (const arc of arcs) {
       arcStarts.add(samples.length)
       for (const time of arc) {
-        if (positionAt(object, time, icrf)) samples.push(icrfToScene(icrf[0], icrf[1], icrf[2], new THREE.Vector3()))
+        if (positionAt(object, time, icrf)) {
+          samples.push(icrfToScene(icrf[0], icrf[1], icrf[2], new THREE.Vector3()))
+          sampleTimes.push(time)
+        }
       }
     }
-    traces.setKm(entry.flybyTrace, samples, (i) => !arcStarts.has(i + 1))
+    traces.setKm(
+      entry.flybyTrace,
+      samples,
+      (i) =>
+        !arcStarts.has(i + 1) &&
+        (!dashed || dashKeepsSegment(sampleTimes[i], sampleTimes[i + 1], DASH_FLYBY_SECONDS)),
+    )
+  }
+
+  // --- the loading queue (2026-11-05) ---------------------------------------------
+  //
+  // One `fetchSmallBodyPositions` at a time. On Windows the `php -S` server
+  // handles a single request at once (measured: `PHP_CLI_SERVER_WORKERS` answers
+  // "forking is not supported on this platform"), so at startup the saved objects
+  // — up to ten tables, each a Horizons call on a cold backend cache — all left
+  // together and queued up in front of the ISS, the planets and the rest. Here
+  // they go one after the other; an object removed while it waits just leaves
+  // the queue. The status stays `loading` from the moment of `enqueue`.
+  /** @type {{entry: TrackedEntry, resolved: boolean}[]} */
+  const queue = []
+  let pumping = false
+
+  function enqueue(entry, { resolved = false } = {}) {
+    entry.status = 'loading'
+    entry.error = null
+    queue.push({ entry, resolved })
+    on.changed()
+    pump()
+  }
+
+  async function pump() {
+    if (pumping) return
+    pumping = true
+    try {
+      while (queue.length > 0) {
+        const { entry, resolved } = queue.shift()
+        if (!entry.removed) await load(entry, resolved)
+      }
+    } finally {
+      pumping = false
+    }
   }
 
   /**
-   * One request for this object. If its SPK-ID is no longer known (`null` in
-   * `objects`), it is the numbering trap of the doc: an object that gets a
-   * number changes SPK-ID (`5xxxxxxx` to `2xxxxxxx`). The designation is looked
-   * up once more and the stored id replaced — once only, or an object truly
-   * gone would loop.
+   * One request for this object (one slot of the queue). If its SPK-ID is no
+   * longer known (`null` in `objects`), it is the numbering trap of the doc: an
+   * object that gets a number changes SPK-ID (`5xxxxxxx` to `2xxxxxxx`). The
+   * designation is looked up once more and the stored id replaced — once only, or
+   * an object truly gone would loop. The second request goes back to the *end* of
+   * the queue (`enqueue`) instead of holding the slot through the search.
    */
-  async function load(entry, { resolved = false } = {}) {
-    entry.status = 'loading'
-    entry.error = null
-    on.changed()
+  async function load(entry, resolved) {
     try {
       const spkid = entry.rec.spkid
       const res = await fetchSmallBodyPositions(spkid)
@@ -191,10 +252,11 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
         if (entry.removed) return
         if (found.kind === 'match' && found.record.spkid !== spkid) {
           entries.delete(spkid)
-          entry.rec = { ...found.record, color: entry.rec.color }
+          // Colour, line style and `saved` stay with the object, not with the id.
+          entry.rec = { ...entry.rec, ...found.record }
           entries.set(entry.rec.spkid, entry)
           on.spkidChanged(spkid, entry.rec)
-          await load(entry, { resolved: true })
+          enqueue(entry, { resolved: true })
           return
         }
       }
@@ -273,7 +335,7 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     /** Retries an object whose request failed (or whose id was not recognised). */
     reload(spkid) {
       const entry = entries.get(spkid)
-      if (entry && (entry.status === 'error' || entry.status === 'missing')) load(entry)
+      if (entry && (entry.status === 'error' || entry.status === 'missing')) enqueue(entry)
     },
     get: (spkid) => entries.get(spkid) ?? null,
     /** Geocentric positions, km, scene axes, of the objects currently placed — for the camera's reach. */

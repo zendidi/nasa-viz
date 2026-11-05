@@ -312,6 +312,7 @@ const panels = createPanels({
     trackApproach: (spkid) => tracking.goToNextApproach(spkid),
     trackRemove: (spkid) => tracking.remove(spkid),
     trackRetry: (spkid) => tracking.retry(spkid),
+    trackKeep: (spkid, saved) => tracking.setSaved(spkid, saved),
     trackShowNeo: (enabled) => tracking.setShowNeo(enabled),
     detailAction: (action, data) => {
       if (action === 'track') tracking.trackFromNeo(data.designation)
@@ -326,6 +327,13 @@ const panels = createPanels({
     venusSurface: (enabled) => {
       venusSurface = enabled
       planets.setVenusSurface(enabled)
+      renderPlanetsPanel()
+    },
+    moonsShown: (enabled) => {
+      moons.setEnabled(enabled)
+      saveCached('moons-shown', enabled)
+      // Ticked while a planet is centred: the moons were not fetched while hidden.
+      if (enabled && frame.planet) moons.loadFor(frame.planet.id)
       renderPlanetsPanel()
     },
     points: (enabled) => {
@@ -408,6 +416,7 @@ function renderPlanetsPanel() {
     planets.drawnAt(stepToT(rig.step)),
     moons.status(),
     frame.id === 'venus' ? { surface: venusSurface } : null,
+    moons.enabled,
   )
 }
 
@@ -579,6 +588,9 @@ const moons = createMoons({
   sunPositionKm,
   on: { changed: () => renderPlanetsPanel() },
 })
+// The "Afficher les lunes" preference (2026-11-05), per browser. Unreadable or never
+// set means shown; only an explicit false hides them.
+moons.setEnabled(loadCached('moons-shown')?.data !== false)
 
 // Rings (and their labels) belong to the current point of view, so both are
 // rebuilt on every switch — see setFocus(). Each carries its own vector: the

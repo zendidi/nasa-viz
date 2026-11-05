@@ -205,3 +205,53 @@ liste ci-dessous **n'a pas été construit** : il est sorti au backlog (`docs/ag
 
 - **TTL du cache serveur** des tables : 1 jour comme `/api/neo/positions` par défaut ; plus long pour
   un objet numéroté à orbite bien établie, si la mesure le justifie.
+
+## 2026-11-05 — Révision : 10 objets, « garder », outil de trajectoire propre
+
+Décidé avec l'utilisateur le 2026-11-05, après une remise en question du « 5 objets sur 15 mois,
+contrainte de perf ». Constat mesuré : le 5 n'a jamais été une contrainte de rendu (5 objets suivis
+qui seraient tous des NEO = ~55 000 lignes, ~1,3 Mo en mémoire, ~1 800 sommets de tracé chacun) ;
+les ~15 mois ne sont pas propres au suivi, c'est la plage de l'horloge de toute la scène. Le seul
+coût qui croît avec le nombre d'objets est le chargement **à froid** chez Horizons (~7 s pour un
+objet suivi qui est un NEO, table horaire), derrière un `php -S` qui sous Windows ne sert qu'une
+requête à la fois (mesuré : `PHP_CLI_SERVER_WORKERS` → « forking is not supported on this
+platform » ; 3 requêtes de 1,5 s → 1,5 / 3,0 / 4,5 s).
+
+Vocabulaire tenu : un **objet suivi** est n'importe quel astéroïde ; certains objets suivis **sont
+aussi des NEO** (table horaire + segments de 5 min), les autres non (table journalière, ~24× plus
+légère). Les **NEO de la semaine** (onglet NEO) sont une autre chose et ne changent pas.
+
+### Lot 1 (branche `suivi-plage-etendue`)
+
+- **10 objets suivis** au plus (`MAX_TRACKED`), différenciés par **couleur + style de trait** : les 5
+  couleurs de `TRACK_COLORS` × {plein, pointillé}. Pas de nouvelles couleurs (la palette est déjà
+  choisie à l'écart du cyan NEO, du rouge PHA, des couleurs spectrales et des planètes). Pointillé
+  découpé **en temps**, comme les traits sous l'écliptique.
+- **Interrupteur « Garder »** à côté de « Retirer » : seuls les objets gardés sont écrits dans le
+  `localStorage` et rechargés à la session suivante ; un nouvel objet est **non gardé** par défaut.
+  Une liste déjà stockée (sans le champ) est lue comme gardée.
+- **File de chargement un par un** : au démarrage, les objets gardés ne partent plus tous ensemble,
+  pour laisser passer les autres routes entre deux objets sur un `php -S` mono-requête.
+
+Écarté : les workers PHP seuls (inopérants sous Windows, plateforme principale). Écarté : un mode
+« suivi seul » qui déchargerait les NEO de la semaine — l'utilisateur garde la bascule d'affichage
+existante, qui suffit à la lisibilité. Comètes : toujours hors périmètre, au backlog
+(`docs/cometes.md`).
+
+### Lot 2 — outil de trajectoire des objets suivis (à construire)
+
+L'outil phare du projet. Choix validés :
+
+- **son propre curseur de temps**, indépendant de l'horloge globale, en **temps relatif** sur
+  **−1 an / +4 ans** ;
+- **remise à zéro automatique** du curseur quand l'horloge globale est altérée (accélérée ou
+  reculée) ;
+- deux besoins séparés, deux tables : **dessiner** la trajectoire sur 5 ans (table **journalière**
+  pour tout objet suivi : ~1 800 lignes, ~60 ko ; l'erreur du pas journalier loin de la Terre est
+  de ~14 km, mesurée le 2026-10-27) et **placer** l'objet avec précision (pour un objet suivi qui est
+  un NEO : horaire + segments de 5 min, **découpés par année** et chargés autour de l'instant du
+  curseur). Une table horaire sur 5 ans d'une traite (~44 000 lignes, ~27 s extrapolées) ne tient
+  pas dans le délai de 20 s de `HorizonsClient` ni dans le mur PHP de 30 s.
+
+Contexte complet pour l'agent : `docs/briefs/lot2-outil-trajectoire.md` (fichier de travail, supprimé
+au merge de la branche).

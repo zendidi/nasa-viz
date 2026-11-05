@@ -132,3 +132,20 @@ jobs:
       # a explicitement refusés sur tous ses projets. Le rendu de la scène 3D se
       # valide à l'œil, par une checklist. Ces deux étapes vérifient les calculs
       # et la compilation, ce qui est tout ce qu'elles prétendent.
+
+  # docs/briefs/ ne contient que des fichiers de travail pour les agents d'une
+  # branche (contexte des lots à venir), à supprimer au merge (décidé le
+  # 2026-11-05). Ce job échoue sur toute PR vers master, et sur master même,
+  # tant que le dossier existe : l'oubli ne peut pas passer en silence.
+  briefs:
+    name: Pas de docs/briefs/ sur master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs/briefs/ doit avoir été supprimé
+        run: |
+          if [ -d docs/briefs ]; then
+            echo "::error::docs/briefs/ existe encore : ces briefs d'agents se suppriment au merge dans master."
+            ls docs/briefs
+            exit 1
+          fi

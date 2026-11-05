@@ -43,10 +43,10 @@ const INFO_TABS = [
  *                                          scale step when it happens over it
  * @param {object}      options.on          update, scaleStep, scaleStepBy,
  *                                          focus, recenter, deselect, modalClosed,
- *                                          allOrbits, points, venusSurface, rings, ecliptic,
+ *                                          allOrbits, points, venusSurface, moonsShown, rings, ecliptic,
  *                                          timeRate, timeReset, trackSearch, trackOpen,
  *                                          trackApproach, trackRemove, trackRetry,
- *                                          trackShowNeo, detailAction
+ *                                          trackKeep, trackShowNeo, detailAction
  */
 export function createPanels({ app, wheelTarget, on }) {
   const ui = document.createElement('div')

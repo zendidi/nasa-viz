@@ -30,12 +30,19 @@ function moonsLine(moons) {
   if (moons.error) return `<p class="error">lunes de ${name} : ${escapeHtml(moons.error)}</p>`
   if (moons.known === 0) return `<p class="muted">${name} n'a pas de lune</p>`
   const plural = moons.known > 1 ? 's' : ''
-  return `<p class="muted">${moons.known} lune${plural} de ${name} · positions réelles (JPL Horizons)</p>`
+  // Hidden rather than frozen outside their table's window (2026-11-05).
+  const range =
+    moons.outOfRange > 0
+      ? moons.outOfRange === moons.known
+        ? ' · hors de leur plage de dates'
+        : ` · ${moons.outOfRange} hors de leur plage de dates`
+      : ''
+  return `<p class="muted">${moons.known} lune${plural} de ${name} · positions réelles (JPL Horizons)${range}</p>`
 }
 
 /**
  * @param {HTMLElement} section  the tab's own `<section>`, filled here
- * @param {{venusSurface: (enabled: boolean) => void}} on
+ * @param {{venusSurface: (enabled: boolean) => void, moonsShown: (enabled: boolean) => void}} on
  */
 export function createPlanetsTab(section, on) {
   section.innerHTML = `
@@ -46,6 +53,7 @@ export function createPlanetsTab(section, on) {
   // Same delegation for the Venus box, which lives inside renderPlanets' template.
   section.addEventListener('change', (event) => {
     if (event.target.id === 'venus-surface') on.venusSurface(event.target.checked)
+    else if (event.target.id === 'moons-shown') on.moonsShown(event.target.checked)
   })
 
   /**
@@ -64,8 +72,9 @@ export function createPlanetsTab(section, on) {
    * @param {boolean} drawn whether the current scale and pivot put them on screen
    * @param {{planet: string, known: number, loading: boolean, error?: ?string} | null} moons
    *   the centred planet's moons, or null when the pivot is not a planet
+   * @param {boolean} moonsShown  the "Afficher les lunes" box (their line is left out while it is off)
    */
-  function render({ known, orbits, total, loading, loadingOrbits, error = null }, legend, drawn, moons, venus = null) {
+  function render({ known, orbits, total, loading, loadingOrbits, error = null }, legend, drawn, moons, venus = null, moonsShown = true) {
     const swatches = legend.map((p) => `<span class="dot" style="background:${p.color}"></span>${p.label}`)
     section.innerHTML = `
       ${PLANETS_HEADING}
@@ -84,7 +93,9 @@ export function createPlanetsTab(section, on) {
           : `orbites : ${orbits}/${total}${loadingOrbits ? '…' : ''} (vue Soleil)`
       }</p>
       <p class="legend">${swatches.join(' &nbsp;')}</p>
-      ${moonsLine(moons)}
+      ${moonsShown ? moonsLine(moons) : ''}
+      <p class="neo-toggle"><label><input type="checkbox" id="moons-shown"${moonsShown ? ' checked' : ''}>
+        Afficher les lunes</label></p>
       ${
         venus
           ? `<p class="neo-toggle"><label><input type="checkbox" id="venus-surface"${venus.surface ? ' checked' : ''}>

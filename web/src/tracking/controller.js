@@ -24,6 +24,8 @@ import {
   nextApproach,
   readTrackedList,
   removeTracked,
+  savedList,
+  setSaved,
 } from './model.js'
 import { trackButtonHtml, trackedSheetHtml } from '../ui/sheets.js'
 
@@ -51,6 +53,11 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
   /** The "Suivre" button of a weekly NEO's sheet: which designation is being resolved, and what it said. */
   let neoTrack = { designation: null, busy: false, message: '' }
 
+  /** Writes the list the user chose to keep (`saved`); the others live for the session only. */
+  function persist() {
+    saveCached(TRACKED_CACHE_KEY, savedList(list))
+  }
+
   const trackedScene = createTrackedScene({
     ...sceneOptions,
     on: {
@@ -58,10 +65,11 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
         refreshPanel()
         if (sheetSpkid) renderSheet()
       },
-      // An object that got numbered changed SPK-ID: the stored one follows.
+      // An object that got numbered changed SPK-ID: the stored one follows. The
+      // list owns `saved` (the scene's copy of the record can be older).
       spkidChanged: (oldSpkid, record) => {
-        list = list.map((rec) => (rec.spkid === oldSpkid ? record : rec))
-        saveCached(TRACKED_CACHE_KEY, list)
+        list = list.map((rec) => (rec.spkid === oldSpkid ? { ...rec, ...record, saved: rec.saved } : rec))
+        persist()
         if (sheetSpkid === oldSpkid) sheetSpkid = record.spkid
       },
     },
@@ -91,6 +99,8 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
         name: rec.fullname,
         neo: rec.neo,
         color: cssColor(rec.color),
+        dashed: rec.dashed,
+        saved: rec.saved,
         status: entry.status,
         error: entry.error,
         approach,
@@ -108,7 +118,7 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
     const outcome = addTracked(list, record)
     if (!outcome.added) return outcome
     list = outcome.list
-    saveCached(TRACKED_CACHE_KEY, list)
+    // Not persisted: a newcomer is not kept (`saved: false`) until the user says so.
     const added = list[list.length - 1]
     if (list.length === 1) showNeoWhileTracking = false // the first one clears the week's NEO off the scene
     trackedScene.add(added)
@@ -160,7 +170,7 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
       return list.length
     },
 
-    /** Reads the stored list back and starts every object's load — one request each, in parallel. */
+    /** Reads the stored list back and queues every object's load — one request each, one at a time (tracking/scene.js). */
     restore() {
       list = readTrackedList(loadCached(TRACKED_CACHE_KEY)?.data)
       for (const rec of list) trackedScene.add(rec)
@@ -200,7 +210,7 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
 
     remove(spkid) {
       list = removeTracked(list, spkid)
-      saveCached(TRACKED_CACHE_KEY, list)
+      persist()
       if (list.length === 0) showNeoWhileTracking = false
       const wasOpen = sheetSpkid === spkid
       trackedScene.remove(spkid)
@@ -210,6 +220,13 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
 
     retry(spkid) {
       trackedScene.reload(spkid)
+    },
+
+    /** The "Garder" switch of one object: kept from one session to the next, or not. */
+    setSaved(spkid, saved) {
+      list = setSaved(list, spkid, saved)
+      persist()
+      refreshPanel()
     },
 
     /** The "Suivi" tab's box. */

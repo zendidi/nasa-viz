@@ -25,7 +25,7 @@ import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift, setBodyOrientation } fro
 import { poleOf } from './orientation.js'
 import { moonRadius } from '../view/scale.js'
 import { subdivideTable } from '../ephemeris/interpolate.js'
-import { ORBIT_SMOOTHING, tableCovers, tablePositionKm } from '../ephemeris/positionTable.js'
+import { ORBIT_SMOOTHING, tableCovers, tableEndSeconds, tablePositionKm } from '../ephemeris/positionTable.js'
 
 /** French names, by backend id. The backend owns the physics, this owns the wording. */
 const MOON_LABELS = {
@@ -154,6 +154,15 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
     if (MOON_LABELS[id] && covers(record)) tables[id] = record
   }
 
+  /**
+   * The "Afficher les lunes" box (2026-11-05): off, no moon and no moon orbit is
+   * drawn, and nothing is fetched meanwhile (`loadFor`). The preference itself is
+   * stored by the caller.
+   */
+  let enabled = true
+  /** How many of the pivot's moons the last frame hid for being outside their table's window. */
+  let rangeHidden = 0
+
   /** Planets whose load has finished, so a second visit doesn't re-ask. */
   const loaded = new Set()
   let loadingPlanet = null
@@ -167,7 +176,8 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
    * draw-call candidates and 39 materials for nothing.
    *
    * @type {Record<string, {id: string, label: string, mesh: THREE.Mesh, labelEl: HTMLElement,
-   *   orbit: object, radiusKm: number, positionKm: THREE.Vector3, known: boolean, fade: number}>}
+   *   orbit: object, radiusKm: number, positionKm: THREE.Vector3, known: boolean, outOfRange: boolean,
+   *   fade: number}>}
    */
   const bodies = {}
 
@@ -191,6 +201,7 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
       radiusKm,
       positionKm: new THREE.Vector3(),
       known: false,
+      outOfRange: false,
       fade: 1,
     }
     return bodies[id]
@@ -225,17 +236,37 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
    * first/last interval, where the quadratic through the three nearest samples
    * replaces the missing neighbour.
    *
-   * Clamped rather than refused past the end (`sampleCatmullRom` clamps `f`):
-   * unlike a planet's yearly table, a moon's window is days long and can lapse
-   * while the tab stays open. A moon frozen at its last known sample is wrong by
-   * a fraction of an orbit; a moon that vanishes mid-session looks like a bug.
-   * The refetch happens on the next visit.
+   * Hidden outside the table's window (changed 2026-11-05). It used to be
+   * clamped (`sampleCatmullRom` clamps `f`) rather than refused, because unlike a
+   * planet's yearly table a moon's window is days long and can lapse while the tab
+   * stays open: "a moon frozen at its last known sample is wrong by a fraction of
+   * an orbit; a moon that vanishes mid-session looks like a bug", with the refetch
+   * left to the next visit. The user prefers the honest answer — the same as the
+   * ISS away from its trace: a moon the table cannot place is not drawn, and its
+   * orbit goes with it. What stops it vanishing for good in a long session is
+   * `reloadLapsed`, which asks for fresh tables once the real clock has left them.
    */
   function updatePositionKm(body, nowSeconds) {
     const table = tables[body.id]
     if (!table) return
-    tablePositionKm(table, nowSeconds, body.positionKm)
-    body.known = true
+    body.outOfRange = nowSeconds < table.start || nowSeconds > tableEndSeconds(table)
+    body.known = !body.outOfRange
+    if (body.known) tablePositionKm(table, nowSeconds, body.positionKm)
+  }
+
+  /**
+   * A table the wall clock has left (`covers`, which reads `Date.now()`) is
+   * fetched again — once per lapsed table, keyed by its start, so a backend that
+   * answers with nothing newer cannot make this a request per frame. The new
+   * table has another start, hence a new key if it lapses in its turn.
+   */
+  const lapseAsked = new Set()
+  function reloadLapsed(planetId, table) {
+    const key = `${planetId}:${table.start}`
+    if (lapseAsked.has(key)) return
+    lapseAsked.add(key)
+    loaded.delete(planetId)
+    loadFor(planetId)
   }
 
   /**
@@ -256,15 +287,20 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
   /** Places and sizes the current pivot's moons; hides every other. */
   function update(nowSeconds, t) {
     const planet = frame.planet
+    let outOfRange = 0
 
     for (const body of Object.values(bodies)) {
-      const mine = planet !== null && tables[body.id]?.planet === planet.id
+      const mine = enabled && planet !== null && tables[body.id]?.planet === planet.id
       body.mesh.visible = mine && body.known
       body.orbit.line.visible = false
       if (!mine) continue
 
       updatePositionKm(body, nowSeconds)
       body.mesh.visible = body.known
+      if (body.outOfRange) {
+        outOfRange++
+        if (!covers(tables[body.id])) reloadLapsed(planet.id, tables[body.id])
+      }
       if (!body.known) continue
 
       // Already relative to the pivot, because the pivot IS this moon's planet.
@@ -292,6 +328,12 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
       )
       traces.update(body.orbit, t)
     }
+
+    // The panel says "hors de leur plage de dates": redrawn when that count moves.
+    if (outOfRange !== rangeHidden) {
+      rangeHidden = outOfRange
+      on.changed()
+    }
   }
 
   /**
@@ -302,7 +344,7 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
    * spin: `missing` also counts moons it had nothing for.
    */
   async function loadFor(planetId) {
-    if (!planetId || loaded.has(planetId) || loadingPlanet === planetId) return
+    if (!enabled || !planetId || loaded.has(planetId) || loadingPlanet === planetId) return
     loadingPlanet = planetId
     delete loadErrors[planetId]
     on.changed()
@@ -349,10 +391,17 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
     group,
     loadFor,
     update,
+    get enabled() {
+      return enabled
+    },
+    /** Shows or hides every moon. Turning them on does not load by itself: the caller asks `loadFor` for the pivot. */
+    setEnabled(value) {
+      enabled = value
+    },
     /** Distances from the pivot, in km — the camera's reach reads these. */
     distancesKm() {
       const planet = frame.planet
-      if (!planet) return []
+      if (!enabled || !planet) return []
       return Object.values(bodies)
         .filter((body) => body.known && tables[body.id]?.planet === planet.id)
         .map((body) => body.positionKm.length())
@@ -371,7 +420,13 @@ export function createMoons({ scene, labels, traces, frame, minRadiusAt, sunPosi
       const planet = frame.planet
       if (!planet) return null
       const mine = Object.values(tables).filter((record) => record.planet === planet.id)
-      return { planet: planet.id, known: mine.length, loading: loadingPlanet === planet.id, error: loadErrors[planet.id] ?? null }
+      return {
+        planet: planet.id,
+        known: mine.length,
+        outOfRange: rangeHidden,
+        loading: loadingPlanet === planet.id,
+        error: loadErrors[planet.id] ?? null,
+      }
     },
   }
 }

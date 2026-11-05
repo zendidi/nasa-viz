@@ -1,5 +1,5 @@
 /**
- * Tracking of up to five asteroids chosen by the user (docs/suivi-asteroides.md):
+ * Tracking of up to ten (five until 2026-11-05) asteroids chosen by the user (docs/suivi-asteroides.md):
  * the stored list, what a search answer means, which table an instant is read
  * from, and when the next close approach is. Pure — no DOM, no Three.js — so
  * the rules that the eye cannot check on screen are testable in Node.
@@ -10,13 +10,17 @@
  *
  * Only the *list* is ever stored. A NEO's hourly table is ~360 kB of JSON; five
  * of them would blow the browser's localStorage quota, and the backend serves
- * each from its own cache in ~0,1 s.
+ * each from its own cache in ~0,1 s. And since 2026-11-05 only the records the
+ * user chose to keep (`saved`) are in that stored list.
  */
 
 import { sampleCatmullRom } from '../ephemeris/interpolate.js'
 
-/** Hard ceiling on tracked objects (decided with the user, 2026-10-27). */
-export const MAX_TRACKED = 5
+/**
+ * Hard ceiling on tracked objects (decided with the user, 2026-10-27; raised to
+ * 10 on 2026-11-05: the five colours × {solid, dashed} line, see TRACK_SLOTS).
+ */
+export const MAX_TRACKED = 10
 
 /** localStorage key (through cache.js) of the list. */
 export const TRACKED_CACHE_KEY = 'tracked'
@@ -32,19 +36,34 @@ export const SPKID_PATTERN = /^\d{7,8}$/
 export const TRACK_COLORS = Object.freeze([0xff5ce1, 0xb6ff3b, 0xffa31a, 0x00e5a8, 0xa98bff])
 
 /**
- * The first palette colour no tracked object wears. Stable: removing the second
- * of three leaves the others' colours alone, and the next arrival takes the
- * freed one.
- *
- * @param {{color?: number}[]} list
+ * The ten slots (2026-11-05): the five palette colours in a solid line, then the
+ * same five dashed. No new hue was invented — a dashed trace is told from its
+ * solid twin by the pattern, and the panel's dot shows the same pattern.
+ * Allocation order is this array's order.
  */
-export function freeColor(list) {
-  const used = new Set(list.map((rec) => rec.color))
-  return TRACK_COLORS.find((color) => !used.has(color)) ?? TRACK_COLORS[0]
+export const TRACK_SLOTS = Object.freeze([
+  ...TRACK_COLORS.map((color) => Object.freeze({ color, dashed: false })),
+  ...TRACK_COLORS.map((color) => Object.freeze({ color, dashed: true })),
+])
+
+/**
+ * The first slot no tracked object wears. Stable: removing the second of three
+ * leaves the others' slots alone, and the next arrival takes the freed one.
+ *
+ * @param {{color?: number, dashed?: boolean}[]} list
+ * @returns {{color: number, dashed: boolean}}
+ */
+export function freeSlot(list) {
+  const free = TRACK_SLOTS.find((slot) => !list.some((rec) => rec.color === slot.color && (rec.dashed === true) === slot.dashed))
+  return free ?? TRACK_SLOTS[0]
 }
 
 /**
- * @typedef {{spkid: string, des: string, fullname: string, neo: boolean, color: number}} TrackedRecord
+ * `saved` (2026-11-05): only the records marked so are written to localStorage;
+ * the others live for the session. A new object is not saved.
+ *
+ * @typedef {{spkid: string, des: string, fullname: string, neo: boolean, color: number,
+ *   dashed: boolean, saved: boolean}} TrackedRecord
  */
 
 /** A record built from a `/api/small-body/search` match, or null if it lacks what tracking needs. */
@@ -59,7 +78,12 @@ export function recordFromMatch(match) {
  * Reads the stored list back, distrustfully: it comes out of localStorage, which
  * anything may have touched or an older build written. Invalid entries are
  * dropped, repeats of a SPK-ID too, the list is cut to the ceiling, and any
- * colour that is missing, foreign or shared is reassigned.
+ * slot (colour + solid/dashed) that is missing, foreign or shared is reassigned.
+ *
+ * Whatever comes back from storage is `saved: true` by construction — it was
+ * stored. That is also what a record written before the `saved` field existed
+ * (before 2026-11-05) must read as: nobody loses their list on update. A record
+ * without `dashed` is a solid line, for the same reason.
  *
  * @param {unknown} raw  the stored `data` (what `loadCached(...)?.data` gives)
  * @returns {TrackedRecord[]}
@@ -73,14 +97,26 @@ export function readTrackedList(raw) {
     if (item === null || typeof item !== 'object') continue
     const base = recordFromMatch(item)
     if (!base || list.some((rec) => rec.spkid === base.spkid)) continue
-    const colorOk = TRACK_COLORS.includes(item.color) && !list.some((rec) => rec.color === item.color)
-    list.push({ ...base, color: colorOk ? item.color : -1 })
+    const dashed = item.dashed === true
+    const slotOk =
+      TRACK_COLORS.includes(item.color) && !list.some((rec) => rec.color === item.color && rec.dashed === dashed)
+    list.push({ ...base, color: slotOk ? item.color : -1, dashed, saved: true })
   }
-  // A second pass for the colours that were not usable, so the valid ones win.
+  // A second pass for the slots that were not usable, so the valid ones win.
   for (const rec of list) {
-    if (rec.color === -1) rec.color = freeColor(list)
+    if (rec.color === -1) Object.assign(rec, freeSlot(list.filter((other) => other.color !== -1)))
   }
   return list
+}
+
+/** What goes to localStorage: only the records the user chose to keep. */
+export function savedList(list) {
+  return list.filter((rec) => rec.saved)
+}
+
+/** The list with one record's `saved` flag set (unchanged if absent). */
+export function setSaved(list, spkid, saved) {
+  return list.map((rec) => (rec.spkid === spkid ? { ...rec, saved } : rec))
 }
 
 /**
@@ -97,7 +133,7 @@ export function addTracked(list, record) {
   if (!base) return { list, added: false, reason: 'invalid' }
   if (list.some((rec) => rec.spkid === base.spkid)) return { list, added: false, reason: 'duplicate' }
   if (list.length >= MAX_TRACKED) return { list, added: false, reason: 'full' }
-  return { list: [...list, { ...base, color: freeColor(list) }], added: true, reason: null }
+  return { list: [...list, { ...base, ...freeSlot(list), saved: false }], added: true, reason: null }
 }
 
 /** The list without that SPK-ID (unchanged if absent). */
@@ -105,7 +141,7 @@ export function removeTracked(list, spkid) {
   return list.filter((rec) => rec.spkid !== spkid)
 }
 
-/** The list with one SPK-ID replaced by another — an object got numbered, its id changed. Colour kept. */
+/** The list with one SPK-ID replaced by another — an object got numbered, its id changed. Colour, line style and `saved` kept. */
 export function replaceSpkid(list, oldSpkid, newSpkid) {
   if (!SPKID_PATTERN.test(newSpkid)) return list
   return list.map((rec) => (rec.spkid === oldSpkid ? { ...rec, spkid: newSpkid } : rec))
@@ -250,6 +286,33 @@ const FLYBY_STEP_SECONDS = 3600
 // 38 000 km perigee, so the coarse trace's chords would cut the corner.
 const FLYBY_FINE_HALF_SECONDS = 86_400
 const FLYBY_FINE_STEP_SECONDS = 300
+
+/**
+ * Dash patterns of a `dashed` trace (2026-11-05), in **time**, not in sample
+ * index: the heliocentric line is sampled every 6 h, the flyby arcs every hour
+ * (5 min at the perigee), and a pattern counted in samples would change with the
+ * step. The line alternates drawn / empty slots of this length, anchored on the
+ * Unix epoch so a given date is always drawn or always empty.
+ *
+ * Heliocentric: 4 days on / 4 off — a year is ~45 dashes, each ≥ 16 samples
+ * long. Flyby (±15 d around each approach): 12 h on / 12 h off — about 60 dashes
+ * per arc, still several samples per dash at the 1 h step.
+ */
+export const DASH_HELIO_SECONDS = 4 * 86_400
+export const DASH_FLYBY_SECONDS = 12 * 3600
+
+/**
+ * Whether the segment between two samples is drawn in a dashed line: it is when
+ * its midpoint falls in an even slot of `slotSeconds`. Two samples inside the
+ * same empty slot therefore give a segment that is not kept.
+ *
+ * @param {number} fromSeconds  time of the segment's first sample
+ * @param {number} toSeconds    time of its second
+ * @param {number} slotSeconds  DASH_HELIO_SECONDS or DASH_FLYBY_SECONDS
+ */
+export function dashKeepsSegment(fromSeconds, toSeconds, slotSeconds) {
+  return Math.floor((fromSeconds + toSeconds) / 2 / slotSeconds) % 2 === 0
+}
 
 /**
  * The instants to sample, as one array per arc: approaches whose windows
