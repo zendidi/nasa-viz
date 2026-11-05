@@ -1,5 +1,7 @@
 # Brief — lot 2 : l'outil de trajectoire des objets suivis
 
+> **Livré le 2026-11-05, voir `docs/agent/decisions.md`** (« 2026-11-05 — Lot 2 — outil de trajectoire des objets suivis »). Ce brief reste jusqu'au merge ; plusieurs de ses points (extrapolation de ~27 s, remise à zéro automatique) sont corrigés dans le journal.
+
 > ⚠️ **FICHIER DE TRAVAIL — À SUPPRIMER AU MERGE** de la branche `suivi-plage-etendue` dans `master`
 > (avec tout le dossier `docs/briefs/`). Ce qui doit survivre est déjà dans
 > `docs/suivi-asteroides.md` (§ « 2026-11-05 — Révision ») et dans le journal.

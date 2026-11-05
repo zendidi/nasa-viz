@@ -83,6 +83,13 @@ formes de réponse, pas ce fichier.
   - `/api/solar-system/orientation?body=` — TTL 40 jours : le pôle et le méridien origine en
     vecteurs unitaires ICRF plus le taux de rotation signé. Accepte les neuf planètes (Pluton compris) **et `moon`**.
     Une table `OBSERVER` de deux lignes, donc ~1 s là où une table de vecteurs coûte 5 à 16 s
+  - `/api/small-body/trajectory?spkid=` — table **journalière** géocentrique d'un objet suivi sur six
+    années civiles fixes (1/1 Y−1 → 1/1 Y+5, soit toujours −1/+4 ans), plus les rapprochements CAD
+    sous 0,05 ua pour un NEO ; TTL 30 j, clé avec `orbit_id` SBDB (1 j sans). `/api/small-body/precision?spkid=&year=`
+    (NEO seulement) : horaire de l'année civile, 2 lignes de recouvrement de chaque côté, plus les
+    segments de 5 min des passages sous 0,0005 ua. `/api/small-body/trajectory/sun` : Soleil
+    géocentrique journalier, même plage, partagé. `/api/small-body/positions` est remplacée et
+    n'est plus appelée (2026-11-05, `docs/agent/decisions.md`)
   - `/api/apod` — TTL 24h, désormais sur `science.nasa.gov` et sans clé
   - `/api/usage` — pas de cache, lecture directe du compteur
 - CORS via `nelmio/cors-bundle` (`config/packages/nelmio_cors.yaml`), restreint à
@@ -160,7 +167,10 @@ Rangé par domaine depuis le 2026-10-27 (refonte de structure, branche `refactor
   `tableAt`, prochain rapprochement, arcs de survol. `scene.js` : chaque objet suivi, son orbite
   héliocentrique depuis tous les pivots et, depuis la Terre, ses passages près de la Terre
   (±15 j autour de chaque rapprochement, 2026-10-27). `controller.js` : l'onglet « Suivi » (liste,
-  bouton « Suivre » des fiches NEO, fiche ouverte).
+  bouton « Suivre » des fiches NEO, fiche ouverte, bloc « Trajectoire »). `cursor.js` (pur, testé) :
+  le curseur de temps commun à tous les objets suivis (−1 an / +4 ans, décalage T′ = T + décalage ;
+  une « Terre fantôme » marque la Terre à T′ ; remise à zéro par « Maintenant » seulement), et le
+  choix des tranches annuelles de précision à précharger (2026-11-05).
 - `src/ui/` — l'interface HTML, sans Three.js ni état de scène. `panels.js` assemble (en-tête,
   onglets ISS · NEO · Planètes · Suivi, touche Échap) et rend une seule API à `main.js` ;
   `tabs/*.js` un module par onglet ; `bottomBar.js` échelle, temps et point de vue ; `apod.js`,

@@ -35,6 +35,9 @@ const MIN_RADIUS_PX = { earth: 2, moon: 1.5, iss: 2.5 }
 // Sampling starts at "now", so sample 0 *is* the body — the trace goes through
 // it by construction, at every scale and in both views.
 
+/** The Earth's orbit line; the tracked objects' flyby arcs borrow it (tracking/scene.js, 2026-11-05). */
+export const EARTH_ORBIT_COLOR = 0x4fa8ff
+
 const MOON_ORBIT_DAYS = 27.321582 // sidereal month
 const MOON_ORBIT_SAMPLES = 96
 const EARTH_ORBIT_DAYS = 365.256
@@ -78,7 +81,7 @@ export function createEarthSystem({ scene, frame, traces, labels, minRadiusAt, s
   // view's own yardstick (and its 1 au circle), worth drawing even with nothing
   // selected. Each declares its own frame — the Earth's samples are heliocentric
   // (the Sun table, negated), the Moon's are geocentric like every body position.
-  const earthOrbitTrace = traces.make(0x4fa8ff, 0.5, { parent: scene, frame: 'heliocentric' })
+  const earthOrbitTrace = traces.make(EARTH_ORBIT_COLOR, 0.5, { parent: scene, frame: 'heliocentric' })
   const moonOrbitTrace = traces.make(0x8ea3b8, 0.5, { parent: scene, frame: 'geocentric' })
 
   const labelEls = {

@@ -45,8 +45,9 @@ const INFO_TABS = [
  *                                          focus, recenter, deselect, modalClosed,
  *                                          allOrbits, points, venusSurface, moonsShown, rings, ecliptic,
  *                                          timeRate, timeReset, trackSearch, trackOpen,
- *                                          trackApproach, trackRemove, trackRetry,
- *                                          trackKeep, trackShowNeo, detailAction
+ *                                          trackApproach, trackPrevApproach, trackRemove, trackRetry,
+ *                                          trackKeep, trackShowNeo, trajDay, trajShift, trajReset, trajPlay,
+ *                                          trajSunRetry, detailAction
  */
 export function createPanels({ app, wheelTarget, on }) {
   const ui = document.createElement('div')
@@ -196,6 +197,7 @@ export function createPanels({ app, wheelTarget, on }) {
     renderNeoPositions: neoTab.renderPositions,
     renderPlanets: planetsTab.render,
     renderTracking: trackingTab.render,
+    renderTrajectory: trackingTab.renderTool,
     /** Opens a tab of the left column (and remembers it, like a click). */
     showTab: (id) => setInfoTab(id),
     renderApod: apod.render,

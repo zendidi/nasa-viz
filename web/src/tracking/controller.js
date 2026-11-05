@@ -8,25 +8,38 @@
  * The NEO of the week stays what it was: a tracked asteroid is a different
  * object, NEO or not. The weekly NEO's own sheet stays with main.js, which hears
  * back through `on` whenever this changes something that sheet shows.
+ *
+ * It also owns the trajectory tool's cursor (2026-11-05, tracking/cursor.js): T′,
+ * the instant the tracked objects are placed at, apart from the clock's T. The
+ * tab's "Trajectoire" block drives it through the `cursor*` methods below; the
+ * scene reads it every frame. Everything the panel and the sheet say about an
+ * object (distance, next close approach) is said at T′.
  */
 
 import { searchSmallBody } from '../data/api.js'
 import { loadCached, saveCached } from '../data/cache.js'
 import { cssColor } from '../neo/info.js'
+import { createCursor } from './cursor.js'
 import { createTrackedScene } from './scene.js'
 import {
   MAX_TRACKED,
   TRACKED_CACHE_KEY,
   addTracked,
+  cursorBounds,
+  cursorFromSliderDay,
+  formatCursorOffset,
   interpretSearch,
   numberSearchHelp,
   isTrackedDesignation,
   nextApproach,
+  previousApproach,
   readTrackedList,
   removeTracked,
   savedList,
   setSaved,
+  sliderDayOf,
 } from './model.js'
+import { formatSimDate } from '../ui/format.js'
 import { trackButtonHtml, trackedSheetHtml } from '../ui/sheets.js'
 
 /**
@@ -36,14 +49,13 @@ import { trackButtonHtml, trackedSheetHtml } from '../ui/sheets.js'
  * @param {object} options.panels  ui/panels.js
  * @param {object} options.clock  clock.js
  * @param {() => number} options.simNowMs
- * @param {() => void} options.afterTimeJump  main.js's redraw after the clock jumped
  * @param {{neoSheetChanged: Function, trackedSheetOpened: Function, neoPolicyChanged: (visible: boolean) => void}} options.on
  *   - `neoSheetChanged`: the weekly NEO's sheet shows tracking state (its "Suivre"
  *     button) that just changed — redraw it if it is open;
  *   - `trackedSheetOpened`: a tracked sheet took the detail panel;
  *   - `neoPolicyChanged`: the week's points were just shown or hidden.
  */
-export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs, afterTimeJump, on }) {
+export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs, on }) {
   /** @type {import('./model.js').TrackedRecord[]} */
   let list = []
   /** The user's choice, while something is tracked, to keep the week's NEO points on screen. */
@@ -58,8 +70,16 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
     saveCached(TRACKED_CACHE_KEY, savedList(list))
   }
 
+  // The instants T′ may reach are bounded by the wall clock (1 year back, 4 ahead)
+  // and by the daily tables once the scene knows their span.
+  const cursor = createCursor({ bounds: (wallMs) => cursorBounds(wallMs, trackedScene.range()) })
+
+  /** T′ for this instant, Unix seconds. */
+  const tPrimeNow = () => cursor.tPrimeAt(simNowMs() / 1000, Date.now())
+
   const trackedScene = createTrackedScene({
     ...sceneOptions,
+    cursor,
     on: {
       changed: () => {
         refreshPanel()
@@ -84,15 +104,23 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
   }
 
   function refreshPanel() {
-    const nowSeconds = simNowMs() / 1000
+    const tPrimeS = tPrimeNow()
+    const bounds = cursorBounds(Date.now(), trackedScene.range())
+    const limitS = bounds.maxS
     const items = []
     for (const rec of list) {
       const entry = trackedScene.get(rec.spkid)
       if (!entry) continue
       let approach = null
       if (rec.neo && entry.status === 'ready') {
-        const next = nextApproach(entry.object, nowSeconds)
-        approach = { kind: next.kind, timeMs: next.time * 1000, distKm: next.approach?.dist_km ?? null }
+        const next = nextApproach(entry.object, tPrimeS, limitS)
+        const prev = previousApproach(entry.object, tPrimeS, bounds.minS)
+        approach = {
+          kind: next.kind,
+          timeMs: next.time * 1000,
+          distKm: next.approach?.dist_km ?? null,
+          previous: prev.kind === 'in_range' ? { timeMs: prev.time * 1000, distKm: prev.approach.dist_km ?? null } : null,
+        }
       }
       items.push({
         spkid: rec.spkid,
@@ -111,6 +139,50 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
       full: list.length >= MAX_TRACKED,
       showNeo: list.length === 0 || showNeoWhileTracking,
     })
+    renderTool()
+  }
+
+  /** The "Trajectoire" block of the tab: the cursor, as plain values (ui/tabs/tracking.js draws them). */
+  function renderTool() {
+    const wallMs = Date.now()
+    const nowS = simNowMs() / 1000
+    const bounds = cursorBounds(wallMs, trackedScene.range())
+    const tPrimeS = cursor.tPrimeAt(nowS, wallMs)
+    panels.renderTrajectory({
+      visible: list.length > 0,
+      sun: trackedScene.sunState(),
+      maxDay: sliderDayOf(bounds.maxS, bounds),
+      day: sliderDayOf(tPrimeS, bounds),
+      offsetText: formatCursorOffset(nowS * 1000, tPrimeS * 1000),
+      dateText: formatSimDate(tPrimeS * 1000),
+      playRate: cursor.playRate,
+    })
+  }
+
+  /** What the list and the open sheet say about the next close approach, as one string: when it changes they must be redrawn. */
+  function approachKey() {
+    const tPrimeS = tPrimeNow()
+    const bounds = cursorBounds(Date.now(), trackedScene.range())
+    return list
+      .map((rec) => {
+        const entry = trackedScene.get(rec.spkid)
+        if (!rec.neo || entry?.status !== 'ready') return ''
+        const next = nextApproach(entry.object, tPrimeS, bounds.maxS)
+        const prev = previousApproach(entry.object, tPrimeS, bounds.minS)
+        return `${next.kind}${next.time ?? ''}/${prev.kind}${prev.time ?? ''}`
+      })
+      .join('|')
+  }
+
+  let lastApproachKey = ''
+  let lastTickMs = 0
+  const TICK_MS = 250
+
+  /** The cursor moved by a button: the tool, the list and the sheet all say something else now. */
+  function cursorChanged() {
+    lastApproachKey = approachKey()
+    refreshPanel()
+    if (sheetSpkid) renderSheet()
   }
 
   /** Adds a resolved record to the list and the scene. The refusal, if any, comes back as `reason`. */
@@ -134,6 +206,9 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
     return { kind: outcome.reason === 'full' ? 'full' : 'duplicate', name }
   }
 
+  /** The distance line says "actuelle" only when T′ is the real present: cursor at zero and the clock at ×1. */
+  const isLive = () => cursor.offsetSeconds === 0 && clock.isRealTime()
+
   function open(spkid) {
     const entry = trackedScene.get(spkid)
     if (!entry) return
@@ -149,16 +224,19 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
     const entry = sheetSpkid ? trackedScene.get(sheetSpkid) : null
     if (!entry) return
     const { rec } = entry
-    const nowSeconds = simNowMs() / 1000
+    const tPrimeS = tPrimeNow()
+    const bounds = cursorBounds(Date.now(), trackedScene.range())
+    const ready = rec.neo && entry.status === 'ready'
 
     panels.openDetail(
       rec.fullname,
       trackedSheetHtml({
         rec,
         sheet: neoScene.sheet(rec.des),
-        next: rec.neo && entry.status === 'ready' ? nextApproach(entry.object, nowSeconds) : null,
-        positionHtml: trackedScene.describePosition(entry, nowSeconds, !clock.isRealTime()),
-        nowMs: simNowMs(),
+        next: ready ? nextApproach(entry.object, tPrimeS, bounds.maxS) : null,
+        previous: ready ? previousApproach(entry.object, tPrimeS, bounds.minS) : null,
+        positionHtml: trackedScene.describePosition(entry, tPrimeS, isLive()),
+        nowMs: tPrimeS * 1000,
       }),
     )
   }
@@ -243,17 +321,88 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
       if (list.length > 0) showNeoWhileTracking = enabled
     },
 
-    /** Sets the clock on the next close approach of a tracked NEO — when it is inside the tables. */
+    /**
+     * Puts the trajectory cursor on the next close approach of a tracked NEO, after
+     * the cursor's own instant (2026-11-05; it used to set the global clock). Out of
+     * the cursor's range the panel says the date instead.
+     */
     goToNextApproach(spkid) {
       const entry = trackedScene.get(spkid)
       if (!entry?.object) return
-      const next = nextApproach(entry.object, simNowMs() / 1000)
-      if (next.kind !== 'in_window') {
-        refreshPanel() // out of the tables: the clock cannot go there, the panel says the date
+      const wallMs = Date.now()
+      const next = nextApproach(entry.object, tPrimeNow(), cursorBounds(wallMs, trackedScene.range()).maxS)
+      if (next.kind !== 'in_range') {
+        refreshPanel()
         return
       }
-      clock.jumpTo(next.time * 1000, Date.now())
-      afterTimeJump()
+      cursor.setTPrime(next.time, simNowMs() / 1000, wallMs)
+      cursorChanged()
+    },
+
+    /**
+     * Puts the trajectory cursor on the last close approach at or before T′ (2026-11-05):
+     * the flyby that bent the orbit is behind the cursor, not ahead of it.
+     */
+    goToPreviousApproach(spkid) {
+      const entry = trackedScene.get(spkid)
+      if (!entry?.object) return
+      const wallMs = Date.now()
+      const prev = previousApproach(entry.object, tPrimeNow(), cursorBounds(wallMs, trackedScene.range()).minS)
+      if (prev.kind !== 'in_range') {
+        refreshPanel()
+        return
+      }
+      cursor.setTPrime(prev.time, simNowMs() / 1000, wallMs)
+      cursorChanged()
+    },
+
+    /** The slider moved to day notch `day`; the time of day of T′ is kept. */
+    cursorSetDay(day) {
+      const wallMs = Date.now()
+      const nowS = simNowMs() / 1000
+      const bounds = cursorBounds(wallMs, trackedScene.range())
+      cursor.setTPrime(cursorFromSliderDay(day, cursor.tPrimeAt(nowS, wallMs), bounds), nowS, wallMs)
+      renderTool() // the list and the sheet follow on the next tick, only if what they say changed
+    },
+
+    /** The ±1 h / ±1 j buttons. */
+    cursorShift(seconds) {
+      cursor.shift(seconds, simNowMs() / 1000, Date.now())
+      cursorChanged()
+    },
+
+    /** The tool's "0", and the time panel's "Maintenant": back on the scene's time, playback stopped. */
+    cursorReset() {
+      cursor.reset()
+      cursorChanged()
+    },
+
+    /** A playback speed in T′-seconds per real second, or 0 to pause; the same speed again pauses. */
+    cursorPlay(rate) {
+      cursor.play(rate === cursor.playRate ? 0 : rate)
+      renderTool()
+    },
+
+    /** The Sun's table failed: ask again. */
+    retrySun() {
+      trackedScene.reloadSun()
+    },
+
+    /**
+     * Once a frame. The cursor moves on its own while playing, and T′ follows the
+     * clock: the tool's readout is redrawn, and the list and the sheet when what
+     * they say about the next approach changed, four times a second at most.
+     */
+    tick(wallMs) {
+      if (wallMs - lastTickMs < TICK_MS) return
+      lastTickMs = wallMs
+      renderTool()
+      const key = approachKey()
+      if (key !== lastApproachKey) {
+        lastApproachKey = key
+        refreshPanel()
+        if (sheetSpkid) renderSheet()
+      }
     },
 
     /** "Suivre" in a weekly NEO's sheet: resolve its designation, then add it like a search would. */
@@ -304,7 +453,7 @@ export function createTracking({ sceneOptions, neoScene, panels, clock, simNowMs
     /** The open tracked sheet's distance line only, at the current simulated time. */
     positionHtml() {
       const entry = sheetSpkid ? trackedScene.get(sheetSpkid) : null
-      return entry ? trackedScene.describePosition(entry, simNowMs() / 1000, !clock.isRealTime()) : null
+      return entry ? trackedScene.describePosition(entry, tPrimeNow(), isLive()) : null
     },
 
     /** The detail panel was closed, or taken by a weekly NEO's sheet. */

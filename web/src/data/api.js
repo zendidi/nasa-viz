@@ -21,13 +21,36 @@ export function upstreamErrorMessage(body, status) {
   return (body && body.error) || `request failed: ${status}`
 }
 
+/**
+ * How long a request may take before the viewer gives up (2026-11-05): the PHP
+ * wall is 30 s per request, and `php -S` on Windows serves one request at a
+ * time, so a request can also wait behind the one in front of it. Without a
+ * limit an object whose answer never came stayed "loading" forever and held the
+ * tracking queue with it.
+ */
+export const REQUEST_TIMEOUT_MS = 45_000
+
+/**
+ * What the panels say when a request failed on the client side. A timeout (the
+ * signal's `TimeoutError`) gets a sentence of its own; anything else keeps the
+ * message it carries.
+ */
+export function requestErrorMessage(err) {
+  if (err && err.name === 'TimeoutError') return `Le serveur n'a pas répondu en ${REQUEST_TIMEOUT_MS / 1000} s.`
+  return err && err.message ? err.message : String(err)
+}
+
 async function getJson(path) {
-  const res = await fetch(`${BASE}${path}`)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(upstreamErrorMessage(body, res.status))
+  try {
+    const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(upstreamErrorMessage(body, res.status))
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(requestErrorMessage(err))
   }
-  return res.json()
 }
 
 /** @returns {Promise<{latitude:number, longitude:number, altitude_km:number, velocity_kmh:number, timestamp:number}>} */
@@ -145,23 +168,46 @@ export function searchSmallBody(q) {
   return getJson(`/small-body/search?${new URLSearchParams({ q })}`)
 }
 
-/**
- * The precise geocentric table of **one** tracked asteroid (backend/API.md):
- * `objects[spkid]` is the object, or null when SBDB or Horizons don't know that
- * SPK-ID any more. One id per call on purpose — five cold NEOs in one call
- * overran the backend's execution limit.
- *
- * A response on any clock but UTC is refused, like the other tables: it would
- * place the object 69 s off, ~2 000 km on a NEO's table.
- *
- * @param {string} spkid
- */
-export async function fetchSmallBodyPositions(spkid) {
-  const res = await getJson(`/small-body/positions?${new URLSearchParams({ spkid })}`)
+/** A response on any clock but UTC is refused, like the other tables: it would place the object 69 s off (~2 000 km on a NEO's table). */
+function assertUtc(res) {
   if (res.time_scale !== TIME_SCALE) {
     throw new Error(`échelle de temps inattendue (${res.time_scale ?? 'absente'}, ${TIME_SCALE} attendu)`)
   }
   return res
+}
+
+/**
+ * The daily geocentric table of **one** tracked asteroid over the fixed range
+ * (1 Jan of last year to 1 Jan five years on), with its close approaches when it
+ * is a NEO (backend/API.md, `/api/small-body/trajectory`; 2026-11-05, replacing
+ * `/positions`). `objects[spkid]` is null when SBDB or Horizons don't know that
+ * SPK-ID any more. One id per call on purpose.
+ *
+ * @param {string} spkid
+ */
+export async function fetchTrajectory(spkid) {
+  return assertUtc(await getJson(`/small-body/trajectory?${new URLSearchParams({ spkid })}`))
+}
+
+/**
+ * The hourly table (and the 5-minute segments around close flybys) of one
+ * tracked **NEO** for one civil year — the placement precision the daily table
+ * cannot give near the Earth. The table overlaps its neighbours by two rows on
+ * each side (`positions` from 1 Jan − 2 h to 1 Jan next year + 2 h).
+ *
+ * @param {string} spkid
+ * @param {number} year
+ */
+export async function fetchPrecision(spkid, year) {
+  return assertUtc(await getJson(`/small-body/precision?${new URLSearchParams({ spkid, year: String(year) })}`))
+}
+
+/**
+ * The Sun's daily geocentric table over the same range, shared by every tracked
+ * object (heliocentric = geocentric object − Sun, row by row).
+ */
+export async function fetchTrajectorySun() {
+  return assertUtc(await getJson('/small-body/trajectory/sun'))
 }
 
 /** @returns {Promise<{title:string, date:string, explanation:string, media_type:string, url:string, hd_url:?string}>} */

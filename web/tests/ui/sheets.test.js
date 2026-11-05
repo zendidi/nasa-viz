@@ -40,9 +40,36 @@ describe('trackedApproachHtml', () => {
     expect(trackedApproachHtml(null, '2099942')).toBe('')
   })
 
-  it("le bouton « Y aller » seulement quand l'approche est dans la plage de l'horloge", () => {
+  it("le bouton « Y aller » seulement quand l'approche est dans la plage du curseur", () => {
     const approach = { dist_km: 38_000, v_rel_km_s: 7.4 }
-    expect(trackedApproachHtml({ kind: 'in_window', time: 1_870_000_000, approach }, '2099942')).toContain('data-spkid="2099942"')
-    expect(trackedApproachHtml({ kind: 'after_window', time: 1_870_000_000 }, '2099942')).not.toContain('<button')
+    expect(trackedApproachHtml({ kind: 'in_range', time: 1_870_000_000, approach }, '2099942')).toContain('data-spkid="2099942"')
+    expect(trackedApproachHtml({ kind: 'after_range', time: 1_870_000_000 }, '2099942')).not.toContain('<button')
+  })
+
+  describe('passage précédent (2026-11-05)', () => {
+    const previous = { kind: 'in_range', time: 1_790_000_000, approach: { dist_km: 7490 } }
+
+    it("sans prochain passage mais avec un précédent : ne dit pas « aucun », propose « Revoir »", () => {
+      const html = trackedApproachHtml({ kind: 'none' }, '3000', previous)
+      expect(html).not.toContain('Aucun rapprochement connu')
+      expect(html).toContain('Pas d\'autre rapprochement')
+      expect(html).toContain('data-action="approach-prev"')
+      expect(html).toContain('data-spkid="3000"')
+    })
+
+    it('ni avant ni après : « aucun rapprochement connu » reste', () => {
+      expect(trackedApproachHtml({ kind: 'none' }, '3000', { kind: 'none' })).toContain('Aucun rapprochement connu')
+      expect(trackedApproachHtml({ kind: 'none' }, '3000')).toContain('Aucun rapprochement connu')
+    })
+
+    it('un prochain hors plage et un précédent : les deux lignes, un seul bouton', () => {
+      const html = trackedApproachHtml({ kind: 'after_range', time: 1_870_000_000 }, '3000', previous)
+      expect(html).toContain('Prochain rapprochement')
+      expect(html.match(/<button/g)).toHaveLength(1)
+    })
+
+    it('CAD en panne : inchangé, pas de bouton', () => {
+      expect(trackedApproachHtml({ kind: 'unavailable' }, '3000', previous)).not.toContain('<button')
+    })
   })
 })

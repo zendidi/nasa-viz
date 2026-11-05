@@ -79,7 +79,7 @@ final class SmallBodySearchClient
         }
 
         return match ($answer['code']) {
-            'match' => self::fromObject($answer['body']['object']),
+            'match' => self::fromObject($answer['body']['object'], $answer['body']['orbit'] ?? null),
             'list' => self::fromList($answer['body']),
             default => ['match' => null],
         };
@@ -117,7 +117,7 @@ final class SmallBodySearchClient
      *
      * @return array<string, mixed>
      */
-    private static function fromObject(array $object): array
+    private static function fromObject(array $object, mixed $orbit): array
     {
         if (str_starts_with(strtolower((string) ($object['kind'] ?? '')), 'c')) {
             return ['match' => null, 'rejected' => ['reason' => 'comet', 'fullname' => $object['fullname'] ?? null]];
@@ -133,7 +133,16 @@ final class SmallBodySearchClient
             'neo' => isset($object['neo']) ? (bool) $object['neo'] : null,
             'pha' => isset($object['pha']) ? (bool) $object['pha'] : null,
             'orbit_class' => is_array($orbitClass) ? ['code' => $orbitClass['code'] ?? null, 'name' => $orbitClass['name'] ?? null] : null,
+            // The orbit solution the tables are computed from: it changes with new observations
+            // (2026 TP128 is orbit_id 1 from 2026-10-23), so the trajectory caches key on it.
+            // Present in the plain `sstr` answer (measured 2026-11-05), `orbit.orbit_id` first.
+            'orbit_id' => self::orbitId(is_array($orbit) ? ($orbit['orbit_id'] ?? null) : null) ?? self::orbitId($object['orbit_id'] ?? null),
         ]];
+    }
+
+    private static function orbitId(mixed $value): ?string
+    {
+        return is_string($value) || is_int($value) ? (string) $value : null;
     }
 
     /**

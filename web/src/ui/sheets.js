@@ -91,42 +91,57 @@ export function neoSheetHtml({ neo, designation, sheet, trackButton, positionHtm
  * @param {object|null} next  `nextApproach()` (tracking/model.js), null when there is
  *   nothing to say (not a NEO, or its tables not loaded yet)
  * @param {string} spkid  for the "Y aller" button
+ * @param {object|null} [previous]  `previousApproach()` — the flyby behind the cursor, if any
+ *   (2026-11-05: a recent one that bent the orbit is the tool's showcase case)
  */
-export function trackedApproachHtml(next, spkid) {
+export function trackedApproachHtml(next, spkid, previous = null) {
   if (!next) return ''
+  const hasPrevious = previous?.kind === 'in_range'
+  let previousLine = ''
+  if (hasPrevious) {
+    const { dist_km: dist } = previous.approach
+    previousLine = `<p><strong>Rapprochement précédent</strong> ${formatUtc(previous.time)}${
+      typeof dist === 'number' ? ` · ${Math.round(dist).toLocaleString('fr-FR')} km` : ''
+    } <button class="sheet-action" data-action="approach-prev" data-spkid="${spkid}">Revoir</button></p>`
+  }
   switch (next.kind) {
-    case 'in_window': {
+    case 'in_range': {
       const { dist_km: dist, v_rel_km_s: speed } = next.approach
       return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} · ${Math.round(dist).toLocaleString('fr-FR')} km${
         typeof speed === 'number' ? ` · ${speed.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} km/s` : ''
-      } <button class="sheet-action" data-action="approach" data-spkid="${spkid}">Y aller</button></p>`
+      } <button class="sheet-action" data-action="approach" data-spkid="${spkid}">Y aller</button></p>${previousLine}`
     }
-    case 'after_window':
-      return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} <span class="muted">(après la plage de l'horloge : on ne peut pas s'y rendre)</span></p>`
+    case 'after_range':
+      return `<p><strong>Prochain rapprochement</strong> ${formatUtc(next.time)} <span class="muted">(après la plage de la trajectoire : le curseur ne peut pas s'y rendre)</span></p>${previousLine}`
     case 'unavailable':
       return `<p class="muted">Rapprochements indisponibles : JPL CAD n'a pas répondu pour cet objet.</p>`
     default:
-      return '<p class="muted">Aucun rapprochement connu à moins de 0,05 ua.</p>'
+      return hasPrevious
+        ? `<p class="muted">Pas d'autre rapprochement prévu à moins de 0,05 ua.</p>${previousLine}`
+        : '<p class="muted">Aucun rapprochement connu à moins de 0,05 ua.</p>'
   }
 }
 
-/** The same sheet as a weekly NEO's, in the same place — only its lines differ (NEO or not, no NeoWs). */
-export function trackedSheetHtml({ rec, sheet, next, positionHtml, nowMs }) {
+/**
+ * The same sheet as a weekly NEO's, in the same place — only its lines differ (NEO or not, no NeoWs).
+ * `nowMs` is the trajectory cursor's instant T′ (2026-11-05): where the schematic puts the object.
+ */
+export function trackedSheetHtml({ rec, sheet, next, previous = null, positionHtml, nowMs }) {
   const details = sheet.data
   return `
     <p><strong>Désignation</strong> ${escapeHtml(rec.des)}</p>
     <p><strong>Type</strong> ${rec.neo ? 'NEO (astéroïde proche de la Terre)' : 'astéroïde, pas un NEO'}</p>
     <div data-live="position">${positionHtml}</div>
-    ${trackedApproachHtml(next, rec.spkid)}
-    <p class="muted">Trace dans la scène : orbite autour du Soleil sur toute la plage de l'horloge, dans la couleur de l'objet${
-      rec.neo ? " ; depuis la Terre s'y ajoute chaque passage près de la Terre (15 jours de part et d'autre du rapprochement)" : ''
-    }.</p>
+    ${trackedApproachHtml(next, rec.spkid, previous)}
+    <p class="muted">Trace dans la scène : orbite autour du Soleil de 1 an avant à 4 ans après maintenant, dans la couleur de l'objet${
+      rec.neo ? " ; depuis la Terre s'y ajoute chaque passage près de la Terre (15 jours de part et d'autre du rapprochement), vu de la Terre de ce jour-là" : ''
+    }. L'objet est placé à la date du curseur de l'onglet Suivi.</p>
     ${detailsBlockHtml(details, { loading: sheet.loading, error: sheet.error }, { neo: rec.neo })}
     ${
       details?.orbit
         ? orbitSchematicSvg(details.orbit, {
             now: new Date(nowMs),
-            approachAt: next?.kind === 'in_window' ? new Date(next.time * 1000) : null,
+            approachAt: next?.kind === 'in_range' ? new Date(next.time * 1000) : null,
             hazardous: false,
           })
         : ''

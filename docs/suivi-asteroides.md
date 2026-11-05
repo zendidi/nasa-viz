@@ -255,3 +255,54 @@ L'outil phare du projet. Choix validés :
 
 Contexte complet pour l'agent : `docs/briefs/lot2-outil-trajectoire.md` (fichier de travail, supprimé
 au merge de la branche).
+
+### Lot 2 — livré le 2026-11-05 (code et vérifications automatiques ; rendu à valider à l'œil)
+
+Ajout, sans réécrire le paragraphe « à construire » ci-dessus, dont deux points sont corrigés.
+
+- **Correction de l'extrapolation.** La table horaire de 5 ans d'une traite a été mesurée :
+  **5,3 s (Apophis), 4,8 s (2024 YR4)**, 43 825 lignes, 5,4 Mo. Les « ~27 s » ne tenaient pas : ~1,1 s
+  de frais fixes par appel, puis coût quasi linéaire (voir `docs/agent/gotchas.md`). Le découpage par
+  année est **gardé** pour d'autres raisons, validées par l'utilisateur : marge face à un Horizons
+  ~×3 plus lent (5,3 s × 3 frôle les 20 s du délai), poids (~260–290 ko par tranche contre ~1,4 Mo
+  par NEO), même forme que le lot 3. Journalière : six années civiles 1,44–1,49 s, 2 192 lignes,
+  278 ko bruts.
+- **Remise à zéro : remplacée.** Le point « remise à zéro automatique quand l'horloge globale est
+  altérée » est **abandonné** (l'utilisateur l'a renversé le jour même : « si on change de vitesse, on
+  change juste de vitesse »). Seul le bouton **« Maintenant »** remet à zéro l'horloge et le décalage,
+  plus le « 0 » de l'outil.
+- **Curseur unique** pour tous les objets suivis : glissière au jour sur [maintenant −1 an, +4 ans],
+  ±1 h / ±1 j, lecture 1 h/s, 1 j/s, 1 sem/s. « Aller au prochain rapprochement » règle ce curseur.
+- **« Terre fantôme »** (option A) : l'objet est à sa vraie position à T′ = T + décalage ; une Terre
+  translucide « Terre au <date> » marque la Terre à T′ et sert de « Terre » pour les arcs de survol
+  et la distance de la fiche. Écartées : objet géocentrique autour de la vraie Terre (B), déplacer la
+  vraie Terre (C).
+- **Routes** : `/api/small-body/trajectory`, `/precision` (NEO seulement, année [Y−1, Y+4], 2 lignes
+  de recouvrement de chaque côté) et `/trajectory/sun` ; `/positions` remplacée, non appelée.
+  Contrat dans `backend/API.md`.
+- **Choix de l'agent web, à confirmer à l'œil** : placement `placeKm(Terre fantôme + géo(T′))` avec
+  Soleil(T) − Soleil(T′) lu dans `trajectory/sun` ; arcs de survol seulement si la tranche horaire
+  est chargée ; tranche en erreur redemandée après 60 s ; objets masqués si la table du Soleil manque
+  et décalage non nul.
+
+Détail complet, mesures et vérifications : `docs/agent/decisions.md`, « 2026-11-05 — Lot 2 — outil de
+trajectoire des objets suivis ».
+
+#### Retouches après les premiers retours visuels (2026-11-05)
+
+Ajout. Codées et vérifiées automatiquement (Vitest 506 tests sur 17 modules, build OK, ESLint zéro) ;
+validées à l'œil par l'utilisateur pour 1, 4 et 5, la 6 reste à voir.
+
+1. **Orbite d'Apophis en deux familles d'ellipses : réelle**, c'est l'éphéméride Horizons (avant 2029 :
+   a 0,922 ua, période 324 j ; après : a 1,103 ua, période 423 j). Les 6 brins sont 6 passages réels
+   entre 77 456 et 105 767 km. Gardée telle quelle ; même effet pour 2026 TP128 et 2026 QC3.
+2. **Arc de survol bicolore** (couleur de l'objet / bleu de l'orbite terrestre), ±15 j gardés.
+3. **Tronçons de durée 12 h / 2^k** selon le zoom (k ≤ 5), arcs échantillonnés à 15 min.
+4. **`previousApproach`** et bouton « Revoir le passage du jj/mm/aaaa » : 2026 TP128 et 2026 QC3
+   n'affichaient plus rien une fois leur passage derrière T′.
+5. **Un arc n'est visible que si T′ est dans ses ±15 j** (`activeFlybyArc`).
+6. **Trace héliocentrique densifiée** sur ±3 j autour des passages (`densifyHeliocentric`) : les
+   cordes journalières s'écartaient jusqu'à 99 671 km pour 2026 TP128.
+
+Mesures et raisons : `docs/agent/decisions.md`, sous-section « Retouches après les premiers retours
+visuels (2026-11-05) ».

@@ -254,8 +254,12 @@ function setFocus(nextId) {
 }
 
 /** Places and sizes every scale-dependent object for rig.t and the current camera. */
-function applyScale(nowSeconds) {
+function applyScale(nowSeconds, wallMs) {
   const t = rig.t
+  // The trajectory cursor first (2026-11-05): while it is away from the scene's
+  // time the Earth pivot's origin is the Earth at the cursor's instant, and
+  // everything below is placed from that origin.
+  trackedScene.syncCursor(nowSeconds, wallMs)
   // The Sun's *position* is refreshed every frame, not with sunMoon.update()'s
   // 60 simulated seconds (a minute at ×1): every heliocentric orbit line hangs off it (placeHeliocentricKm)
   // while the planets move every frame, and the geocentric Sun runs at ~30 km/s
@@ -278,7 +282,9 @@ function applyScale(nowSeconds) {
   planets.update(nowSeconds, t)
   moons.update(nowSeconds, t)
   neoScene.update(nowSeconds, t)
-  trackedScene.update(nowSeconds, t)
+  trackedScene.update(nowSeconds, t, {
+    distance: camera.position.distanceTo(controls.target),
+  })
 }
 
 // --- UI overlay --------------------------------------------------------------
@@ -310,13 +316,20 @@ const panels = createPanels({
     trackAdd: (record) => tracking.add(record),
     trackOpen: (spkid) => tracking.open(spkid),
     trackApproach: (spkid) => tracking.goToNextApproach(spkid),
+    trackPrevApproach: (spkid) => tracking.goToPreviousApproach(spkid),
     trackRemove: (spkid) => tracking.remove(spkid),
     trackRetry: (spkid) => tracking.retry(spkid),
     trackKeep: (spkid, saved) => tracking.setSaved(spkid, saved),
     trackShowNeo: (enabled) => tracking.setShowNeo(enabled),
+    trajDay: (day) => tracking.cursorSetDay(day),
+    trajShift: (seconds) => tracking.cursorShift(seconds),
+    trajReset: () => tracking.cursorReset(),
+    trajPlay: (rate) => tracking.cursorPlay(rate),
+    trajSunRetry: () => tracking.retrySun(),
     detailAction: (action, data) => {
       if (action === 'track') tracking.trackFromNeo(data.designation)
       else if (action === 'approach') tracking.goToNextApproach(data.spkid)
+      else if (action === 'approach-prev') tracking.goToPreviousApproach(data.spkid)
     },
     rings: (enabled) => {
       ringsEnabled = enabled
@@ -376,7 +389,12 @@ const time = createTimeControls({
       tracking.renderSheet()
       tracking.refreshPanel() // "next close approach" is relative to the simulated time
     },
-    reset: () => refreshIss(), // keyless; the marker reappears at once, on a fresh position rather than one up to 60 s old
+    reset: () => {
+      refreshIss() // keyless; the marker reappears at once, on a fresh position rather than one up to 60 s old
+      // "Maintenant" resets everything (2026-11-05): the clock AND the trajectory
+      // cursor. Changing the clock's speed, or jumping it, leaves the cursor's offset alone.
+      tracking.cursorReset()
+    },
   },
 })
 
@@ -531,13 +549,11 @@ const tracking = createTracking({
     labels,
     frame,
     minRadiusAt,
-    sunPositionKmAt: (date, out) => sunTable.positionKmAt(date, out),
   },
   neoScene,
   panels,
   clock,
   simNowMs,
-  afterTimeJump: () => time.afterJump(),
   on: {
     neoSheetChanged: () => {
       if (modalNeo) renderNeoModal()
@@ -755,8 +771,9 @@ if (cachedNeo) {
 if (cachedApod) {
   panels.renderApod(cachedApod.data, null, cachedApod.fetchedAt)
 }
-// The tracked list is all that is stored (never the tables): one positions call per
-// object, in parallel, each object appearing as its own answer lands.
+// The tracked list is all that is stored (never the tables): the Sun's table first,
+// then one trajectory call per object, one at a time, each object appearing as its
+// own answer lands.
 tracking.restore()
 
 // First-ever load has nothing to show yet — fetch once. Otherwise stay on the
@@ -791,11 +808,12 @@ function animate() {
   if (!clock.isRealTime()) time.renderPanel(nowMs, wallMs)
 
   refreshSheetPosition(wallMs)
+  tracking.tick(wallMs)
 
   rig.update(performance.now()) // scale transition, recentring, zoom limits, controls
   starfield.group.position.copy(camera.position)
   earthSystem.globe.updateMatrixWorld()
-  applyScale(nowMs / 1000)
+  applyScale(nowMs / 1000, wallMs)
   updateSceneLabels()
 
   renderer.render(scene, camera)
