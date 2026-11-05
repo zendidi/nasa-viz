@@ -12,6 +12,8 @@ import { createOrbitTraces } from './scene/orbitTrace.js'
 import { createCameraRig } from './app/camera.js'
 import { createSunMoon } from './app/sunMoon.js'
 import { createTimeControls } from './app/time.js'
+import { loadEphemerides } from './app/ephemerides.js'
+import { purgeStaleCache } from './ephemeris/sliceSet.js'
 import { createViewFrame } from './scene/frame.js'
 import { createEarthSystem } from './scene/earthSystem.js'
 import { createSun } from './scene/sun.js'
@@ -77,6 +79,10 @@ const eclipticPlane = createEclipticPlane(scene)
 // Declared before the Sun table, whose `changed` callback reads it.
 const clock = createClock({ wallMs: Date.now() })
 const simNowMs = () => clock.nowMs(Date.now())
+
+// Before anything reads the cache (2026-11-05, lot 3): forget the yearly slices
+// that left the range around the wall clock, and the pre-slice single-record keys.
+purgeStaleCache()
 
 // app/sunMoon.js: the Sun and Moon tables, their geocentric positions, and the
 // 60-simulated-second cadence the lighting and the drawn orbits follow. The
@@ -254,8 +260,12 @@ function setFocus(nextId) {
 }
 
 /** Places and sizes every scale-dependent object for rig.t and the current camera. */
-function applyScale(nowSeconds) {
+function applyScale(nowSeconds, wallMs) {
   const t = rig.t
+  // The trajectory cursor first (2026-11-05): while it is away from the scene's
+  // time the Earth pivot's origin is the Earth at the cursor's instant, and
+  // everything below is placed from that origin.
+  trackedScene.syncCursor(nowSeconds, wallMs)
   // The Sun's *position* is refreshed every frame, not with sunMoon.update()'s
   // 60 simulated seconds (a minute at ×1): every heliocentric orbit line hangs off it (placeHeliocentricKm)
   // while the planets move every frame, and the geocentric Sun runs at ~30 km/s
@@ -278,7 +288,9 @@ function applyScale(nowSeconds) {
   planets.update(nowSeconds, t)
   moons.update(nowSeconds, t)
   neoScene.update(nowSeconds, t)
-  trackedScene.update(nowSeconds, t)
+  trackedScene.update(nowSeconds, t, {
+    distance: camera.position.distanceTo(controls.target),
+  })
 }
 
 // --- UI overlay --------------------------------------------------------------
@@ -310,12 +322,20 @@ const panels = createPanels({
     trackAdd: (record) => tracking.add(record),
     trackOpen: (spkid) => tracking.open(spkid),
     trackApproach: (spkid) => tracking.goToNextApproach(spkid),
+    trackPrevApproach: (spkid) => tracking.goToPreviousApproach(spkid),
     trackRemove: (spkid) => tracking.remove(spkid),
     trackRetry: (spkid) => tracking.retry(spkid),
+    trackKeep: (spkid, saved) => tracking.setSaved(spkid, saved),
     trackShowNeo: (enabled) => tracking.setShowNeo(enabled),
+    trajDay: (day) => tracking.cursorSetDay(day),
+    trajShift: (seconds) => tracking.cursorShift(seconds),
+    trajReset: () => tracking.cursorReset(),
+    trajPlay: (rate) => tracking.cursorPlay(rate),
+    trajSunRetry: () => tracking.retrySun(),
     detailAction: (action, data) => {
       if (action === 'track') tracking.trackFromNeo(data.designation)
       else if (action === 'approach') tracking.goToNextApproach(data.spkid)
+      else if (action === 'approach-prev') tracking.goToPreviousApproach(data.spkid)
     },
     rings: (enabled) => {
       ringsEnabled = enabled
@@ -326,6 +346,13 @@ const panels = createPanels({
     venusSurface: (enabled) => {
       venusSurface = enabled
       planets.setVenusSurface(enabled)
+      renderPlanetsPanel()
+    },
+    moonsShown: (enabled) => {
+      moons.setEnabled(enabled)
+      saveCached('moons-shown', enabled)
+      // Ticked while a planet is centred: the moons were not fetched while hidden.
+      if (enabled && frame.planet) moons.loadFor(frame.planet.id)
       renderPlanetsPanel()
     },
     points: (enabled) => {
@@ -368,7 +395,12 @@ const time = createTimeControls({
       tracking.renderSheet()
       tracking.refreshPanel() // "next close approach" is relative to the simulated time
     },
-    reset: () => refreshIss(), // keyless; the marker reappears at once, on a fresh position rather than one up to 60 s old
+    reset: () => {
+      refreshIss() // keyless; the marker reappears at once, on a fresh position rather than one up to 60 s old
+      // "Maintenant" resets everything (2026-11-05): the clock AND the trajectory
+      // cursor. Changing the clock's speed, or jumping it, leaves the cursor's offset alone.
+      tracking.cursorReset()
+    },
   },
 })
 
@@ -408,6 +440,7 @@ function renderPlanetsPanel() {
     planets.drawnAt(stepToT(rig.step)),
     moons.status(),
     frame.id === 'venus' ? { surface: venusSurface } : null,
+    moons.enabled,
   )
 }
 
@@ -522,13 +555,14 @@ const tracking = createTracking({
     labels,
     frame,
     minRadiusAt,
-    sunPositionKmAt: (date, out) => sunTable.positionKmAt(date, out),
+    // The scene's own assembled Sun (2026-11-05, lot 3), not a second table fetched
+    // for the tool: the objects are subtracted from the very Sun that places the planets.
+    sunTable,
   },
   neoScene,
   panels,
   clock,
   simNowMs,
-  afterTimeJump: () => time.afterJump(),
   on: {
     neoSheetChanged: () => {
       if (modalNeo) renderNeoModal()
@@ -579,6 +613,9 @@ const moons = createMoons({
   sunPositionKm,
   on: { changed: () => renderPlanetsPanel() },
 })
+// The "Afficher les lunes" preference (2026-11-05), per browser. Unreadable or never
+// set means shown; only an explicit false hides them.
+moons.setEnabled(loadCached('moons-shown')?.data !== false)
 
 // Rings (and their labels) belong to the current point of view, so both are
 // rebuilt on every switch — see setFocus(). Each carries its own vector: the
@@ -716,17 +753,20 @@ rig.frameFirstReference()
 refreshUsage()
 renderScalePanel()
 renderViewPanel()
+// Slices read from localStorage are in already, but no landing announces them:
+// the clock's bounds (wall -1 year, +4 years, cut to the Sun's coverage) are set now.
+time.refreshBounds(Date.now())
 time.renderPanel(simNowMs(), Date.now())
 
 // Not wired to "Mettre à jour": the planet tables are keyless (JPL Horizons,
-// no NASA quota) and cover a year, so there is nothing for that button to
-// refresh. They load themselves once, then come back from localStorage.
-sunTable.load()
-moonTable.load()
-planets.load()
+// no NASA quota) and each yearly slice is immutable, so there is nothing for that
+// button to refresh. They load themselves once, then come back from localStorage.
+// The order (2026-11-05): the Sun's six slices, then the current year of the Moon
+// and the planets, then their other years moving away from it (app/ephemerides.js).
+loadEphemerides({ sunTable, moonTable, planets })
 // Unlike a planet's, this one is not waited for: the Moon is drawn from the
 // first frame in every view, so there is no "centre on it" moment to hang the
-// fetch on. One keyless Horizons request a month, cached like the rest.
+// fetch on. One keyless Horizons request per year, cached like the rest.
 loadOrientationFor('moon')
 
 const cachedIss = loadCached('iss')
@@ -743,8 +783,9 @@ if (cachedNeo) {
 if (cachedApod) {
   panels.renderApod(cachedApod.data, null, cachedApod.fetchedAt)
 }
-// The tracked list is all that is stored (never the tables): one positions call per
-// object, in parallel, each object appearing as its own answer lands.
+// The tracked list is all that is stored (never the tables): the Sun's table first,
+// then one trajectory call per object, one at a time, each object appearing as its
+// own answer lands.
 tracking.restore()
 
 // First-ever load has nothing to show yet — fetch once. Otherwise stay on the
@@ -779,11 +820,12 @@ function animate() {
   if (!clock.isRealTime()) time.renderPanel(nowMs, wallMs)
 
   refreshSheetPosition(wallMs)
+  tracking.tick(wallMs)
 
   rig.update(performance.now()) // scale transition, recentring, zoom limits, controls
   starfield.group.position.copy(camera.position)
   earthSystem.globe.updateMatrixWorld()
-  applyScale(nowMs / 1000)
+  applyScale(nowMs / 1000, wallMs)
   updateSceneLabels()
 
   renderer.render(scene, camera)

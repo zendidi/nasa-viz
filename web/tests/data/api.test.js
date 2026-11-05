@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchSmallBodyPositions, searchSmallBody, upstreamErrorMessage } from '../../src/data/api.js'
+import {
+  REQUEST_TIMEOUT_MS,
+  fetchPrecision,
+  fetchSolarSystemBody,
+  fetchSolarSystemOrbit,
+  fetchSolarSystemOrientation,
+  fetchTrajectory,
+  fetchTrajectorySun,
+  requestErrorMessage,
+  searchSmallBody,
+  upstreamErrorMessage,
+} from '../../src/data/api.js'
 
 describe('upstreamErrorMessage', () => {
   it('names the provider the backend says is down', () => {
@@ -23,29 +34,79 @@ describe('small-body routes', () => {
 
   const answer = (body, status = 200) => vi.fn(async () => ({ ok: status < 400, status, json: async () => body }))
 
+  const withSignal = expect.objectContaining({ signal: expect.anything() })
+
   it('accepte une table en UTC et appelle la bonne route, un SPK-ID par appel', async () => {
     const fetch = answer({ time_scale: 'UTC', objects: { 20099942: null } })
     vi.stubGlobal('fetch', fetch)
-    await expect(fetchSmallBodyPositions('20099942')).resolves.toMatchObject({ time_scale: 'UTC' })
-    expect(fetch).toHaveBeenCalledWith('/api/small-body/positions?spkid=20099942')
+    await expect(fetchTrajectory('20099942')).resolves.toMatchObject({ time_scale: 'UTC' })
+    expect(fetch).toHaveBeenCalledWith('/api/small-body/trajectory?spkid=20099942', withSignal)
   })
 
-  it('refuse une table qui n’est pas en UTC, ou qui ne le dit pas', async () => {
+  it('la tranche de précision demande son année, le Soleil sa route', async () => {
+    const fetch = answer({ time_scale: 'UTC' })
+    vi.stubGlobal('fetch', fetch)
+    await fetchPrecision('20099942', 2029)
+    await fetchTrajectorySun()
+    expect(fetch).toHaveBeenNthCalledWith(1, '/api/small-body/precision?spkid=20099942&year=2029', withSignal)
+    expect(fetch).toHaveBeenNthCalledWith(2, '/api/small-body/trajectory/sun', withSignal)
+  })
+
+  it('refuse une table qui n’est pas en UTC, ou qui ne le dit pas — pour les trois routes', async () => {
     vi.stubGlobal('fetch', answer({ time_scale: 'TDB', objects: {} }))
-    await expect(fetchSmallBodyPositions('20099942')).rejects.toThrow(/TDB/)
+    await expect(fetchTrajectory('20099942')).rejects.toThrow(/TDB/)
+    await expect(fetchPrecision('20099942', 2029)).rejects.toThrow(/TDB/)
+    await expect(fetchTrajectorySun()).rejects.toThrow(/TDB/)
     vi.stubGlobal('fetch', answer({ objects: {} }))
-    await expect(fetchSmallBodyPositions('20099942')).rejects.toThrow(/absente/)
+    await expect(fetchTrajectory('20099942')).rejects.toThrow(/absente/)
   })
 
   it('encode la requête de recherche', async () => {
     const fetch = answer({ match: null })
     vi.stubGlobal('fetch', fetch)
     await searchSmallBody('2004 MN4')
-    expect(fetch).toHaveBeenCalledWith('/api/small-body/search?q=2004+MN4')
+    expect(fetch).toHaveBeenCalledWith('/api/small-body/search?q=2004+MN4', withSignal)
   })
 
   it('une panne remonte avec le nom de la source', async () => {
     vi.stubGlobal('fetch', answer({ error: 'x', source: 'JPL SBDB' }, 502))
     await expect(searchSmallBody('Apophis')).rejects.toThrow('JPL SBDB est en panne')
+  })
+})
+
+describe('solar-system routes (lot 3, 2026-11-05)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // Épinglé : sans `year` le backend sert encore l'ancienne fenêtre mensuelle,
+  // qui ne se découpe pas en tranches -- le viewer ne doit plus jamais l'appeler.
+  it('les trois routes portent l’année demandée, après le corps', async () => {
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+    vi.stubGlobal('fetch', fetch)
+    await fetchSolarSystemBody('mars', 2027)
+    await fetchSolarSystemOrbit('venus', 2026)
+    await fetchSolarSystemOrientation('moon', 2030)
+    const urls = fetch.mock.calls.map(([url]) => url)
+    expect(urls).toEqual([
+      '/api/solar-system/positions?body=mars&year=2027',
+      '/api/solar-system/orbit?body=venus&year=2026',
+      '/api/solar-system/orientation?body=moon&year=2030',
+    ])
+  })
+})
+
+describe("délai d'expiration", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("45 s : 30 s de mur PHP plus la file d'un php -S mono-requête", () => {
+    expect(REQUEST_TIMEOUT_MS).toBe(45_000)
+  })
+
+  it('une expiration (TimeoutError) a sa phrase, une autre erreur garde la sienne', () => {
+    expect(requestErrorMessage(new DOMException('signal timed out', 'TimeoutError'))).toBe("Le serveur n'a pas répondu en 45 s.")
+    expect(requestErrorMessage(new TypeError('Failed to fetch'))).toBe('Failed to fetch')
+  })
+  it("une requête qui expire remonte la phrase, pour que l'objet passe en erreur avec son bouton réessayer", async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new DOMException('signal timed out', 'TimeoutError') }))
+    await expect(fetchTrajectorySun()).rejects.toThrow("Le serveur n'a pas répondu en 45 s.")
   })
 })

@@ -28,6 +28,7 @@ export const EARTH_POSITION_KM = new THREE.Vector3(0, 0, 0)
  *   readonly planet: FocusPlanet | null,
  *   set: (id: string, planet: FocusPlanet | null) => void,
  *   positionKm: () => THREE.Vector3,
+ *   setEarthOffsetKm: (offsetKm: THREE.Vector3 | null) => void,
  *   radius: (t: number) => number,
  *   geocentric: () => boolean,
  *   hidesPlanets: () => boolean,
@@ -59,9 +60,22 @@ export function createViewFrame({ sunPositionKm }) {
    */
   let planet = null
 
+  /**
+   * Where the Earth pivot's origin is, in the geocentric km every body position
+   * is expressed in (2026-11-05). Zero — and then `EARTH_POSITION_KM` itself, so
+   * nothing changes by even a bit — except while the tracking tool's cursor is
+   * away from the scene's time: the view then follows the Earth *at the cursor's
+   * instant* (the "ghost Earth", tracking/scene.js), because a flyby at 38 000 km
+   * of that Earth would otherwise happen far off the camera's target.
+   * Set by the owner of the cursor, every frame, before anything is placed.
+   */
+  const earthOffsetKm = new THREE.Vector3()
+  let earthShifted = false
+
   const positionKm = () => {
     if (planet) return planet.positionKm
-    return id === 'sun' ? sunPositionKm : EARTH_POSITION_KM
+    if (id === 'sun') return sunPositionKm
+    return earthShifted ? earthOffsetKm : EARTH_POSITION_KM
   }
 
   /**
@@ -138,6 +152,11 @@ export function createViewFrame({ sunPositionKm }) {
       planet = nextPlanet
     },
     positionKm,
+    /** `null` (or a zero shift) puts the Earth pivot back on the Earth; a vector moves its origin there (geocentric km, scene axes). */
+    setEarthOffsetKm(offsetKm) {
+      earthShifted = offsetKm !== null && offsetKm.lengthSq() > 0
+      if (earthShifted) earthOffsetKm.copy(offsetKm)
+    },
     radius,
     /** Whether the pivot is the Earth (or the Moon): where geocentric drawings make sense. */
     geocentric: () => id === 'earth' || id === 'moon',

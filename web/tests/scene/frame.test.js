@@ -70,3 +70,50 @@ describe('createViewFrame, état', () => {
     expect(frame.planet).toBe(null)
   })
 })
+
+// 2026-11-05 : le pivot Terre peut suivre la « Terre fantôme » de l'outil de
+// trajectoire. Épinglé : un décalage nul ne change RIEN (c'est le cas de toutes les
+// sessions qui n'y touchent pas), et un décalage non nul déplace l'origine du seul
+// pivot Terre — le Soleil et une planète restent où ils sont.
+describe('createViewFrame, décalage du pivot Terre', () => {
+  const GHOST = new THREE.Vector3(2e7, -5e6, 1e7)
+
+  it.each([0, 0.5, 1])('décalage nul ou absent : identique au comportement sans décalage, au bit près (t = %s)', (t) => {
+    const reference = frameAt('earth')
+    const zeroed = frameAt('earth')
+    zeroed.setEarthOffsetKm(new THREE.Vector3(0, 0, 0))
+    const afterReset = frameAt('earth')
+    afterReset.setEarthOffsetKm(GHOST)
+    afterReset.setEarthOffsetKm(null)
+    const point = new THREE.Vector3(3e5, -2e5, 1e5)
+    for (const frame of [zeroed, afterReset]) {
+      expect(frame.positionKm()).toBe(EARTH_POSITION_KM)
+      expect(frame.placeKm(new THREE.Vector3(), point, t).toArray()).toEqual(reference.placeKm(new THREE.Vector3(), point, t).toArray())
+      expect(frame.placeHeliocentricKm(new THREE.Vector3(), point, t).toArray()).toEqual(
+        reference.placeHeliocentricKm(new THREE.Vector3(), point, t).toArray(),
+      )
+    }
+  })
+
+  it.each([0, 0.5, 1])("décalé : le point décalé tombe sur le pivot, la vraie Terre s'en écarte (t = %s)", (t) => {
+    const frame = frameAt('earth')
+    frame.setEarthOffsetKm(GHOST)
+    expect(frame.placeKm(new THREE.Vector3(), GHOST, t).length()).toBe(0)
+    expect(frame.placeKm(new THREE.Vector3(), EARTH_POSITION_KM, t).length()).toBeGreaterThan(0)
+  })
+
+  it('le décalage est copié (le propriétaire peut réutiliser son vecteur) et ne touche pas les autres pivots', () => {
+    const shared = GHOST.clone()
+    const earth = frameAt('earth')
+    earth.setEarthOffsetKm(shared)
+    shared.set(0, 0, 0)
+    expect(earth.positionKm().equals(GHOST)).toBe(true)
+
+    const sun = frameAt('sun')
+    sun.setEarthOffsetKm(GHOST)
+    expect(sun.positionKm().equals(SUN_KM)).toBe(true)
+    const mars = frameAt('mars')
+    mars.setEarthOffsetKm(GHOST)
+    expect(mars.positionKm()).toBe(MARS.positionKm)
+  })
+})

@@ -4,6 +4,7 @@ namespace App\Command;
 
 use App\Service\HorizonsClient;
 use App\Service\MoonClient;
+use App\Service\PlanetOrientationClient;
 use App\Service\SolarSystemClient;
 use Psr\Cache\CacheItemPoolInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -44,6 +45,7 @@ final class SolarSystemWarmCommand extends Command
 {
     public function __construct(
         private readonly SolarSystemClient $planets,
+        private readonly PlanetOrientationClient $orientations,
         private readonly MoonClient $moons,
         #[Autowire(service: 'cache.app')] private readonly CacheItemPoolInterface $pool,
     ) {
@@ -62,6 +64,38 @@ final class SolarSystemWarmCommand extends Command
             ->addOption('dry-run', null, InputOption::VALUE_NONE, 'List what would be fetched, fetch nothing.');
     }
 
+    /**
+     * One slice: skip it when cached, else fetch and save it under the same key and TTL as the
+     * route (a null for an hour, a value for SLICE_TTL_SECONDS).
+     *
+     * @param callable(): mixed $fetch
+     */
+    private function warm(SymfonyStyle $io, bool $dryRun, string $key, string $label, callable $fetch, int &$fetched, int &$skipped, int &$failed): void
+    {
+        $item = $this->pool->getItem($key);
+        if ($item->isHit()) {
+            ++$skipped;
+
+            return;
+        }
+        $io->text($label);
+        if ($dryRun) {
+            ++$fetched;
+
+            return;
+        }
+        try {
+            $value = $fetch();
+        } catch (ExceptionInterface $e) {
+            $io->warning(sprintf('%s: %s', $label, $e->getMessage()));
+            ++$failed;
+
+            return;
+        }
+        $this->pool->save($item->set($value)->expiresAfter(null === $value ? SolarSystemClient::NULL_TTL_SECONDS : SolarSystemClient::SLICE_TTL_SECONDS));
+        null === $value ? ++$failed : ++$fetched;
+    }
+
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
@@ -72,56 +106,27 @@ final class SolarSystemWarmCommand extends Command
         $skipped = 0;
         $failed = 0;
 
-        // --- planets: positions, then orbits ---------------------------------
+        // --- planets: yearly slices Y-1..Y+4 (lot 3, 2026-11-05) -------------
         //
-        // Positions first and orbits second, the same order the web client uses:
-        // a position is what the scene needs to draw a planet at all, an orbit is
-        // décor. If this run is cut short, the useful half is already done.
+        // Positions first, then orbits, then orientations: a position is what the scene needs
+        // to draw a planet at all, an orbit and a pole are décor. The monthly window is no
+        // longer warmed (the web asks for `year=` only). Each slice is immutable, so once warm
+        // a run only fetches the new year: ~27 calls on 1 January, ~160 from cold.
 
-        $planetStart = SolarSystemClient::windowStart($now);
-
-        foreach (SolarSystemClient::ids() as $id) {
-            $item = $this->pool->getItem('solar_system_'.$id.'_'.$planetStart->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE.'_h'.SolarSystemClient::HISTORY_MONTHS);
-            if ($item->isHit()) {
-                ++$skipped;
-                continue;
+        foreach (SolarSystemClient::years($now) as $year) {
+            foreach (SolarSystemClient::ids() as $id) {
+                $this->warm($io, $dryRun, SolarSystemClient::slicePositionsKey($id, $year), sprintf('position %s %d', $id, $year), fn () => $this->planets->getSlicePositions($id, $year), $fetched, $skipped, $failed);
             }
-            $io->text(sprintf('position %s', $id));
-            if ($dryRun) {
-                ++$fetched;
-                continue;
-            }
-            try {
-                $positions = $this->planets->getPositions([$id], $planetStart)[$id];
-            } catch (ExceptionInterface $e) {
-                $io->warning(sprintf('%s: %s', $id, $e->getMessage()));
-                ++$failed;
-                continue;
-            }
-            $this->pool->save($item->set($positions)->expiresAfter(null === $positions ? 3600 : 40 * 86400));
-            null === $positions ? ++$failed : ++$fetched;
         }
-
-        foreach (SolarSystemClient::planetIds() as $id) {
-            $item = $this->pool->getItem('solar_system_orbit_'.$id.'_'.$planetStart->format('Y-m-d').'_'.HorizonsClient::TIME_SCALE);
-            if ($item->isHit()) {
-                ++$skipped;
-                continue;
+        foreach (SolarSystemClient::years($now) as $year) {
+            foreach (SolarSystemClient::planetIds() as $id) {
+                $this->warm($io, $dryRun, SolarSystemClient::sliceOrbitKey($id, $year), sprintf('orbit %s %d', $id, $year), fn () => $this->planets->getOrbit($id, SolarSystemClient::yearStart($year)), $fetched, $skipped, $failed);
             }
-            $io->text(sprintf('orbit %s', $id));
-            if ($dryRun) {
-                ++$fetched;
-                continue;
+        }
+        foreach (SolarSystemClient::years($now) as $year) {
+            foreach (PlanetOrientationClient::ids() as $id) {
+                $this->warm($io, $dryRun, SolarSystemClient::sliceOrientationKey($id, $year), sprintf('orientation %s %d', $id, $year), fn () => $this->orientations->getOrientation($id, SolarSystemClient::yearStart($year)), $fetched, $skipped, $failed);
             }
-            try {
-                $orbit = $this->planets->getOrbit($id, $planetStart);
-            } catch (ExceptionInterface $e) {
-                $io->warning(sprintf('%s orbit: %s', $id, $e->getMessage()));
-                ++$failed;
-                continue;
-            }
-            $this->pool->save($item->set($orbit)->expiresAfter(null === $orbit ? 3600 : 40 * 86400));
-            null === $orbit ? ++$failed : ++$fetched;
         }
 
         // --- moons of planets people actually visit ---------------------------

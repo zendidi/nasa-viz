@@ -7,7 +7,7 @@
  * Moon, the scale panel, the open sheets — main.js does in `on.jumped`.
  */
 
-import { defaultMaxMs, defaultMinMs } from '../ephemeris/clock.js'
+import { clockBounds } from '../ephemeris/slices.js'
 
 /**
  * @param {object} options
@@ -18,13 +18,16 @@ import { defaultMaxMs, defaultMinMs } from '../ephemeris/clock.js'
  */
 export function createTimeControls({ clock, sunTable, render, on }) {
   /**
-   * The bounds are the Sun table's window (the planets' tables share it,
-   * `SolarSystemClient::windowStart` + 365 d), or the same dates computed by hand
-   * while none is loaded. Both ends matter since time can run backwards
-   * (2026-10-27): reversed, it stops at the 1st of the month, where the tables start.
+   * The bounds are [wall − 1 year, wall + 4 years] floored to a UTC midnight —
+   * the range of the yearly slices, and the trajectory tool's cursor (`clockBounds`,
+   * slices.js, 2026-11-05) — cut to the Sun's assembled table when that is
+   * shorter (a slice that has not arrived, or failed). Both ends matter since time
+   * can run backwards (2026-10-27). Real time stays exempt (clock.js).
+   * It used to be the Sun table's window of the month (1st − 3 months, + 365 d).
    */
   function refreshBounds(wallMs) {
-    clock.setBounds(sunTable.startMs ?? defaultMinMs(wallMs), sunTable.endMs ?? defaultMaxMs(wallMs), wallMs)
+    const { minMs, maxMs } = clockBounds(wallMs, { startMs: sunTable.startMs, endMs: sunTable.endMs })
+    clock.setBounds(minMs, maxMs, wallMs)
   }
 
   function renderPanel(simMs, wallMs) {

@@ -50,7 +50,21 @@ final class SmallBodySearchClientTest extends TestCase
             'neo' => true,
             'pha' => true,
             'orbit_class' => ['code' => 'ATE', 'name' => 'Aten'],
+            'orbit_id' => '220',
         ], $result['match']);
+    }
+
+    public function testOrbitIdIsReadFromTheOrbitBlockThenTheObjectAndIsNullWhenAbsent(): void
+    {
+        $object = '{"object":{"neo":true,"spkid":"20000001","kind":"an","des":"1"';
+        $fromOrbit = $this->client(['a' => [$object.',"orbit_id":"9"},"orbit":{"orbit_id":"220"}}', 200]])->search('a');
+        $fromObject = $this->client(['b' => [$object.',"orbit_id":"9"}}', 200]])->search('b');
+        $absent = $this->client(['c' => [$object.'}}', 200]])->search('c');
+
+        self::assertSame('220', $fromOrbit['match']['orbit_id']);
+        self::assertSame('9', $fromObject['match']['orbit_id']);
+        self::assertArrayHasKey('orbit_id', $absent['match']);
+        self::assertNull($absent['match']['orbit_id']);
     }
 
     public function testAmbiguousQueryAnsweredHttp300GivesCandidates(): void

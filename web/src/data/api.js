@@ -21,13 +21,36 @@ export function upstreamErrorMessage(body, status) {
   return (body && body.error) || `request failed: ${status}`
 }
 
+/**
+ * How long a request may take before the viewer gives up (2026-11-05): the PHP
+ * wall is 30 s per request, and `php -S` on Windows serves one request at a
+ * time, so a request can also wait behind the one in front of it. Without a
+ * limit an object whose answer never came stayed "loading" forever and held the
+ * tracking queue with it.
+ */
+export const REQUEST_TIMEOUT_MS = 45_000
+
+/**
+ * What the panels say when a request failed on the client side. A timeout (the
+ * signal's `TimeoutError`) gets a sentence of its own; anything else keeps the
+ * message it carries.
+ */
+export function requestErrorMessage(err) {
+  if (err && err.name === 'TimeoutError') return `Le serveur n'a pas répondu en ${REQUEST_TIMEOUT_MS / 1000} s.`
+  return err && err.message ? err.message : String(err)
+}
+
 async function getJson(path) {
-  const res = await fetch(`${BASE}${path}`)
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(upstreamErrorMessage(body, res.status))
+  try {
+    const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(upstreamErrorMessage(body, res.status))
+    }
+    return await res.json()
+  } catch (err) {
+    throw new Error(requestErrorMessage(err))
   }
-  return res.json()
 }
 
 /** @returns {Promise<{latitude:number, longitude:number, altitude_km:number, velocity_kmh:number, timestamp:number}>} */
@@ -68,11 +91,18 @@ export function fetchNeoPositions(startDate, endDate, designations) {
  * costs 5–16 s whatever its size, and asking for several at once overruns the
  * backend's execution limit (see backend/API.md).
  *
- * @param {string} id mercury · venus · mars · jupiter · saturn · uranus · neptune
- * @returns {Promise<{start:number, step_seconds:number, bodies:{id:string, name:string, radius_km:number, positions:number[][]|null}[]}>}
+ * Since 2026-11-05 (lot 3) the table is **one civil year** of one body, immutable:
+ * `year` ∈ [Y−1, Y+4] (HTTP 400 otherwise), with two rows of overlap on each side
+ * (`slice_start` / `slice_end` say where the year proper begins and ends; `start`
+ * is the first row). `ephemeris/slices.js` assembles them.
+ *
+ * @param {string} id sun · moon · mercury · venus · mars · jupiter · saturn · uranus · neptune · pluto
+ * @param {number} year
+ * @returns {Promise<{frame:string, time_scale:string, year:number, slice_start:number, slice_end:number,
+ *   start:number, step_seconds:number, bodies:{id:string, name:string, radius_km:number, positions:number[][]|null}[]}>}
  */
-export function fetchSolarSystemBody(id) {
-  return getJson(`/solar-system/positions?${new URLSearchParams({ body: id })}`)
+export function fetchSolarSystemBody(id, year) {
+  return getJson(`/solar-system/positions?${new URLSearchParams({ body: id, year: String(year) })}`)
 }
 
 /**
@@ -81,29 +111,34 @@ export function fetchSolarSystemBody(id) {
  * heliocentric by subtracting the same Sun it places the planet with — see
  * backend/API.md, and `scene/planets.js` for why it matters.
  *
+ * Since 2026-11-05 (lot 3) the period starts at 1 January 00:00 UTC of `year`.
+ *
  * @param {string} id
- * @returns {Promise<{start:number, stop:number, body:{id:string, period_days:number}, positions:number[][]|null}>}
+ * @param {number} year
+ * @returns {Promise<{frame:string, time_scale:string, year:number, start:number, stop:number, body:{id:string, period_days:number}, positions:number[][]|null}>}
  */
-export function fetchSolarSystemOrbit(id) {
-  return getJson(`/solar-system/orbit?${new URLSearchParams({ body: id })}`)
+export function fetchSolarSystemOrbit(id, year) {
+  return getJson(`/solar-system/orbit?${new URLSearchParams({ body: id, year: String(year) })}`)
 }
 
 /**
  * How one planet is turned in space: `pole` and `prime_meridian` as ICRF unit
- * vectors at `epoch` (first of the current UTC month), plus the **signed**
- * sidereal rotation rate in degrees per day.
+ * vectors at `epoch` (since 2026-11-05: 1 January 00:00 UTC of `year`; it was
+ * the first of the current UTC month), plus the **signed** sidereal rotation
+ * rate in degrees per day.
  *
  * Vectors rather than the angles Horizons publishes, so that the sign of the
  * longitude and the light-time correction — 29,8° on Jupiter — are settled once
  * server-side instead of in every client (backend/API.md).
  *
  * @param {string} id one of the seven planets (Earth excluded), `pluto` or `moon`; not `sun`, which has no rigid surface
- * @returns {Promise<{frame:string, epoch:number, bodies:{id:string, name:string,
+ * @param {number} year
+ * @returns {Promise<{frame:string, year:number, epoch:number, bodies:{id:string, name:string,
  *   radius_km:number, pole:?number[], prime_meridian:?number[],
  *   rotation_deg_per_day:?number}[]}>}
  */
-export function fetchSolarSystemOrientation(id) {
-  return getJson(`/solar-system/orientation?${new URLSearchParams({ body: id })}`)
+export function fetchSolarSystemOrientation(id, year) {
+  return getJson(`/solar-system/orientation?${new URLSearchParams({ body: id, year: String(year) })}`)
 }
 
 /**
@@ -145,23 +180,49 @@ export function searchSmallBody(q) {
   return getJson(`/small-body/search?${new URLSearchParams({ q })}`)
 }
 
-/**
- * The precise geocentric table of **one** tracked asteroid (backend/API.md):
- * `objects[spkid]` is the object, or null when SBDB or Horizons don't know that
- * SPK-ID any more. One id per call on purpose — five cold NEOs in one call
- * overran the backend's execution limit.
- *
- * A response on any clock but UTC is refused, like the other tables: it would
- * place the object 69 s off, ~2 000 km on a NEO's table.
- *
- * @param {string} spkid
- */
-export async function fetchSmallBodyPositions(spkid) {
-  const res = await getJson(`/small-body/positions?${new URLSearchParams({ spkid })}`)
+/** A response on any clock but UTC is refused, like the other tables: it would place the object 69 s off (~2 000 km on a NEO's table). */
+function assertUtc(res) {
   if (res.time_scale !== TIME_SCALE) {
     throw new Error(`échelle de temps inattendue (${res.time_scale ?? 'absente'}, ${TIME_SCALE} attendu)`)
   }
   return res
+}
+
+/**
+ * The daily geocentric table of **one** tracked asteroid over the fixed range
+ * (1 Jan of last year to 1 Jan five years on), with its close approaches when it
+ * is a NEO (backend/API.md, `/api/small-body/trajectory`; 2026-11-05, replacing
+ * `/positions`). `objects[spkid]` is null when SBDB or Horizons don't know that
+ * SPK-ID any more. One id per call on purpose.
+ *
+ * @param {string} spkid
+ */
+export async function fetchTrajectory(spkid) {
+  return assertUtc(await getJson(`/small-body/trajectory?${new URLSearchParams({ spkid })}`))
+}
+
+/**
+ * The hourly table (and the 5-minute segments around close flybys) of one
+ * tracked **NEO** for one civil year — the placement precision the daily table
+ * cannot give near the Earth. The table overlaps its neighbours by two rows on
+ * each side (`positions` from 1 Jan − 2 h to 1 Jan next year + 2 h).
+ *
+ * @param {string} spkid
+ * @param {number} year
+ */
+export async function fetchPrecision(spkid, year) {
+  return assertUtc(await getJson(`/small-body/precision?${new URLSearchParams({ spkid, year: String(year) })}`))
+}
+
+/**
+ * The Sun's daily geocentric table over the same range, shared by every tracked
+ * object (heliocentric = geocentric object − Sun, row by row).
+ *
+ * Replaced on 2026-11-05 (lot 3): the viewer no longer calls it, the tracking tool
+ * reads the scene's own assembled Sun table. The route is kept (backend/API.md).
+ */
+export async function fetchTrajectorySun() {
+  return assertUtc(await getJson('/small-body/trajectory/sun'))
 }
 
 /** @returns {Promise<{title:string, date:string, explanation:string, media_type:string, url:string, hd_url:?string}>} */

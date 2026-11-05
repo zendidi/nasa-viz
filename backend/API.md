@@ -245,7 +245,7 @@ Three shapes, always HTTP 200:
 ```json
 {"match": {"spkid": "20099942", "des": "99942", "fullname": "99942 Apophis (2004 MN4)",
            "shortname": "99942 Apophis", "kind": "an", "neo": true, "pha": true,
-           "orbit_class": {"code": "ATE", "name": "Aten"}}}
+           "orbit_class": {"code": "ATE", "name": "Aten"}, "orbit_id": "220"}}
 
 {"match": null, "candidates": [{"pdes": "1862", "name": "1862 Apollo (1932 HA)"}], "count": 7}
 
@@ -255,6 +255,12 @@ Three shapes, always HTTP 200:
 - `neo` and `pha` are SBDB's own flags (`neo`: perihelion < 1.3 au); any field
   SBDB doesn't give is `null`. `spkid` is a string. It changes when an object
   gets numbered (`5xxxxxxx` → `2xxxxxxx`), so don't store it long-term.
+- `orbit_id` (string, added 2026-11-05) is SBDB's id of the orbit solution the
+  object's tables are computed from (`orbit.orbit_id`, else `object.orbit_id`;
+  `null` if neither). A solution changes with new observations (2026 TP128:
+  `orbit_id 1`, solution of 2026-10-23), so the trajectory routes key their
+  cache on it. An entry cached before this field existed has `orbit_id: null`
+  until its 1-day TTL runs out.
 - Lookup order: `sstr=q`; if SBDB says "not found", **one** retry with `q*`
   (`Apo` → 7 candidates). A single hit on either is a `match`.
 - `candidates` is capped at 20; **`count` is the total of non-comet
@@ -272,6 +278,9 @@ Three shapes, always HTTP 200:
   handled, not an error.)
 
 ## `GET /api/small-body/positions?spkid=20099942`
+
+> **Replaced (2026-11-05) by `trajectory` + `precision` below; kept as is for
+> compatibility.** The web no longer calls it.
 
 Precise geocentric position table for **one** tracked **asteroid** (any
 non-comet small body; NEO-only behaviour is flagged below). Outside `/api/neo`
@@ -338,6 +347,105 @@ quota. Get SPK-IDs from `/api/small-body/search`.
   30 s wall — Horizons doesn't compute a batch in parallel. Hence one asteroid
   per call: ~7-10 s cold for a NEO, 0.1 s warm.
 
+## Trajectory tool of the tracked objects (lot 2, 2026-11-05)
+
+Three routes sharing one range, **6 fixed calendar years**: with Y the current
+UTC year, `range.start` = 1 January Y−1 00:00 UTC, `range.end` = 1 January Y+5
+00:00 UTC (always −1 / +4 years around now; moves only on 1 January). Daily rows,
+both ends included: **2 192 rows** for 2025 → 2031 (2 193 when the range holds
+two leap days). Tracked objects are any asteroid; a tracked object may also be a
+NEO (`neo: true`) — this is not the "NEO of the week" of `/api/neo`. All keyless
+(Horizons, SBDB, CAD): no NASA quota. Positions are integer km, ICRF,
+Earth-centred, UTC, as everywhere; `time_scale` is `"UTC"`. No `Cache-Control`
+header yet (lot 3).
+
+**Cache** (all three): an asteroid's table is not immutable, its orbit solution
+moves with the observations, so the key holds the **`orbit_id`** of
+`/api/small-body/search`. Keys: trajectory = SPK-ID + Y + `orbit_id` + time
+scale; precision = SPK-ID + `year` + `orbit_id` + time scale; sun = Y + time
+scale. TTL 30 days (`orbit_id` null → 1 day); an object that is `null` → 1 hour;
+a CAD failure → served, **not cached**. Since the search is cached 1 day, a new
+orbit solution is picked up within a day.
+
+### `GET /api/small-body/trajectory?spkid=20099942`
+
+- `spkid`: exactly one, `^\d{7,8}$`, else HTTP 400 `{"error": …}`.
+- `objects.<spkid>` is `null` when SBDB doesn't know the id (or it's a comet) or
+  Horizons has no table.
+- One Horizons call, daily table over the whole range (measured 2026-11-05:
+  1.4–1.5 s at Horizons; 2.1 s cold end to end, 0.06 s warm; ~68 kB served).
+- **NEO only**: `close_approaches` = JPL CAD (< 0.05 au) with `range.start` ≤
+  time < `range.end`, by time, same fields as `positions`;
+  `next_close_approach_after_range` = the first one at or after `range.end`, or
+  `null`. A non-NEO has `[]` and `null`. `close_approaches: null` = CAD failed:
+  table served, object not cached.
+
+```json
+{"frame": "ICRF geocentric", "units": "km", "time_scale": "UTC",
+ "range": {"start": 1735689600, "end": 1924992000},
+ "objects": {"20099942": {
+   "spkid": "20099942", "des": "99942", "fullname": "99942 Apophis (2004 MN4)",
+   "neo": true, "orbit_id": "220",
+   "table": {"start": 1735689600, "step_seconds": 86400, "positions": [[x, y, z], …]},
+   "close_approaches": [{"time": 1870811104, "dist_km": 38000000.0, "dist_min_km": …,
+                         "dist_max_km": …, "v_rel_km_s": …, "t_sigma": "00:02"}],
+   "next_close_approach_after_range": null}}}
+```
+
+### `GET /api/small-body/precision?spkid=20099942&year=2029`
+
+Precise table of **one NEO for one calendar year** (the client swaps it in for
+the daily one when the clock enters that year).
+
+- `spkid` as above. `year`: an integer (digits only) in **[Y−1, Y+4]**, else
+  HTTP 400.
+- **Non-NEO**: HTTP 200 with `table: null`, `segments: []` and no upstream call
+  (the client keeps the daily table).
+- **NEO**: `table` is **hourly** (`step_seconds` 3600) from 1 January `year`
+  minus 2 h to 1 January `year`+1 plus 2 h: two overlap rows each side so the
+  client's Catmull-Rom is continuous where two years meet; 8 765 rows in a
+  normal year (8 789 in a leap one). `table.start` is the first real instant
+  (31 December 22:00 UTC). Measured: 2.0–2.3 s at Horizons per year (Bennu
+  3.5 s); 3.7 s end to end for Apophis 2029 (with its segment); 260 kB served.
+- **NEO**: `segments` are 5-minute tables, approach ±12 h, for the CAD
+  approaches closer than **0.0005 au** whose instant falls in
+  [1 January `year`, 1 January `year`+1) — the same rules as `positions`
+  (start floored / stop rounded up to 5 min, at most 10, closest kept, in time
+  order). A segment may overflow onto the neighbouring year: intended. Measured
+  2026-11-05: over six calendar years no object has more than one such pass.
+  `segments: null` = CAD failed: table served, object not cached.
+- `objects.<spkid>` is `null` when SBDB doesn't know the id or Horizons has no
+  table.
+
+```json
+{"frame": "ICRF geocentric", "units": "km", "time_scale": "UTC", "year": 2029,
+ "objects": {"20099942": {
+   "spkid": "20099942", "des": "99942", "fullname": "99942 Apophis (2004 MN4)",
+   "neo": true, "orbit_id": "220", "year": 2029,
+   "table": {"start": 1861912800, "step_seconds": 3600, "positions": [[x, y, z], …]},
+   "segments": [{"start": 1870000000, "step_seconds": 300, "positions": [[x, y, z], …]}]}}}
+```
+
+### `GET /api/small-body/trajectory/sun`
+
+> **Remplacée (2026-11-05, lot 3).** Le web ne l'appelle plus : l'outil de trajectoire lit
+> la table assemblée du Soleil de la scène (tranches `year=` de `/api/solar-system/positions?body=sun`).
+> La route reste servie, inchangée.
+
+The Sun's daily **geocentric** table (Horizons body `10`, centre `500@399`, UT /
+ICRF like the planets') on the same 6-year range: lets the web go heliocentric
+and place "the Earth at the object's instant".
+
+```json
+{"frame": "ICRF geocentric", "units": "km", "time_scale": "UTC",
+ "range": {"start": 1735689600, "end": 1924992000},
+ "table": {"start": 1735689600, "step_seconds": 86400, "positions": [[x, y, z], …]}}
+```
+
+HTTP 502 `{"error", "source": "JPL Horizons"}` when Horizons is down or has no
+table; not cached. Cache 30 days (key: Y + time scale). 1.5 s cold, 69 kB.
+`/trajectory/sun` and `/trajectory` are distinct literal paths.
+
 ## `GET /api/neo/positions?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD&designations=2026 RB39,2021 LC`
 
 Real geocentric positions of NEOs over the feed's date range, from JPL
@@ -382,7 +490,47 @@ place each NEO of the feed on its real path rather than on a schematic one.
 - HTTP 502 when Horizons itself can't be reached — nothing is known about any
   object then.
 
-## `GET /api/solar-system/positions?body=mars` (ou `body=sun`, `body=moon`)
+## `GET /api/solar-system/positions?body=mars&year=2027` (ou `body=sun`, `body=moon`)
+
+### Avec `year=` (lot 3, 2026-11-05) : la tranche annuelle
+
+`year` est un entier dans `[Y−1, Y+4]` (`Y` = année UTC courante), sinon **HTTP 400**
+`{"error": "year must be between <Y−1> and <Y+4>"}` (non entier, vide, négatif : idem). Une
+**tranche** = un corps × une année civile UTC, immuable ; les six années couvrent du 1/1 (Y−1) au
+1/1 (Y+5) 00:00 UTC, donc toujours [maintenant −1 an, maintenant +4 ans].
+
+```json
+{
+  "frame": "ICRF geocentric",
+  "time_scale": "UTC",
+  "units": "km",
+  "year": 2027,
+  "slice_start": 1798761600,
+  "slice_end": 1830297600,
+  "start": 1798588800,
+  "step_seconds": 86400,
+  "bodies": [{ "id": "mars", "name": "Mars", "radius_km": 3389.5,
+               "equatorial_radius_km": 3396.19, "polar_radius_km": 3376.2,
+               "positions": [[-129867207, 42071540, 26713933], "…"] }]
+}
+```
+
+- `slice_start` = 1/1 `year` 00:00 UTC, `slice_end` = 1/1 `year`+1 00:00 UTC (secondes Unix).
+- **Recouvrement : 2 lignes de chaque côté.** `start` = `slice_start − 2 × step_seconds` = instant de
+  `positions[0]` ; la dernière ligne est à `slice_end + 2 × step_seconds`, bornes incluses. Une tranche
+  lue seule est donc en Catmull-Rom complet sur toute son année. Mars 2027 : 370 lignes (365 + 4 + 1).
+- Pas = 1 j, sauf `moon`, `mercury`, `venus` à 6 h (21 600 s ; Lune 2028, bissextile : 1 469 lignes).
+- `positions` : `null` si Horizons n'a rien donné (gardé 1 h).
+- Cache serveur : une entrée par corps × année, clé `solar_system_<id>_y<year>_<step>_UTC_o2`, valeur
+  non nulle gardée 3 ans (immuable), nulle 1 h, échec de transport jamais gardé (502). **Aucun
+  en-tête `Cache-Control`** : un cache HTTP immuable empêcherait le client de se réparer après avoir
+  refusé une tranche (leçon du 2026-09-29). Une tranche coûte 1,0 à 1,2 s à Horizons ; 51 ko bruts au
+  pas de 1 j, 188 ko à 6 h (mesuré 2026-11-05).
+- `app:solar-system:warm` préchauffe ces tranches (voir plus bas).
+
+### Sans `year=` : **remplacée** (lot 3)
+
+> Le web ne l'appelle plus ; la fenêtre mensuelle ci-dessous reste servie à l'identique.
 
 One planet's real geocentric positions, from JPL Horizons — keyless, not on
 the NASA quota. `body` is required and must be one of `mercury`, `venus`,
@@ -470,7 +618,16 @@ for one keyless request a month.
 `?body=sun` is **not** accepted by the orbit route: the Sun has no orbit to draw
 here, and `planetIds()` is what those routes validate against.
 
-## `GET /api/solar-system/orbit?body=mars`
+## `GET /api/solar-system/orbit?body=mars&year=2027`
+
+**Avec `year=` (lot 3, 2026-11-05)** : même réponse que ci-dessous plus `"year": 2027`, mais la
+période sidérale part du **1/1 `year` 00:00 UTC** (`start` = cet instant). Mêmes règles de `year` que
+les positions (400 hors [Y−1, Y+4]). Mesuré : avec une époque au 1/1 de l'année affichée, la planète
+s'écarte de son trait de 993 km au plus dans l'année (Mercure ; Vénus 1 425, Mars 103, Jupiter 311) ;
+hors de la période, notamment avant l'époque, Jupiter quitte son trait de 352 687 km, Saturne
+844 874, Uranus ~1,2 Mkm. Cache : clé `solar_system_orbit_<id>_y<year>_UTC_360`, même politique que
+les positions. **Sans `year` : remplacée**, le web ne l'appelle plus ; la fenêtre mensuelle
+ci-dessous reste servie à l'identique.
 
 One planet's whole orbit as a polyline — 361 samples over one sidereal period.
 **Planets only**: the Sun is served by the positions route but has no orbit to
@@ -524,7 +681,14 @@ per planet.
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.
 
-## `GET /api/solar-system/orientation?body=mars`
+## `GET /api/solar-system/orientation?body=mars&year=2027`
+
+**Avec `year=` (lot 3, 2026-11-05)** : même réponse que ci-dessous plus `"year": 2027`, `epoch` = 1/1
+`year` 00:00 UTC. Mêmes règles de `year` (400 hors [Y−1, Y+4]). Mesuré : planètes ≤ 0,016° sur 6 ans,
+saut au 1/1 ≤ 0,005° ; Lune, pôle jusqu'à 1,98° d'une époque fixe contre 0,54° dans l'année avec
+une époque au 1/1 (saut ≈ 0,5° pôle, ≤ 0,56° méridien). Cache : clé
+`solar_system_orientation_<id>_y<year>`. **Sans `year` : remplacée**, le web ne l'appelle plus ; le
+comportement mensuel ci-dessous reste servi à l'identique.
 
 How one body is turned in space. `body` takes the nine planets (Pluto included) **and `moon`** —
 not `sun`, which is not a rigid body and whose surface rotates differentially.
@@ -684,6 +848,11 @@ otherwise the 9 largest. Pluto has Charon alone (the four small ones are 5 to 20
 
 Cron companion to the three solar-system routes. Fetches the planet tables and
 the moons of planets a visitor has actually centred on, before anyone asks.
+
+- **Since lot 3 (2026-11-05)** it warms the yearly `year=` slices for every year `Y−1` to `Y+4`:
+  positions of the 10 bodies, orbits of the 8 planets, orientation of the 9 bodies of
+  `PlanetOrientationClient::ids()` — skipping what is cached (cold ≈ 162 calls, then ≈ 27 on
+  1 January). It no longer warms the monthly window. Moons: unchanged.
 
 - **Lazy fill, eager refresh.** The route records which planets get looked at; the
   command refreshes only those. A moon nobody has ever looked at is never fetched,

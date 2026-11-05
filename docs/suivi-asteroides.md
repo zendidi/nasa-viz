@@ -205,3 +205,104 @@ liste ci-dessous **n'a pas été construit** : il est sorti au backlog (`docs/ag
 
 - **TTL du cache serveur** des tables : 1 jour comme `/api/neo/positions` par défaut ; plus long pour
   un objet numéroté à orbite bien établie, si la mesure le justifie.
+
+## 2026-11-05 — Révision : 10 objets, « garder », outil de trajectoire propre
+
+Décidé avec l'utilisateur le 2026-11-05, après une remise en question du « 5 objets sur 15 mois,
+contrainte de perf ». Constat mesuré : le 5 n'a jamais été une contrainte de rendu (5 objets suivis
+qui seraient tous des NEO = ~55 000 lignes, ~1,3 Mo en mémoire, ~1 800 sommets de tracé chacun) ;
+les ~15 mois ne sont pas propres au suivi, c'est la plage de l'horloge de toute la scène. Le seul
+coût qui croît avec le nombre d'objets est le chargement **à froid** chez Horizons (~7 s pour un
+objet suivi qui est un NEO, table horaire), derrière un `php -S` qui sous Windows ne sert qu'une
+requête à la fois (mesuré : `PHP_CLI_SERVER_WORKERS` → « forking is not supported on this
+platform » ; 3 requêtes de 1,5 s → 1,5 / 3,0 / 4,5 s).
+
+Vocabulaire tenu : un **objet suivi** est n'importe quel astéroïde ; certains objets suivis **sont
+aussi des NEO** (table horaire + segments de 5 min), les autres non (table journalière, ~24× plus
+légère). Les **NEO de la semaine** (onglet NEO) sont une autre chose et ne changent pas.
+
+### Lot 1 (branche `suivi-plage-etendue`)
+
+- **10 objets suivis** au plus (`MAX_TRACKED`), différenciés par **couleur + style de trait** : les 5
+  couleurs de `TRACK_COLORS` × {plein, pointillé}. Pas de nouvelles couleurs (la palette est déjà
+  choisie à l'écart du cyan NEO, du rouge PHA, des couleurs spectrales et des planètes). Pointillé
+  découpé **en temps**, comme les traits sous l'écliptique.
+- **Interrupteur « Garder »** à côté de « Retirer » : seuls les objets gardés sont écrits dans le
+  `localStorage` et rechargés à la session suivante ; un nouvel objet est **non gardé** par défaut.
+  Une liste déjà stockée (sans le champ) est lue comme gardée.
+- **File de chargement un par un** : au démarrage, les objets gardés ne partent plus tous ensemble,
+  pour laisser passer les autres routes entre deux objets sur un `php -S` mono-requête.
+
+Écarté : les workers PHP seuls (inopérants sous Windows, plateforme principale). Écarté : un mode
+« suivi seul » qui déchargerait les NEO de la semaine — l'utilisateur garde la bascule d'affichage
+existante, qui suffit à la lisibilité. Comètes : toujours hors périmètre, au backlog
+(`docs/cometes.md`).
+
+### Lot 2 — outil de trajectoire des objets suivis (à construire)
+
+L'outil phare du projet. Choix validés :
+
+- **son propre curseur de temps**, indépendant de l'horloge globale, en **temps relatif** sur
+  **−1 an / +4 ans** ;
+- **remise à zéro automatique** du curseur quand l'horloge globale est altérée (accélérée ou
+  reculée) ;
+- deux besoins séparés, deux tables : **dessiner** la trajectoire sur 5 ans (table **journalière**
+  pour tout objet suivi : ~1 800 lignes, ~60 ko ; l'erreur du pas journalier loin de la Terre est
+  de ~14 km, mesurée le 2026-10-27) et **placer** l'objet avec précision (pour un objet suivi qui est
+  un NEO : horaire + segments de 5 min, **découpés par année** et chargés autour de l'instant du
+  curseur). Une table horaire sur 5 ans d'une traite (~44 000 lignes, ~27 s extrapolées) ne tient
+  pas dans le délai de 20 s de `HorizonsClient` ni dans le mur PHP de 30 s.
+
+Contexte de travail pour l'agent : `docs/briefs/lot2-outil-trajectoire.md` (fichier de travail, supprimé
+au merge de la branche).
+
+### Lot 2 — livré le 2026-11-05 (code et vérifications automatiques ; rendu à valider à l'œil)
+
+Ajout, sans réécrire le paragraphe « à construire » ci-dessus, dont deux points sont corrigés.
+
+- **Correction de l'extrapolation.** La table horaire de 5 ans d'une traite a été mesurée :
+  **5,3 s (Apophis), 4,8 s (2024 YR4)**, 43 825 lignes, 5,4 Mo. Les « ~27 s » ne tenaient pas : ~1,1 s
+  de frais fixes par appel, puis coût quasi linéaire (voir `docs/agent/gotchas.md`). Le découpage par
+  année est **gardé** pour d'autres raisons, validées par l'utilisateur : marge face à un Horizons
+  ~×3 plus lent (5,3 s × 3 frôle les 20 s du délai), poids (~260–290 ko par tranche contre ~1,4 Mo
+  par NEO), même forme que le lot 3. Journalière : six années civiles 1,44–1,49 s, 2 192 lignes,
+  278 ko bruts.
+- **Remise à zéro : remplacée.** Le point « remise à zéro automatique quand l'horloge globale est
+  altérée » est **abandonné** (l'utilisateur l'a renversé le jour même : « si on change de vitesse, on
+  change juste de vitesse »). Seul le bouton **« Maintenant »** remet à zéro l'horloge et le décalage,
+  plus le « 0 » de l'outil.
+- **Curseur unique** pour tous les objets suivis : glissière au jour sur [maintenant −1 an, +4 ans],
+  ±1 h / ±1 j, lecture 1 h/s, 1 j/s, 1 sem/s. « Aller au prochain rapprochement » règle ce curseur.
+- **« Terre fantôme »** (option A) : l'objet est à sa vraie position à T′ = T + décalage ; une Terre
+  translucide « Terre au <date> » marque la Terre à T′ et sert de « Terre » pour les arcs de survol
+  et la distance de la fiche. Écartées : objet géocentrique autour de la vraie Terre (B), déplacer la
+  vraie Terre (C).
+- **Routes** : `/api/small-body/trajectory`, `/precision` (NEO seulement, année [Y−1, Y+4], 2 lignes
+  de recouvrement de chaque côté) et `/trajectory/sun` ; `/positions` remplacée, non appelée.
+  Contrat dans `backend/API.md`.
+- **Choix de l'agent web, à confirmer à l'œil** : placement `placeKm(Terre fantôme + géo(T′))` avec
+  Soleil(T) − Soleil(T′) lu dans `trajectory/sun` ; arcs de survol seulement si la tranche horaire
+  est chargée ; tranche en erreur redemandée après 60 s ; objets masqués si la table du Soleil manque
+  et décalage non nul.
+
+Détail complet, mesures et vérifications : `docs/agent/decisions.md`, « 2026-11-05 — Lot 2 — outil de
+trajectoire des objets suivis ».
+
+#### Retouches après les premiers retours visuels (2026-11-05)
+
+Ajout. Codées et vérifiées automatiquement (Vitest 506 tests sur 17 modules, build OK, ESLint zéro) ;
+validées à l'œil par l'utilisateur pour 1, 4 et 5, la 6 reste à voir.
+
+1. **Orbite d'Apophis en deux familles d'ellipses : réelle**, c'est l'éphéméride Horizons (avant 2029 :
+   a 0,922 ua, période 324 j ; après : a 1,103 ua, période 423 j). Les 6 brins sont 6 passages réels
+   entre 77 456 et 105 767 km. Gardée telle quelle ; même effet pour 2026 TP128 et 2026 QC3.
+2. **Arc de survol bicolore** (couleur de l'objet / bleu de l'orbite terrestre), ±15 j gardés.
+3. **Tronçons de durée 12 h / 2^k** selon le zoom (k ≤ 5), arcs échantillonnés à 15 min.
+4. **`previousApproach`** et bouton « Revoir le passage du jj/mm/aaaa » : 2026 TP128 et 2026 QC3
+   n'affichaient plus rien une fois leur passage derrière T′.
+5. **Un arc n'est visible que si T′ est dans ses ±15 j** (`activeFlybyArc`).
+6. **Trace héliocentrique densifiée** sur ±3 j autour des passages (`densifyHeliocentric`) : les
+   cordes journalières s'écartaient jusqu'à 99 671 km pour 2026 TP128.
+
+Mesures et raisons : `docs/agent/decisions.md`, sous-section « Retouches après les premiers retours
+visuels (2026-11-05) ».
