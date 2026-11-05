@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   REQUEST_TIMEOUT_MS,
   fetchPrecision,
+  fetchSolarSystemBody,
+  fetchSolarSystemOrbit,
+  fetchSolarSystemOrientation,
   fetchTrajectory,
   fetchTrajectorySun,
   requestErrorMessage,
@@ -68,6 +71,26 @@ describe('small-body routes', () => {
   it('une panne remonte avec le nom de la source', async () => {
     vi.stubGlobal('fetch', answer({ error: 'x', source: 'JPL SBDB' }, 502))
     await expect(searchSmallBody('Apophis')).rejects.toThrow('JPL SBDB est en panne')
+  })
+})
+
+describe('solar-system routes (lot 3, 2026-11-05)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // Épinglé : sans `year` le backend sert encore l'ancienne fenêtre mensuelle,
+  // qui ne se découpe pas en tranches -- le viewer ne doit plus jamais l'appeler.
+  it('les trois routes portent l’année demandée, après le corps', async () => {
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+    vi.stubGlobal('fetch', fetch)
+    await fetchSolarSystemBody('mars', 2027)
+    await fetchSolarSystemOrbit('venus', 2026)
+    await fetchSolarSystemOrientation('moon', 2030)
+    const urls = fetch.mock.calls.map(([url]) => url)
+    expect(urls).toEqual([
+      '/api/solar-system/positions?body=mars&year=2027',
+      '/api/solar-system/orbit?body=venus&year=2026',
+      '/api/solar-system/orientation?body=moon&year=2030',
+    ])
   })
 })
 

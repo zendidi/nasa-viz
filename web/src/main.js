@@ -12,6 +12,8 @@ import { createOrbitTraces } from './scene/orbitTrace.js'
 import { createCameraRig } from './app/camera.js'
 import { createSunMoon } from './app/sunMoon.js'
 import { createTimeControls } from './app/time.js'
+import { loadEphemerides } from './app/ephemerides.js'
+import { purgeStaleCache } from './ephemeris/sliceSet.js'
 import { createViewFrame } from './scene/frame.js'
 import { createEarthSystem } from './scene/earthSystem.js'
 import { createSun } from './scene/sun.js'
@@ -77,6 +79,10 @@ const eclipticPlane = createEclipticPlane(scene)
 // Declared before the Sun table, whose `changed` callback reads it.
 const clock = createClock({ wallMs: Date.now() })
 const simNowMs = () => clock.nowMs(Date.now())
+
+// Before anything reads the cache (2026-11-05, lot 3): forget the yearly slices
+// that left the range around the wall clock, and the pre-slice single-record keys.
+purgeStaleCache()
 
 // app/sunMoon.js: the Sun and Moon tables, their geocentric positions, and the
 // 60-simulated-second cadence the lighting and the drawn orbits follow. The
@@ -549,6 +555,9 @@ const tracking = createTracking({
     labels,
     frame,
     minRadiusAt,
+    // The scene's own assembled Sun (2026-11-05, lot 3), not a second table fetched
+    // for the tool: the objects are subtracted from the very Sun that places the planets.
+    sunTable,
   },
   neoScene,
   panels,
@@ -744,17 +753,20 @@ rig.frameFirstReference()
 refreshUsage()
 renderScalePanel()
 renderViewPanel()
+// Slices read from localStorage are in already, but no landing announces them:
+// the clock's bounds (wall -1 year, +4 years, cut to the Sun's coverage) are set now.
+time.refreshBounds(Date.now())
 time.renderPanel(simNowMs(), Date.now())
 
 // Not wired to "Mettre à jour": the planet tables are keyless (JPL Horizons,
-// no NASA quota) and cover a year, so there is nothing for that button to
-// refresh. They load themselves once, then come back from localStorage.
-sunTable.load()
-moonTable.load()
-planets.load()
+// no NASA quota) and each yearly slice is immutable, so there is nothing for that
+// button to refresh. They load themselves once, then come back from localStorage.
+// The order (2026-11-05): the Sun's six slices, then the current year of the Moon
+// and the planets, then their other years moving away from it (app/ephemerides.js).
+loadEphemerides({ sunTable, moonTable, planets })
 // Unlike a planet's, this one is not waited for: the Moon is drawn from the
 // first frame in every view, so there is no "centre on it" moment to hang the
-// fetch on. One keyless Horizons request a month, cached like the rest.
+// fetch on. One keyless Horizons request per year, cached like the rest.
 loadOrientationFor('moon')
 
 const cachedIss = loadCached('iss')

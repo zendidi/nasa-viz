@@ -51,14 +51,17 @@ formes de réponse, pas ce fichier.
   désignation (`DES=2014 SU1;`, pas horaire) et corps majeurs par identifiant Horizons (`'499'` =
   Mars, pas journalier).
 - `src/Service/SolarSystemClient.php` — les huit planètes autres que la Terre (Pluton compris, orbite tirée du barycentre `9`) : identifiants
-  Horizons, noms UAI, rayons moyens, périodes sidérales, et la fenêtre commune (à partir du 1er du
-  mois UTC) qui fait que des tables téléchargées à des jours différents restent sur la même
-  horloge. Sert deux choses sans rapport (voir le tableau de `docs/planetes-et-lunes.md` §3c) :
-  `getPositions()` = où est la planète (un an au pas d'un jour, `/api/solar-system/positions`), et
-  `getOrbit()` = à quoi ressemble son chemin (une période sidérale en 180 intervalles,
-  `/api/solar-system/orbit`). Les deux sont **géocentriques**, y compris l'orbite : c'est le client
-  qui la rend héliocentrique en retranchant son propre Soleil, faute de quoi le trait raterait sa
-  planète.
+  Horizons, noms UAI, rayons moyens, périodes sidérales, et, depuis le lot 3 (2026-11-05), les
+  **tranches annuelles** : un corps × une année civile UTC, immuable, années Y−1 à Y+4, avec 2 lignes
+  de recouvrement de chaque côté, de sorte que des tables téléchargées à des jours différents restent
+  sur la même horloge. (La fenêtre mensuelle d'avant — à partir du 1er du mois UTC, `HISTORY_MONTHS`
+  — reste servie sans `year=` mais n'est plus appelée ; `docs/plage-cinq-ans.md`.) Sert deux choses
+  sans rapport (voir le tableau de `docs/planetes-et-lunes.md` §3c) : `getPositions()` = où est la
+  planète (une tranche annuelle au pas d'un jour, 6 h pour Lune, Mercure et Vénus,
+  `/api/solar-system/positions?year=`), et `getOrbit()` = à quoi ressemble son chemin (une période
+  sidérale depuis le 1/1 de l'année demandée, `/api/solar-system/orbit?year=`). Les positions sont
+  **géocentriques**, y compris l'orbite : c'est le client qui la rend héliocentrique en retranchant son
+  propre Soleil, faute de quoi le trait raterait sa planète.
 - `src/Service/IssPositionClient.php` — position ISS via wheretheiss.at (pas de quota, pas suivi
   par le usage tracker).
 - `src/Service/NasaUsageTracker.php` — compteur d'appels réels à `api.nasa.gov` du jour (clé de
@@ -72,15 +75,19 @@ formes de réponse, pas ce fichier.
   - `/api/neo?start_date=&end_date=` — TTL 1h (10 min si une source est tombée), par plage de
     dates, plage max 7 jours
   - `/api/neo/details?designations=` — TTL 7 jours par objet (1 jour si inconnu)
-  - `/api/solar-system/positions?body=` — TTL 40 jours par planète (1 h si Horizons n'a pas
-    répondu). **Un corps par appel** : une requête d'éphémérides Horizons coûte 5 à 16 s quelle que
-    soit sa taille, plusieurs d'un coup dépassent la limite d'exécution de PHP (`gotchas.md`)
-  - `/api/solar-system/orbit?body=` — même règle, même TTL : l'orbite complète d'une planète en 361
-    points sur une période sidérale (Neptune va jusqu'en 2191), **héliocentrique**
+  - `/api/solar-system/positions?body=&year=` — une **tranche annuelle** par corps (Y−1 à Y+4, sinon
+    400), TTL 3 ans (1 h si Horizons n'a pas répondu), aucun `Cache-Control`. Sans `year` : l'ancienne
+    fenêtre mensuelle (TTL 40 jours), **remplacée**, plus appelée. **Un corps par appel** : une requête
+    d'éphémérides Horizons coûte 5 à 16 s quelle que soit sa taille, plusieurs d'un coup dépassent la
+    limite d'exécution de PHP (`gotchas.md`) ; une tranche annuelle coûte 1,0 à 1,2 s
+  - `/api/solar-system/orbit?body=&year=` — même règle, même TTL : l'orbite d'une planète en 361
+    points sur une période sidérale (Neptune va jusqu'en 2191) depuis le 1/1 de `year`,
+    **héliocentrique**
   - `/api/solar-system/moons?planet=` — au plus 9 lunes par planète, positions relatives à la
     planète ; la route ne va chercher qu'une lune absente par appel, donc un cache froid converge
     en autant d'appels qu'il y a de lunes
-  - `/api/solar-system/orientation?body=` — TTL 40 jours : le pôle et le méridien origine en
+  - `/api/solar-system/orientation?body=&year=` — TTL 3 ans, époque au 1/1 de `year` (sans `year` :
+    TTL 40 jours, époque au 1er du mois, remplacée) : le pôle et le méridien origine en
     vecteurs unitaires ICRF plus le taux de rotation signé. Accepte les neuf planètes (Pluton compris) **et `moon`**.
     Une table `OBSERVER` de deux lignes, donc ~1 s là où une table de vecteurs coûte 5 à 16 s
   - `/api/small-body/trajectory?spkid=` — table **journalière** géocentrique d'un objet suivi sur six
@@ -111,19 +118,30 @@ Rangé par domaine depuis le 2026-10-27 (refonte de structure, branche `refactor
   qui protège le quota NASA pendant qu'on développe/teste.
 - `src/ephemeris/` — où sont les choses dans le temps :
   - `clock.js` — horloge simulée unique : `createClock`, vitesses ×1 / 1 h/s / 1 j/s, `setRate`
-    sans saut, `reset`, bornes (fin de la table Soleil ou 1er du mois UTC + 365 j), `atLimit` ; le
+    sans saut, `reset`, bornes [mur −1 an, +4 ans] au minuit UTC (lot 3, 2026-11-05 ; égales à
+    `cursorBounds` de l'outil de trajectoire, coupées à la couverture du Soleil), `atLimit` ; le
     temps réel n'est jamais borné. Les caches restent sur l'horloge murale ;
+  - `slices.js` — **les tranches annuelles** (lot 3), pur et testé : années gardées (Y−1 à Y+4),
+    assemblage de plusieurs tranches en une table continue (recouvrement retiré d'après
+    `slice_start` / `slice_end`), bornes de l'horloge, ordre de chargement (`loadPlan`, `runJobs`),
+    validation des enregistrements relus du `localStorage`, clés `positions-<id>-<année>`,
+    `orbit-…`, `orientation-…` et purge des clés périmées. `sliceSet.js` : les tranches chargées d'un
+    corps (réseau, stockage, table assemblée) ;
   - `sunTable.js` — tables Horizons du Soleil et, depuis le 2026-10-21, de la Lune
-    (`createMoonTable`), avec la série d'`astronomy.js` en repli ;
+    (`createMoonTable`), par tranches annuelles, avec la série d'`astronomy.js` en repli ;
   - `positionTable.js` — les règles communes à toutes les tables Horizons (Soleil, Lune,
-    planètes, lunes, NEO) : validité d'un cache (`tableCovers` : échelle de temps, historique,
-    marge de 30 j), fin de table, position à un instant (Catmull-Rom en ICRF puis changement
-    d'axes). Le chargement reste à chaque propriétaire ;
+    planètes, lunes, NEO) : validité d'un cache (`tableCovers` : échelle de temps, couverture, marge optionnelle ; plus d'option `history` depuis le lot 3),
+    fin de table, position à un instant (Catmull-Rom en ICRF puis changement d'axes). Le chargement
+    reste à chaque propriétaire ;
   - `astronomy.js` (séries de repli, pôle et ERA de la Terre), `interpolate.js`, `iss.js`.
 - `src/view/` — `scale.js` : modèle d'échelle « lisible → réel » (slider 9 crans), une courbe de
   compression par corps pivot (`docs/echelle-reelle.md`). `focus.js` : les pivots possibles (la
   Terre, le Soleil, les huit planètes autres que la Terre — dix, `FOCUSES`), leurs courbes et
   cercles (`docs/points-de-vue.md`).
+- `src/app/ephemerides.js` — le chargement de fond des éphémérides du lot 3 : parcourt, une requête à
+  la fois, le plan de `loadPlan` (`ephemeris/slices.js`) — 6 tranches du Soleil, l'année courante de
+  la Lune et des planètes, puis les autres années en s'éloignant — puis passe aux orbites. Le Soleil
+  assemblé sert aussi à l'outil de trajectoire (`tracking/scene.js`).
 - `src/app/camera.js` — la caméra et l'échelle animée : cran du slider, `t` et sa transition,
   portée du zoom et plan lointain qui suivent l'étendue de la scène, recentrage, et la moitié
   caméra d'un changement de pivot (même cadrage physique, relu par l'ancienne courbe).
@@ -139,15 +157,19 @@ Rangé par domaine depuis le 2026-10-27 (refonte de structure, branche `refactor
     l'ERA (le GMST jusqu'au 2026-10-21), inclinée sur le pôle de la date. ISS seulement en temps
     réel et depuis la Terre (`docs/agent/decisions.md`) ;
   - `sun.js` — le marqueur du Soleil, son halo de lisibilité, la lumière directionnelle ;
-  - `planets.js` — les huit planètes autres que la Terre (Pluton compris) : tables Horizons
-    (`/api/solar-system/positions`, chargées une par une en arrière-plan, cache `localStorage`),
-    sphères texturées et libellés. Charge ensuite **l'orbite** de chaque planète
-    (`/api/solar-system/orbit`), servie héliocentrique, tracée depuis n'importe quel pivot ; en vue
+  - `planets.js` — les huit planètes autres que la Terre (Pluton compris) : tables Horizons par
+    tranches annuelles (`/api/solar-system/positions?year=`, chargées une par une en arrière-plan
+    dans l'ordre de `app/ephemerides.js`, une clé `localStorage` par planète × année, assemblées en
+    une table continue), sphères texturées et libellés ; **une planète hors de sa couverture est
+    masquée**, label et trait compris. Charge ensuite **l'orbite** de chaque planète pour l'année de
+    l'horloge (`/api/solar-system/orbit?year=`, rechargée au changement d'année, l'ancienne gardée
+    d'ici là), servie héliocentrique, tracée depuis n'importe quel pivot ; en vue
     géocentrée les orbites suivent le fondu des planètes et n'apparaissent qu'à 100 % réel. La
     carte de couleur et l'anneau de Saturne ne sont construits qu'à la prise de pivot ;
   - `moons.js` — les lunes de la planète pivot seulement (`docs/planetes-et-lunes.md`) ;
-  - `orientation.js` — comment chaque corps est tourné : `/api/solar-system/orientation`, son
-    cache (validé sur l'`epoch`, pas sur un âge) et l'application au quaternion. Un cache de
+  - `orientation.js` — comment chaque corps est tourné : `/api/solar-system/orientation?year=`
+    (époque au 1/1 de l'année de l'horloge, année chargée la plus proche en attendant), son cache
+    (une clé par corps × année, validé sur l'`epoch`, pas sur un âge) et l'application au quaternion. Un cache de
     module : les planètes et la Lune s'en servent ;
   - `geo.js` — la géométrie partagée, et **la convention de longitude des cartes** : bord gauche à
     180°, centre à 0, est vers la droite. Mesurée, pas supposée — voir `tools/calibration/` ;
@@ -162,7 +184,7 @@ Rangé par domaine depuis le 2026-10-27 (refonte de structure, branche `refactor
   orbite complète en vue héliocentrée, case « orbites de tous les NEO » (`bundleOrbitSamples`
   empile les orbites dans deux `LineSegments`). `info.js` : textes de comparaison des sources et
   de la fiche, couleurs par taxonomie. `orbit.js` : schéma d'orbite SVG de la fiche.
-- `src/tracking/` — suivi de cinq astéroïdes au plus (`docs/suivi-asteroides.md`).
+- `src/tracking/` — suivi de dix astéroïdes au plus (`docs/suivi-asteroides.md`).
   `model.js` (pur, testé) : la liste (`localStorage`, la liste seulement, jamais les tables),
   `tableAt`, prochain rapprochement, arcs de survol. `scene.js` : chaque objet suivi, son orbite
   héliocentrique depuis tous les pivots et, depuis la Terre, ses passages près de la Terre

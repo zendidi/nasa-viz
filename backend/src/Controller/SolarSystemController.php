@@ -42,6 +42,14 @@ final class SolarSystemController extends ProxyController
             return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', SolarSystemClient::ids()))], 400);
         }
 
+        $year = self::yearParameter($request);
+        if ($year instanceof JsonResponse) {
+            return $year;
+        }
+        if (null !== $year) {
+            return $this->positionsSlice($id, $year, $client, $pool);
+        }
+
         $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
         // `_h<n>`: a table from before HISTORY_MONTHS started at the window, not before it.
         $key = 'solar_system_'.$id.'_'.$start->format('Y-m-d').'_'.SolarSystemClient::stepSeconds($id).'_'.HorizonsClient::TIME_SCALE.'_h'.SolarSystemClient::HISTORY_MONTHS;
@@ -193,18 +201,30 @@ final class SolarSystemController extends ProxyController
             return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', PlanetOrientationClient::ids()))], 400);
         }
 
-        $epoch = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
+        $year = self::yearParameter($request);
+        if ($year instanceof JsonResponse) {
+            return $year;
+        }
+        // `year=`: epoch on 1 January of that year, one entry per body × year (lot 3, 2026-11-05).
+        // The Moon's pole drifts up to 1,98° from a fixed epoch but 0,54° at most inside a year
+        // restarted every 1 January; the planets' jump at the seam is ≤ 0,005°.
+        $epoch = null === $year
+            ? SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            : SolarSystemClient::yearStart($year);
 
         // Same shape as the positions route: the key carries the window, so
         // the TTL only has to outlive the month; a body Horizons didn't
         // answer for is retried within the hour.
         try {
-            $orientation = self::monthly($pool, 'solar_system_orientation_'.$id.'_'.$epoch->format('Y-m-d'), fn () => $client->getOrientation($id, $epoch));
+            $fetch = fn () => $client->getOrientation($id, $epoch);
+            $orientation = null === $year
+                ? self::monthly($pool, 'solar_system_orientation_'.$id.'_'.$epoch->format('Y-m-d'), $fetch)
+                : self::immutable($pool, SolarSystemClient::sliceOrientationKey($id, $year), $fetch);
         } catch (ExceptionInterface $e) {
             return $this->upstreamError('solar-system/orientation', 'JPL Horizons', $e);
         }
 
-        return new JsonResponse([
+        return new JsonResponse(($year ? ['year' => $year] : []) + [
             'frame' => 'ICRF',
             'epoch' => $epoch->getTimestamp(),
             'bodies' => [PlanetOrientationClient::describe($id) + ($orientation ?? [
@@ -240,15 +260,28 @@ final class SolarSystemController extends ProxyController
             return new JsonResponse(['error' => sprintf('body must be one of %s', implode(', ', SolarSystemClient::planetIds()))], 400);
         }
 
-        $start = SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
+        $year = self::yearParameter($request);
+        if ($year instanceof JsonResponse) {
+            return $year;
+        }
+        // `year=`: one period from 1 January of that year. Drawn from the epoch of the year
+        // shown, a planet leaves its line by 993 km at most inside it (Mercury; Jupiter 311),
+        // where from an older epoch it strays by 352 687 km (Jupiter) to ~1,2 Mkm (Uranus)
+        // outside the period — measured 2026-11-05.
+        $start = null === $year
+            ? SolarSystemClient::windowStart(new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            : SolarSystemClient::yearStart($year);
 
         try {
-            $orbit = self::monthly($pool, 'solar_system_orbit_'.$id.'_'.$start->format('Y-m-d').'_'.HorizonsClient::TIME_SCALE, fn () => $client->getOrbit($id, $start));
+            $fetch = fn () => $client->getOrbit($id, $start);
+            $orbit = null === $year
+                ? self::monthly($pool, 'solar_system_orbit_'.$id.'_'.$start->format('Y-m-d').'_'.HorizonsClient::TIME_SCALE, $fetch)
+                : self::immutable($pool, SolarSystemClient::sliceOrbitKey($id, $year), $fetch);
         } catch (ExceptionInterface $e) {
             return $this->upstreamError('solar-system/orbit', 'JPL Horizons', $e);
         }
 
-        return new JsonResponse([
+        return new JsonResponse(($year ? ['year' => $year] : []) + [
             // Must match `SolarSystemClient::getOrbit()`'s CENTER, and the web
             // client compares this exact string before trusting a cached table
             // (`ORBIT_FRAME` in scene/planets.js). The two drifted apart once,
@@ -264,6 +297,75 @@ final class SolarSystemController extends ProxyController
             'stop' => $orbit['stop'] ?? null,
             'positions' => $orbit['positions'] ?? null,
         ]);
+    }
+
+    /**
+     * `year=` of the three routes: null when absent (the monthly window answers), the year when
+     * valid, a 400 when not an integer or outside [Y-1, Y+4].
+     */
+    private static function yearParameter(Request $request): int|JsonResponse|null
+    {
+        if (!$request->query->has('year')) {
+            return null;
+        }
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $raw = trim((string) $request->query->get('year', ''));
+        if (!ctype_digit($raw) || !SolarSystemClient::isYearInRange((int) $raw, $now)) {
+            [$min, $max] = SolarSystemClient::yearRange($now);
+
+            return new JsonResponse(['error' => sprintf('year must be between %d and %d', $min, $max)], 400);
+        }
+
+        return (int) $raw;
+    }
+
+    /** One body's position slice for a civil year (lot 3, 2026-11-05): table + overlap, immutable. */
+    private function positionsSlice(string $id, int $year, SolarSystemClient $client, CacheItemPoolInterface $pool): JsonResponse
+    {
+        try {
+            $positions = self::immutable($pool, SolarSystemClient::slicePositionsKey($id, $year), fn () => $client->getSlicePositions($id, $year));
+        } catch (ExceptionInterface $e) {
+            return $this->upstreamError('solar-system/positions', 'JPL Horizons', $e);
+        }
+        $window = SolarSystemClient::sliceWindow($id, $year);
+
+        return new JsonResponse([
+            'frame' => 'ICRF geocentric',
+            'time_scale' => HorizonsClient::TIME_SCALE,
+            'units' => 'km',
+            'year' => $year,
+            'slice_start' => $window['slice_start'],
+            'slice_end' => $window['slice_end'],
+            'start' => $window['start'],
+            'step_seconds' => $window['step_seconds'],
+            'bodies' => [SolarSystemClient::describe($id) + ['positions' => $positions]],
+        ]);
+    }
+
+    /**
+     * The cache shape of the `year=` slices: a value never changes, so it is kept for
+     * SLICE_TTL_SECONDS; a null (Horizons had nothing) for an hour. A transport failure throws
+     * before anything is saved. No Cache-Control header anywhere: an immutable HTTP cache would
+     * stop a client from healing itself after refusing a slice (lesson of 2026-09-29).
+     *
+     * @template T
+     *
+     * @param callable(): T $fetch
+     *
+     * @return T
+     *
+     * @throws ExceptionInterface
+     */
+    private static function immutable(CacheItemPoolInterface $pool, string $key, callable $fetch): mixed
+    {
+        $item = $pool->getItem($key);
+        if ($item->isHit()) {
+            return $item->get();
+        }
+        $value = $fetch();
+        $pool->save($item->set($value)->expiresAfter(null === $value ? SolarSystemClient::NULL_TTL_SECONDS : SolarSystemClient::SLICE_TTL_SECONDS));
+
+        return $value;
     }
 
     /**

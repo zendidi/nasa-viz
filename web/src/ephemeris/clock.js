@@ -26,42 +26,13 @@ export const CLOCK_RATES = Object.freeze({ REAL: 1, HOUR_PER_SECOND: 3600, DAY_P
  * The speed slider's stops (2026-10-27), from fast backwards to fast forwards,
  * pause in the middle. Notched rather than continuous: these are rates a person
  * can name ("un jour par seconde"), and a continuous log slider lands on 3 712 s/s.
- * Reverse goes as far as the ephemeris tables do — HISTORY_MONTHS before the
- * 1st of the current month (`defaultMinMs`) — and stops there like the forward end does.
+ * Reverse goes as far as the clock's lower bound — one year before now, floored
+ * to a UTC midnight (`clockBounds` in slices.js, 2026-11-05; it was HISTORY_MONTHS
+ * before the 1st of the month) — and stops there like the forward end does.
  */
 export const RATE_STOPS = Object.freeze([
   -604_800, -86_400, -21_600, -3600, -60, 0, 1, 60, 3600, 21_600, 86_400, 604_800,
 ])
-
-const DAY_MS = 86_400_000
-
-/** Months the position tables reach back before the 1st of the month (`SolarSystemClient::HISTORY_MONTHS`). */
-export const HISTORY_MONTHS = 3
-
-/** The 1st of the current UTC month: the window every table is anchored on (`SolarSystemClient::windowStart`). */
-function windowStartMs(wallMs) {
-  const now = new Date(wallMs)
-  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
-}
-
-/**
- * Where reversed time stops when no table says otherwise: HISTORY_MONTHS
- * before the 1st of the current UTC month, which is where the planet and Sun
- * position tables start (`SolarSystemClient::positionsStart`).
- */
-export function defaultMinMs(wallMs) {
-  const now = new Date(wallMs)
-  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - HISTORY_MONTHS, 1)
-}
-
-/**
- * Where simulated time stops when no table says otherwise: a year from the 1st
- * of the current UTC month, which is the window the planet and Sun tables are
- * fetched on (`SolarSystemClient::windowStart` + 365 days).
- */
-export function defaultMaxMs(wallMs) {
-  return windowStartMs(wallMs) + 365 * DAY_MS
-}
 
 /**
  * @param {object} options

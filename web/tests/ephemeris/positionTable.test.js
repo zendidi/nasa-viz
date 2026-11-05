@@ -1,14 +1,14 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { TIME_SCALE } from '../../src/data/api.js'
-import { defaultMinMs } from '../../src/ephemeris/clock.js'
-import { TABLE_MARGIN_MS, sampleKm, tableCovers, tableEndSeconds, tablePositionKm } from '../../src/ephemeris/positionTable.js'
+import { sampleKm, tableCovers, tableEndSeconds, tablePositionKm } from '../../src/ephemeris/positionTable.js'
 import { icrfToScene } from '../../src/scene/geo.js'
 
 // What is pinned: the rules every Horizons table in the scene shares. None shows
 // on screen when it breaks — a table kept one day too long draws a planet a day
-// off, one kept without history stops the clock at the 1st of the month, a
-// sample left in ICRF puts a body in the wrong place by an axis swap.
+// off, a sample left in ICRF puts a body in the wrong place by an axis swap.
+// (The "history" rule that stopped the clock at the 1st of the month went on
+// 2026-11-05 with the yearly slices: ephemeris/slices.test.js pins the new bounds.)
 
 const DAY = 86_400
 const NOW_MS = Date.UTC(2026, 9, 27, 12)
@@ -29,31 +29,22 @@ describe('tableEndSeconds', () => {
 })
 
 describe('tableCovers', () => {
-  const yearFromHistory = () => table(defaultMinMs(NOW_MS), 500)
-
   it('vide, absente ou dans une autre échelle de temps : refusée', () => {
     expect(tableCovers(null, NOW_MS)).toBe(false)
     expect(tableCovers(table(NOW_MS - DAY * 1000, 0), NOW_MS)).toBe(false)
     expect(tableCovers(table(NOW_MS - DAY * 1000, 10, { timeScale: 'TDB' }), NOW_MS)).toBe(false)
   })
 
-  it('sans historique : il suffit que « maintenant » soit dedans', () => {
+  it('il suffit que « maintenant » soit dedans', () => {
     expect(tableCovers(table(NOW_MS - DAY * 1000, 10), NOW_MS)).toBe(true)
     expect(tableCovers(table(NOW_MS + 1000, 10), NOW_MS)).toBe(false)
     expect(tableCovers(table(NOW_MS - 10 * DAY * 1000, 10), NOW_MS)).toBe(false) // finie hier
   })
 
-  it("avec historique : doit remonter jusqu'à la borne basse de l'horloge", () => {
-    expect(tableCovers(yearFromHistory(), NOW_MS, { history: true })).toBe(true)
-    const tooLate = table(defaultMinMs(NOW_MS) + DAY * 1000, 500)
-    expect(tableCovers(tooLate, NOW_MS, { history: true })).toBe(false)
-    expect(tableCovers(tooLate, NOW_MS)).toBe(true) // sans la règle, elle passerait
-  })
-
   it('avec marge : abandonnée 30 jours avant sa fin, pas à sa fin', () => {
     const endsIn20Days = table(NOW_MS - 100 * DAY * 1000, 121)
     expect(tableCovers(endsIn20Days, NOW_MS)).toBe(true)
-    expect(tableCovers(endsIn20Days, NOW_MS, { marginMs: TABLE_MARGIN_MS })).toBe(false)
+    expect(tableCovers(endsIn20Days, NOW_MS, { marginMs: 30 * DAY * 1000 })).toBe(false)
   })
 })
 

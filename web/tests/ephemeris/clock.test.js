@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CLOCK_RATES, HISTORY_MONTHS, RATE_STOPS, createClock, defaultMaxMs, defaultMinMs } from '../../src/ephemeris/clock.js'
+import { CLOCK_RATES, RATE_STOPS, createClock } from '../../src/ephemeris/clock.js'
 
 // Ce qui est épinglé ici : les invariants que l'œil ne voit pas au moment où ils
 // cassent. Un changement de vitesse qui fait sauter le temps, c'est une planète
@@ -149,26 +149,6 @@ describe('marche arrière et pause (2026-10-27)', () => {
     expect(RATE_STOPS).toContain(DAY_PER_SECOND)
     for (let i = 1; i < RATE_STOPS.length; i++) expect(RATE_STOPS[i]).toBeGreaterThan(RATE_STOPS[i - 1])
     for (const rate of RATE_STOPS) if (rate > 1) expect(RATE_STOPS).toContain(-rate)
-  })
-})
-
-describe('defaultMinMs', () => {
-  it('= 3 mois avant le 1er du mois UTC, là où commencent les tables de positions', () => {
-    expect(HISTORY_MONTHS).toBe(3)
-    expect(defaultMinMs(Date.UTC(2026, 9, 31, 23, 59))).toBe(Date.UTC(2026, 6, 1))
-  })
-
-  // Janvier − 3 mois doit tomber en octobre de l'année d'avant, pas sur un mois −2.
-  it('passe correctement le changement d\'année', () => {
-    expect(defaultMinMs(Date.UTC(2027, 0, 15))).toBe(Date.UTC(2026, 9, 1))
-  })
-})
-
-describe('defaultMaxMs', () => {
-  it('= le 1er du mois UTC + 365 jours, quel que soit le jour du mois', () => {
-    const expected = Date.UTC(2026, 9, 1) + 365 * 86_400_000
-    expect(defaultMaxMs(Date.UTC(2026, 9, 1))).toBe(expected)
-    expect(defaultMaxMs(Date.UTC(2026, 9, 31, 23, 59))).toBe(expected)
   })
 })
 

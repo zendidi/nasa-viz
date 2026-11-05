@@ -14,13 +14,15 @@
  */
 
 import * as THREE from 'three'
-import { TIME_SCALE, fetchSolarSystemBody, fetchSolarSystemOrbit } from '../data/api.js'
+import { fetchSolarSystemOrbit } from '../data/api.js'
 import { loadCached, saveCached } from '../data/cache.js'
 import { loadColorMap, makeLitBodyMaterial, makeRing } from './bodies.js'
 import { SSS_MAP_LEFT_EDGE_LON, icrfToScene, mapUShift } from './geo.js'
 import { polylinePointAt, subdivideClosedLoop } from '../ephemeris/interpolate.js'
 import { orientBody } from './orientation.js'
-import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, tableCovers, tablePositionKm } from '../ephemeris/positionTable.js'
+import { ORBIT_SMOOTHING, sampleKm, tableIndexAt } from '../ephemeris/positionTable.js'
+import { createSliceSet } from '../ephemeris/sliceSet.js'
+import { MAX_CONSECUTIVE_FAILURES, orbitFromResponse, orbitKey, validOrbit, yearOfMs, yearRange } from '../ephemeris/slices.js'
 import { SCALE_STEPS, pivotRadius, planetRadius, stepToT } from '../view/scale.js'
 
 /**
@@ -206,28 +208,14 @@ function planetFade(t, hidden) {
   return Math.min(1, Math.max(0, (t - GEOCENTRIC_FADE_FROM) / (1 - GEOCENTRIC_FADE_FROM)))
 }
 
-/**
- * The frame the orbit route must declare, **in its own words**, for a stored
- * table to be usable.
- *
- * The first version of this guard was a constant the client made up and stamped
- * on whatever it received, and that failed for a reason worth remembering: the
- * route was switched to heliocentric while the *server* cache still held the old
- * geocentric tables for another forty days. A client fetching in that window got
- * geocentric samples and labelled them heliocentric itself — and then drew them
- * as such, which is how the planets ended up ringed by their own retrograde
- * loops instead of their orbits.
- *
- * So the marker has to come from the side that knows. Storing the response's own
- * `frame` string and demanding this exact value rejects all three bad cases at
- * once: tables from before the field existed, tables mislabelled by the old
- * guard (they say 'heliocentric', not 'ICRF heliocentric'), and any future
- * response that changes frame again without anyone thinking of this cache.
- */
-const ORBIT_FRAME = 'ICRF heliocentric'
+// ORBIT_FRAME (the frame the orbit route must declare, in its own words, and why)
+// moved with the rest of the validation to ephemeris/slices.js on 2026-11-05.
 
 /** Dimmer than the Earth's own orbit (0.5): that one is the heliocentric view's yardstick. */
 const ORBIT_OPACITY = 0.35
+
+/** An orbit that failed is asked again after this long, the next time the orbit loader runs. */
+const ORBIT_RETRY_MS = 5 * 60_000
 
 /**
  * @typedef {{
@@ -237,30 +225,9 @@ const ORBIT_OPACITY = 0.35
  * }} PlanetBody
  */
 
-/** Whether a stored table still brackets "now" with room to spare. */
-function covers(record) {
-  // Wall clock on purpose (here and in orbitCovers): cache validity is a fact
-  // about the real world, whatever date the simulated clock is showing.
-  // Must reach HISTORY_MONTHS back, or the clock could not run back on it (see sunTable.js).
-  return tableCovers(record, Date.now(), { history: true, marginMs: TABLE_MARGIN_MS })
-}
-
-/**
- * An orbit is only usable while "now" is inside the period it covers — that is
- * the whole reason the line passes through its planet. No margin: the last
- * sample is as good as the first.
- */
-function orbitCovers(record) {
-  if (!record?.positions?.length) return false
-  // Drawing a geocentric table as heliocentric rings the Earth's position
-  // instead of the Sun's, and the retrograde loops look deliberate. Rejecting a
-  // wrong or missing frame costs one refetch and self-heals, where renaming the
-  // cache key would have orphaned the old data for good.
-  if (record.frame !== ORBIT_FRAME) return false
-  if (record.timeScale !== TIME_SCALE) return false
-  const nowMs = Date.now()
-  return nowMs >= record.start * 1000 && nowMs <= record.stop * 1000
-}
+// Which stored tables and orbits may be used is decided slice by slice in
+// ephemeris/slices.js (2026-11-05); the old whole-table `covers` / `orbitCovers`
+// against the wall clock are gone with the monthly window.
 
 // Catmull-Rom points per orbit segment: 360 -> 2 880 segments (ORBIT_SMOOTHING, positionTable.js).
 
@@ -317,36 +284,52 @@ export function createPlanets({
   scene.add(group)
 
   /**
-   * Daily Horizons tables, one per planet, each carrying its own start and the
-   * mean radius the backend stated: they are fetched and cached one at a time,
-   * so nothing may assume they share a clock even though a fresh set does.
-   *
-   * @type {Record<string, {start: number, stepSeconds: number, radiusKm: number, positions: number[][]}>}
+   * Yearly Horizons slices, one set per planet (2026-11-05: Y−1 to Y+4, each
+   * year fetched, cached and validated on its own), assembled by `tableOf` into
+   * the continuous daily (or 6-hourly) table a planet is placed from. They are
+   * fetched one at a time, so nothing may assume the planets share the same
+   * years loaded.
    */
-  const tables = {}
-  for (const [id, record] of Object.entries(loadCached('solar-system')?.data ?? {})) {
-    if (PLANET_IDS.includes(id) && covers(record)) tables[id] = record
-  }
+  const sets = Object.fromEntries(PLANET_IDS.map((id) => [id, createSliceSet(id)]))
+  const tableOf = (id) => sets[id].table()
 
   /**
-   * Drawn orbits: the raw geocentric samples as the backend sent them, kept
-   * raw on purpose — the heliocentric polyline is derived from them at load
-   * time (`orbitSamplesKm`) and would go stale if `astronomy.js` ever changed.
+   * Drawn orbits: the raw heliocentric samples as the backend sent them, kept
+   * raw on purpose — the polyline is derived from them at load time
+   * (`orbitSamplesKm`) and would go stale if the axes ever changed. One record
+   * per planet × year (the orbit of a year starts on its 1 January); the one
+   * drawn is the simulated clock's year, loaded on demand, and the previous one
+   * stays on until the new one arrives.
    *
-   * @type {Record<string, {start: number, stop: number, positions: number[][]}>}
+   * @type {Record<string, Map<number, {frame: string, timeScale: string, year: number, start: number, stop: number, positions: number[][]}>>}
    */
-  const orbitTables = {}
-  for (const [id, record] of Object.entries(loadCached('solar-system-orbits')?.data ?? {})) {
-    if (PLANET_IDS.includes(id) && orbitCovers(record)) orbitTables[id] = record
+  const orbitRecords = Object.fromEntries(PLANET_IDS.map((id) => [id, new Map()]))
+  /** What each planet's line shows right now (null: none yet). `Pluto`'s offset rule reads it. */
+  const drawnOrbit = Object.fromEntries(PLANET_IDS.map((id) => [id, null]))
+  /** The simulated year the orbits are wanted for. */
+  let orbitYear = yearOfMs(Date.now())
+  {
+    const range = yearRange(Date.now())
+    for (const id of PLANET_IDS) {
+      for (let year = range.minYear; year <= range.maxYear; year++) {
+        const stored = loadCached(orbitKey(id, year))?.data
+        if (validOrbit(stored, year, range)) orbitRecords[id].set(year, stored)
+      }
+    }
   }
 
-  let loading = false
+  /** True while main.js's loading plan is running, so the panel keeps saying "…" between two slices. */
+  let planRunning = false
   let loadingOrbits = false
+  // Whether the positions plan is over: the orbits come after every position (see `loadOrbits`).
+  let orbitsEnabled = false
   // Why a load stopped, in the backend's own words ("JPL Horizons est en panne : ..."),
   // kept for the panel instead of swallowed: "les autres n'ont pas répondu" alone
   // never said who. Cleared when the next attempt starts.
   let loadError = null
   let orbitsError = null
+  /** planet:year → when its orbit failed; asked again after ORBIT_RETRY_MS, when a pump next runs. */
+  const orbitFailures = new Map()
 
   /** @type {PlanetBody[]} */
   /** Gives a body its own ellipsoid once its record says how flat it is (see `shapeOf`). */
@@ -377,7 +360,7 @@ export function createPlanets({
       // orbits at once in the same colour would say nothing about which ring
       // belongs to which dot.
       orbit: traces.make(PLANETS[id].color, ORBIT_OPACITY, { parent: scene, frame: 'heliocentric' }),
-      radiusKm: tables[id]?.radiusKm ?? 0,
+      radiusKm: sets[id].shape()?.radiusKm ?? 0,
       positionKm: new THREE.Vector3(),
       known: false,
       // Matches the material as constructed (opaque, opacity 1), so the first
@@ -390,13 +373,31 @@ export function createPlanets({
     }
   })
 
-  for (const body of bodies) {
-    if (tables[body.id]) applyShape(body, tables[body.id])
+  /** Sizes and shapes a planet from the radii its slices state, the first time a slice is in. */
+  function syncShape(body) {
+    const shape = sets[body.id].shape()
+    if (!shape) return
+    body.radiusKm = shape.radiusKm
+    applyShape(body, shape)
   }
 
-  for (const body of bodies) {
-    if (orbitTables[body.id]) traces.setKm(body.orbit, orbitSamplesKm(orbitTables[body.id]), () => true)
+  for (const body of bodies) syncShape(body)
+
+  /**
+   * Draws the planet's orbit of `year` if it is loaded and not already the one on
+   * screen. Returns whether a line is drawn for that year.
+   */
+  function showOrbit(body, year) {
+    const record = orbitRecords[body.id].get(year)
+    if (!record) return false
+    if (drawnOrbit[body.id]?.record !== record) {
+      drawnOrbit[body.id] = { year, record }
+      traces.setKm(body.orbit, orbitSamplesKm(record), () => true)
+    }
+    return true
   }
+
+  for (const body of bodies) showOrbit(body, orbitYear)
 
   // --- textures ------------------------------------------------------------
 
@@ -518,13 +519,21 @@ export function createPlanets({
    * 2027-10-01 (measured 2026-10-15): Mercury 848 km (linear: 63 258 km, worst
    * near superior conjunction at 1.29 au), Venus 52 (16 106), Mars 15 (6 839),
    * Jupiter 36 (5 729). Quintic only helps Mercury (1.8 km) — not worth it.
-   * Edge intervals use the quadratic through the three nearest samples. A table that no longer brackets "now"
-   * is refetched rather than read past its end (`covers`).
+   * Edge intervals use the quadratic through the three nearest samples.
+   *
+   * 2026-11-05 (lot 3): a planet whose assembled table does not hold the instant is
+   * **not known** — hidden, with its label and line — instead of pinned to the
+   * table's edge (`tablePositionKm` clamps) where it would look placed. The clock
+   * is bounded to the Sun's coverage, so this only shows when a planet's own
+   * slice is missing (a failed year, or still on its way).
    */
   function updatePositionKm(body, nowSeconds) {
-    const table = tables[body.id]
+    body.known = false
+    const table = tableOf(body.id)
     if (!table) return
-    tablePositionKm(table, nowSeconds, body.positionKm)
+    const f = tableIndexAt(table, nowSeconds)
+    if (f < 0 || f > table.positions.length - 1) return
+    sampleKm(table.positions, f, body.positionKm)
     body.known = true
   }
 
@@ -582,9 +591,13 @@ export function createPlanets({
   const plutoLinePoint = new THREE.Vector3()
   function plutoOrbitOffset(body, pivotId, nowSeconds) {
     if (body.id !== 'pluto') return
-    const record = orbitTables.pluto
+    // The record of the line actually drawn (2026-11-05: one per year, and the
+    // previous year's stays on until the new one lands), not whichever is newest.
+    const record = drawnOrbit.pluto?.record
     const trace = body.orbit
-    if (pivotId !== 'pluto' || !record || !trace.km || !body.known) {
+    // Outside the drawn period the line is another year's: Pluto is not on it and
+    // the offset would be a clamped, meaningless vector.
+    if (pivotId !== 'pluto' || !record || !trace.km || !body.known || nowSeconds < record.start || nowSeconds > record.stop) {
       trace.offsetKm = null
       return
     }
@@ -599,6 +612,7 @@ export function createPlanets({
   function update(nowSeconds, t) {
     const fade = planetFade(t, frame.hidesPlanets())
     const pivotId = frame.planet ? frame.planet.id : null
+    followClockYear(nowSeconds)
 
     for (const body of bodies) {
       // Kept up to date even when nothing is drawn: `positionKm` is what the
@@ -640,7 +654,11 @@ export function createPlanets({
       // with no planet on it would be the one line here pointing at nothing.
       // That includes the pivot's own line, as the Earth's disappears from the
       // Earth's view (2026-10-16).
-      if (fade > 0.001) {
+      //
+      // 2026-11-05: and to the planet being placed — a planet outside its table's
+      // coverage is hidden (see `updatePositionKm`), and its line, which would
+      // point at nothing, goes with it.
+      if (fade > 0.001 && body.known) {
         plutoOrbitOffset(body, pivotId, nowSeconds)
         traces.update(body.orbit, t)
         // Opacity only — `transparent` was set true at construction and must
@@ -655,91 +673,111 @@ export function createPlanets({
   // --- loading -------------------------------------------------------------
 
   /**
-   * One request per planet, in sequence — the backend serves one body per call
-   * (backend/API.md), and the dev server is single-threaded, so firing seven at
-   * once would only make the ISS and the NEO feed queue behind them. Each table
-   * is drawn as soon as it lands.
+   * One slice of one planet: a civil year of its positions (2026-11-05: Y−1 to
+   * Y+4, was one table per planet). Resolves true when the year is held. The
+   * order they are asked in is main.js's plan (`loadPlan`, slices.js): the
+   * current year of every planet before any other year.
+   *
+   * One request at a time — the backend serves one body per call
+   * (backend/API.md), and the dev server is single-threaded, so firing several at
+   * once would only make the ISS and the NEO feed queue behind them. Each slice
+   * is used as soon as it lands.
    *
    * Nothing here is on the NASA quota (Horizons is keyless), so unlike the feed
    * this isn't cache-first out of thrift: it is cache-first because a planet's
-   * position for next spring is already known, and a year-long table has
-   * nothing to refresh until it nears its end.
+   * position for next spring is already known, and a slice is immutable.
    */
-  async function load() {
-    const missing = bodies.filter((body) => !tables[body.id])
-    loading = missing.length > 0
+  async function loadYear(id, year) {
+    const set = sets[id]
+    if (set.has(year)) return true
     loadError = null
     on.changed()
-
-    for (const body of missing) {
-      let res
-      try {
-        res = await fetchSolarSystemBody(body.id)
-      } catch (err) {
-        loadError = err.message
-        break // the rest stay unplaced; retried on the next page load
-      }
-      const served = res.bodies[0]
-      body.radiusKm = served.radius_km
-      const record = {
-        timeScale: res.time_scale,
-        start: res.start,
-        stepSeconds: res.step_seconds,
-        radiusKm: served.radius_km,
-        equatorialKm: served.equatorial_radius_km,
-        polarKm: served.polar_radius_km,
-        positions: served.positions ?? [],
-      }
-      applyShape(body, record)
-      // Held to the same test as a table read back from localStorage: one that
-      // doesn't bracket "now" would be interpolated past its own end, which
-      // would place the planet somewhere it never was.
-      if (covers(record)) {
-        tables[body.id] = record
-        saveCached('solar-system', tables)
-      }
-      on.changed()
-    }
-
-    loading = false
+    const ok = await set.load(year)
+    if (ok) syncShape(bodies.find((body) => body.id === id))
+    else loadError = set.error
     on.changed()
-
-    await loadOrbits()
+    return ok
   }
+
+  /**
+   * Tells the panel a loading plan is running (and that it is over), so its
+   * "positions réelles : n/8…" does not flicker between two slices.
+   */
+  function setPlanRunning(running) {
+    planRunning = running
+    on.changed()
+  }
+
+  /** Wall-clock-year range the orbits may be asked for. */
+  const clampToRange = (year) => {
+    const range = yearRange(Date.now())
+    return Math.min(range.maxYear, Math.max(range.minYear, year))
+  }
+
+  /**
+   * Orbits follow the simulated clock's year, not the wall's (2026-11-05): the
+   * line of a year is a sidereal period from its 1 January, and the planet is on
+   * it throughout that year (Venus ≤ 1 425 km, Jupiter 311 km off, measured by the
+   * backend) but leaves it outside. So when the clock crosses a 1 January the new
+   * year's orbits are drawn if they are loaded, asked for otherwise, and the
+   * previous ones stay on until they arrive.
+   */
+  function followClockYear(nowSeconds) {
+    const year = clampToRange(yearOfMs(nowSeconds * 1000))
+    if (year === orbitYear) return
+    orbitYear = year
+    for (const body of bodies) showOrbit(body, year)
+    pumpOrbits()
+  }
+
+  const recentlyFailed = (id, year) => Date.now() - (orbitFailures.get(`${id}:${year}`) ?? -Infinity) < ORBIT_RETRY_MS
+  let orbitsPumping = false
 
   /**
    * The orbits come **after** every position, and that order is the point: a
    * position is what the scene needs to draw a planet at all, an orbit is
-   * décor. On a cold cache the seven positions already cost 35 to 110 s of
-   * Horizons latency; the orbits double it, and none of it should delay a
-   * planet appearing.
+   * décor. On a cold cache the positions already cost minutes of Horizons
+   * latency; the orbits add to it, and none of it should delay a planet
+   * appearing. main.js calls this once its plan is over; from then on the
+   * orbits of the clock's year are loaded as the clock reaches it.
    */
-  async function loadOrbits() {
-    const missing = bodies.filter((body) => !orbitTables[body.id])
-    loadingOrbits = missing.length > 0
+  async function pumpOrbits() {
+    if (orbitsPumping || !orbitsEnabled) return
+    orbitsPumping = true
     orbitsError = null
-    on.changed()
-
-    for (const body of missing) {
-      let res
-      try {
-        res = await fetchSolarSystemOrbit(body.id)
-      } catch (err) {
-        orbitsError = err.message
-        break // the rest go undrawn; retried on the next page load
+    let failures = 0
+    try {
+      for (;;) {
+        const year = orbitYear // re-read each turn: the clock may have crossed a 1 January meanwhile
+        const body = bodies.find((candidate) => !orbitRecords[candidate.id].has(year) && !recentlyFailed(candidate.id, year))
+        if (!body) break
+        loadingOrbits = true
+        on.changed()
+        try {
+          const res = await fetchSolarSystemOrbit(body.id, year)
+          const record = orbitFromResponse(res)
+          if (!validOrbit(record, year, yearRange(Date.now()))) throw new Error(`orbite de ${body.label} ${year} refusée`)
+          orbitRecords[body.id].set(year, record)
+          saveCached(orbitKey(body.id, year), record)
+          failures = 0
+          if (year === orbitYear) showOrbit(body, year)
+        } catch (err) {
+          orbitsError = err.message
+          orbitFailures.set(`${body.id}:${year}`, Date.now())
+          if (++failures >= MAX_CONSECUTIVE_FAILURES) break // the rest go undrawn; asked again at the next year change or page load
+        }
+        on.changed()
       }
-      if (!res.positions) continue
-      // The server's own word for the frame, not ours — see ORBIT_FRAME.
-      const record = { frame: res.frame, timeScale: res.time_scale, start: res.start, stop: res.stop, positions: res.positions }
-      if (!orbitCovers(record)) continue
-      orbitTables[body.id] = record
-      saveCached('solar-system-orbits', orbitTables)
-      traces.setKm(body.orbit, orbitSamplesKm(record), () => true)
+    } finally {
+      orbitsPumping = false
+      loadingOrbits = false
       on.changed()
     }
+  }
 
-    loadingOrbits = false
-    on.changed()
+  function loadOrbits() {
+    orbitsEnabled = true
+    return pumpOrbits()
   }
 
   return {
@@ -747,7 +785,9 @@ export function createPlanets({
     /** The camera's reach — and, when planets become pivots, the registry — read these. */
     bodies,
     update,
-    load,
+    loadYear,
+    setPlanRunning,
+    loadOrbits,
     loadTextureFor,
     setVenusSurface,
     /**
@@ -759,7 +799,7 @@ export function createPlanets({
      */
     focusBody(id, nowSeconds) {
       const body = bodies.find((candidate) => candidate.id === id)
-      if (!body || !tables[id]) return null
+      if (!body || !tableOf(id)) return null
       updatePositionKm(body, nowSeconds)
       return body.known ? body : null
     },
@@ -770,7 +810,7 @@ export function createPlanets({
      * button disabled until the next repaint.
      */
     focusableIds() {
-      return PLANET_IDS.filter((id) => tables[id] !== undefined)
+      return PLANET_IDS.filter((id) => tableOf(id) !== null)
     },
     /**
      * Whether the planets other than the pivot (and the orbit lines) are drawn
@@ -801,11 +841,13 @@ export function createPlanets({
      * until the next frame, and leave the final count one short.
      */
     status() {
+      const known = bodies.filter((body) => tableOf(body.id)).length
       return {
-        known: bodies.filter((body) => tables[body.id]).length,
-        orbits: bodies.filter((body) => orbitTables[body.id]).length,
+        known,
+        orbits: bodies.filter((body) => drawnOrbit[body.id]).length,
         total: bodies.length,
-        loading,
+        // Only while a planet still lacks its table: the other years load behind a complete "8/8".
+        loading: (planRunning || PLANET_IDS.some((id) => sets[id].loading)) && known < bodies.length,
         loadingOrbits,
         error: loadError ?? orbitsError,
       }

@@ -17,17 +17,21 @@
  * It costs **one keyless request a month** — the very shape the backend already
  * serves for a planet, so `?body=sun` reuses that route, that cache and that
  * window with no new machinery.
+ *
+ * Since 2026-11-05 (lot 3) it is one request per **civil year**, six of them
+ * (Y−1 to Y+4), assembled into one continuous table (`slices.js`, `sliceSet.js`):
+ * the table is then [now − 1 year, now + 4 years] and bounds the simulated clock.
+ * The same table is what the trajectory tool subtracts from its objects.
  */
 
 import * as THREE from 'three'
-import { fetchSolarSystemBody } from '../data/api.js'
-import { loadCached, saveCached } from '../data/cache.js'
 import { subdivideTable } from './interpolate.js'
 import { getMoonEquatorial, getSunEquatorial } from './astronomy.js'
 import { icrfToScene, latLngToVector3 } from '../scene/geo.js'
-import { ORBIT_SMOOTHING, TABLE_MARGIN_MS, sampleKm, tableCovers, tableEndSeconds, tableIndexAt } from './positionTable.js'
+import { ORBIT_SMOOTHING, sampleKm, tableEndSeconds, tableIndexAt } from './positionTable.js'
+import { createSliceSet } from './sliceSet.js'
+import { runJobs, yearOfMs, yearRange, yearsByDistance } from './slices.js'
 
-// Refetched once "now" comes within TABLE_MARGIN_MS of the table's end — same rule as the planets'.
 // Curve points per daily sample in the Earth's orbit line — same factor as the planets' orbits
 // (ORBIT_SMOOTHING; both in positionTable.js).
 const SIDEREAL_YEAR_DAYS = 365.256
@@ -47,15 +51,6 @@ export function orbitWindowIndices(startSeconds, stepSeconds, count, centerMs) {
   const f = (centerMs / 1000 - startSeconds) / stepSeconds
   const from = Math.min(Math.max(Math.round(f - span / 2), 0), last - span)
   return { from, to: from + span }
-}
-
-function covers(record) {
-  // Wall clock on purpose: this decides whether a *cached* table is still worth
-  // keeping, a fact about the real world — not about the simulated date.
-  // A table that starts later than HISTORY_MONTHS back is one stored before
-  // the history existed (2026-10-27): still valid going forward, but it would
-  // stop the clock at the 1st of the month going back. Refetched once.
-  return tableCovers(record, Date.now(), { history: true, marginMs: TABLE_MARGIN_MS })
 }
 
 /**
@@ -89,10 +84,12 @@ export function createMoonTable({ on }) {
  *   on: {changed: Function}}} options
  */
 function createBodyTable({ body, fallback, on }) {
-  const stored = loadCached(body)?.data ?? null
-  /** @type {{start: number, stepSeconds: number, positions: number[][]} | null} */
-  let table = covers(stored) ? stored : null
-  let loading = false
+  // The slices read back from localStorage are in from the first frame; the
+  // assembled table is the set's own (memoised, same object until a slice lands).
+  const set = createSliceSet(body)
+  /** A `retry()` is running: a second click must not start a second loop. */
+  let retrying = false
+  const table = () => set.table()
 
   /**
    * Geocentric Sun in km, scene axes, at `date`.
@@ -109,9 +106,10 @@ function createBodyTable({ body, fallback, on }) {
    * year (measured 2026-10-15), more than twice Mercury's 2 440 km radius.
    */
   function positionKmAt(date, out) {
-    if (table) {
-      const f = tableIndexAt(table, date.getTime() / 1000)
-      if (f >= 0 && f <= table.positions.length - 1) return sampleKm(table.positions, f, out)
+    const current = table()
+    if (current) {
+      const f = tableIndexAt(current, date.getTime() / 1000)
+      if (f >= 0 && f <= current.positions.length - 1) return sampleKm(current.positions, f, out)
     }
     const { ra, dec, distanceKm } = fallback(date)
     return out.copy(latLngToVector3(dec, ra, distanceKm))
@@ -133,51 +131,77 @@ function createBodyTable({ body, fallback, on }) {
    * @returns {THREE.Vector3[] | null} null while only the fallback series is available
    */
   function earthOrbitSamplesKm(centerMs = Date.now()) {
-    if (!table) return null
-    // One sidereal year centred on the simulated instant, not the whole ~15-month
-    // window, which would draw ~3 months twice.
-    const { from, to } = orbitWindowIndices(table.start, table.stepSeconds, table.positions.length, centerMs)
-    return subdivideTable(table.positions.slice(from, to + 1), ORBIT_SMOOTHING).map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()).negate())
+    const current = table()
+    if (!current) return null
+    // One sidereal year centred on the simulated instant, not the whole ~6-year
+    // window, which would draw the orbit six times over.
+    const { from, to } = orbitWindowIndices(current.start, current.stepSeconds, current.positions.length, centerMs)
+    return subdivideTable(current.positions.slice(from, to + 1), ORBIT_SMOOTHING).map(([x, y, z]) => icrfToScene(x, y, z, new THREE.Vector3()).negate())
   }
 
   /**
-   * Cache-first like the planets, and for the same reason: this is keyless JPL,
-   * so it is not thrift — a year of daily Sun positions has nothing to refresh
-   * until it nears its end.
+   * One year's slice, cache-first (it was read at creation) and keyless like the
+   * planets': nothing to refresh, a slice is immutable. Resolves true when the
+   * year is held. A failure is silent for the scene — the series carries it
+   * meanwhile, the next page load asks again — and kept in `error` for the tool.
    */
-  async function load() {
-    if (table || loading) return
-    loading = true
+  async function loadYear(year) {
+    const had = set.has(year)
+    const ok = await set.load(year)
+    if (ok && !had) on.changed()
+    return ok
+  }
+
+  /** Every year the range still lacks, nearest to the current one first, stopping when the server is down. */
+  async function retry() {
+    if (retrying) return
+    retrying = true
     try {
-      const res = await fetchSolarSystemBody(body)
-      const served = res.bodies[0]
-      const record = { timeScale: res.time_scale, start: res.start, stepSeconds: res.step_seconds, positions: served.positions ?? [] }
-      if (covers(record)) {
-        table = record
-        saveCached(body, record)
-        on.changed()
-      }
-    } catch {
-      // The series carries the scene meanwhile; retried on the next page load.
+      const years = yearsByDistance(yearOfMs(Date.now()), yearRange(Date.now()))
+      await runJobs(years.filter((year) => !set.has(year)), loadYear)
+    } finally {
+      retrying = false
     }
-    loading = false
   }
 
   return {
     positionKmAt,
     earthOrbitSamplesKm,
-    load,
-    /** Start of the loaded window in ms (the first sample), null without a table — the simulated clock's lower bound. */
+    loadYear,
+    retry,
+    /** The years of the range not held yet. */
+    missingYears: () => set.missingYears(),
+    /** Start of the assembled table in ms (its first row, the outer overlap included), null without one — the simulated clock's lower bound. */
     get startMs() {
-      return table ? table.start * 1000 : null
+      const current = table()
+      return current ? current.start * 1000 : null
     },
-    /** End of the loaded window in ms (the last sample), null without a table — the simulated clock's upper bound. */
+    /** End of the assembled table in ms (its last row), null without one — the simulated clock's upper bound. */
     get endMs() {
-      return table ? tableEndSeconds(table) * 1000 : null
+      const current = table()
+      return current ? tableEndSeconds(current) * 1000 : null
     },
     /** False while the low-precision series is standing in. */
     get known() {
-      return table !== null
+      return table() !== null
+    },
+    /**
+     * The assembled table, null before the first slice. The same object until a
+     * slice lands or the wall year turns, so the trajectory tool can tell "changed"
+     * by identity.
+     */
+    get assembled() {
+      return table()
+    },
+    /** Moves on anything the tool's panel shows (a request started or ended, a slice landed). */
+    get revision() {
+      return set.revision
+    },
+    /** What the tool's panel says about this table: `ready` once a table exists, `error` when the last request failed with none yet. */
+    get state() {
+      if (table()) return { status: 'ready', error: null }
+      if (!set.loading && set.error) return { status: 'error', error: set.error }
+      return { status: 'loading', error: null }
     },
   }
 }

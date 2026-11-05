@@ -1,4 +1,4 @@
-# Plage −1 an / +4 ans pour toute la scène — ce qui coince vraiment (rapport du 2026-11-05 ; décisions en fin de fichier, lot 3 à construire)
+# Plage −1 an / +4 ans pour toute la scène — ce qui coince vraiment (rapport du 2026-11-05 ; décisions puis « Lot 3 — ce qui a été construit » en fin de fichier : lot 3 construit le 2026-11-05, rendu à valider à l'œil)
 
 Rapport demandé par l'utilisateur le 2026-11-05. Question posée : qu'est-ce qui empêche d'afficher
 **toute** la scène sur une plage de −1 an à +4 ans, au lieu des ~15 mois actuels (3 mois avant le
@@ -52,8 +52,10 @@ immuables, donc :
   c'est tout le travail de rafraîchissement.
 
 Le même raisonnement vaut pour l'orientation des planètes (`/api/solar-system/orientation`, époque =
-1ᵉʳ du mois), à une réserve près, non vérifiée : sur cinq ans, une erreur sur la vitesse de rotation
-s'accumule ; à mesurer avant de figer une époque.
+1ᵉʳ du mois), ~~à une réserve près, non vérifiée : sur cinq ans, une erreur sur la vitesse de rotation
+s'accumule ; à mesurer avant de figer une époque.~~ **Mesuré et levé le 2026-11-05** : planètes ≤ 0,016°
+sur 6 ans, la Lune seule dérive (pôle jusqu'à 1,98° d'une époque fixe), d'où une époque au 1/1 de
+chaque année — voir « Lot 3 — ce qui a été construit ».
 
 ## 3. Le navigateur n'est pas le goulot non plus (pour les planètes)
 
@@ -152,5 +154,87 @@ comètes en v1, `docs/cometes.md`, pour une raison de dérive : à mesurer aussi
     (même logique que l'ISS hors de sa trace) ; revenue au présent, sa table est rechargée.
 - **Lot 3 = la plage −1 an / +4 ans pour le reste de la scène** : tranches annuelles immuables pour
   Soleil, planètes, Lune, Pluton (§2), bornes de l'horloge dérivées de la plage (§6), orientation à
-  mesurer avant de figer son époque (§2). Contexte complet pour l'agent :
-  `docs/briefs/lot3-plage-cinq-ans.md` (fichier de travail, supprimé au merge de la branche).
+  mesurer avant de figer son époque (§2, mesurée depuis). Ce qui a été construit, le contrat et les
+  mesures : section suivante. (Les fichiers de travail `docs/briefs/lot3-*.md` qui servaient de
+  contexte aux agents sont supprimés au merge de la branche ; tout ce qui devait leur survivre est
+  ci-dessous.)
+
+## Lot 3 — ce qui a été construit (2026-11-05)
+
+Code et vérifications automatiques faits le 2026-11-05 sur `suivi-plage-etendue` (PHPUnit 232 tests /
+2 303 assertions, Vitest 554 tests sur 18 modules) ; **rendu pas encore validé à l'œil par
+l'utilisateur**. Le raisonnement et les choix d'agents sont dans `docs/agent/decisions.md`, §
+« 2026-11-05 — Lot 3 — plage −1 an / +4 ans pour la scène » ; le contrat des routes est dans
+`backend/API.md`. Cette section garde ce qui doit survivre aux fichiers de travail supprimés au merge.
+
+### Mesures qui fondent les choix (Horizons sans clé, 2026-11-05)
+
+- **Orientation** (§2 : la réserve est levée). Construite par `PlanetOrientationClient::build` puis
+  propagée, comparée à `ObsSub-LON` corrigé du temps-lumière, 2025→2031 au pas de 10 j : planètes
+  ≤ 0,016° sur 6 ans (Mercure), pôles ≤ 0,02°, saut au 1/1 ≤ 0,005°. **Lune** : pôle jusqu'à 1,98° de
+  celui d'une époque fixe ; avec une époque au 1/1 de chaque année, 0,54° au plus dans l'année, saut
+  ≈ 0,5° (pôle) et ≤ 0,56° (méridien) au 1/1. D'où : une orientation par année, époque 1/1.
+- **Orbites dessinées** (une période sidérale depuis l'époque, 3 600 intervalles) : la planète quitte
+  son trait hors de la période, surtout **avant l'époque** — Jupiter 352 687 km, Saturne 844 874 km,
+  Uranus ~1,2 Mkm, Neptune 744 762 km, Pluton 755 728 km, Mars 40 600 km. **Déjà vrai avant le lot 3**,
+  avec les 3 mois d'historique de la fenêtre mensuelle. Avec une époque au 1/1 de l'année affichée,
+  écart max dans l'année : Mercure 993 km, Vénus 1 425 km, Mars 103 km, Jupiter 311 km.
+- **Tranche annuelle Horizons** (avec 2 lignes de recouvrement) : 1,0 à 1,2 s ; 51 ko bruts au pas de
+  1 j (Mars, Soleil), 188 ko au pas de 6 h (Lune, Mercure).
+
+### Conception
+
+- **Tranche** = un corps × une année civile UTC, immuable. Années servies **Y−1 à Y+4** (Y = année UTC
+  murale), six tranches du 1/1 (Y−1) 00:00 UTC au 1/1 (Y+5) 00:00 UTC : toujours [maintenant −1 an,
+  maintenant +4 ans], ne glisse qu'au 1er janvier.
+- **Recouvrement de 2 lignes de chaque côté** : `start = slice_start − 2 × step_seconds`, la table finit
+  à `slice_end + 2 × step_seconds`, bornes incluses ; une tranche lue seule est en Catmull-Rom complet
+  sur toute son année. Mars 2027 : 370 lignes ; Lune 2028 (bissextile) : 1 469 lignes.
+- **Un paramètre `year=`** sur `/api/solar-system/positions`, `/orbit` et `/orientation`, entier dans
+  [Y−1, Y+4], sinon 400 `{"error": "year must be between <Y−1> and <Y+4>"}`. Sans `year`, chaque
+  route est servie à l'identique (fenêtre mensuelle), marquée « remplacée » ; le web ne l'appelle plus.
+  Positions : réponse avec `year`, `slice_start`, `slice_end`, `start`, `step_seconds` (6 h pour `moon`,
+  `mercury`, `venus`, 1 j sinon). Orbite : une période sidérale depuis le 1/1 `year` 00:00 UTC.
+  Orientation : `epoch` = 1/1 `year` 00:00 UTC.
+- **Cache backend** : clés `solar_system_<id>_y<year>_<step>_UTC_o2`,
+  `solar_system_orbit_<id>_y<year>_UTC_360`, `solar_system_orientation_<id>_y<year>`, construites par
+  des fonctions statiques partagées entre contrôleur et commande de préchauffage. TTL 3 ans pour une
+  valeur non nulle (une tranche Y+4 expire avant de sortir de la plage et est redemandée une fois,
+  ~1 s, accepté), 1 h pour une valeur nulle, échec de transport non caché (502). **Pas de
+  `Cache-Control: immutable`** : un cache HTTP immuable empêche le client de s'auto-réparer quand il
+  refuse une tranche (leçon du 2026-09-29) ; variante « immutable + version dans l'URL » au backlog.
+- **`app:solar-system:warm`** : 162 tranches à froid (6 années × (10 positions + 8 orbites + 9
+  orientations)), ~27 appels par an ensuite ; ne préchauffe plus la fenêtre mensuelle.
+- **Web, assemblage** (`web/src/ephemeris/slices.js`, pur et testé ; `ephemeris/sliceSet.js` pour
+  réseau et stockage ; `app/ephemerides.js` pour l'ordre) : les tranches d'un corps deviennent **une
+  table continue** `{timeScale, start, stepSeconds, positions}`, recouvrement retiré d'après les
+  `slice_start` / `slice_end` servis, lignes extérieures gardées ; seule la suite contiguë d'années qui
+  contient l'année courante est utilisée. Le résultat est ligne pour ligne la table qu'Horizons aurait
+  servie d'un seul tenant.
+- **Bornes de l'horloge** : [mur −1 an, +4 ans] au minuit UTC, égales à `cursorBounds` de
+  `tracking/model.js` (un test l'épingle), coupées à la couverture du Soleil quand elle est plus
+  courte ; le temps réel reste exempt. Supprimés : `HISTORY_MONTHS`, `defaultMinMs`, `defaultMaxMs`,
+  `TABLE_MARGIN_MS`, option `history` de `tableCovers`.
+- **Ordre de chargement** : 6 tranches du Soleil, puis l'année courante de la Lune et des planètes,
+  puis les autres années en s'éloignant (futur d'abord à égalité) ; 3 échecs de suite arrêtent le plan.
+- **Planète hors couverture : masquée** (label et trait aussi). Soleil et Lune gardent leur série de
+  secours (`astronomy.js`). Un pivot sur une planète sans tranche garde sa dernière position (cas rare).
+- **Orbite et orientation** : celles de l'année de l'horloge simulée, chargées au changement d'année,
+  l'ancienne gardée jusqu'à l'arrivée de la nouvelle (orientation : année chargée la plus proche,
+  antérieure à égalité) ; orbites échouées retentées après 5 min.
+- **`localStorage`** : `nasa-viz:positions-<id>-<année>`, `orbit-…`, `orientation-…`, validés à la
+  relecture (`time_scale`, pas, `frame`, année dans la plage) ; au démarrage, purge des années hors plage
+  et des anciennes clés `solar-system`, `solar-system-orbits`, `solar-system-orientation`, `sun`, `moon`.
+- **Soleil unifié** : l'outil de trajectoire (`tracking/scene.js`) lit la table assemblée du Soleil de la
+  scène au lieu de `/api/small-body/trajectory/sun` (route conservée, marquée remplacée) ;
+  `heliocentricPath` prend son chemin non aligné (la table commence 2 j avant le 1/1), résultat
+  identique. Seul « Maintenant » remet à zéro horloge et décalage du curseur, inchangé.
+- **Hors périmètre, inchangé** : ISS, NEO de la semaine, lunes des planètes, reste de l'outil de
+  trajectoire.
+
+### Reste à valider à l'œil (par l'utilisateur)
+
+Horloge aux deux bornes ; passage du 31 décembre au 1er janvier en accéléré (planètes et Lune
+continues, orientation sans à-coup visible, orbites qui passent par leur planète) ; planète masquée hors
+couverture ; compteur « n/8 » du panneau (ne compte que l'année courante) ; lunes toujours masquées hors
+de leur plage.

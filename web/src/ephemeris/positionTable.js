@@ -11,15 +11,8 @@
  */
 
 import { TIME_SCALE } from '../data/api.js'
-import { defaultMinMs } from './clock.js'
 import { sampleCatmullRom } from './interpolate.js'
 import { icrfToScene } from '../scene/geo.js'
-
-/**
- * A yearly table is refetched once "now" comes within this of its end, rather
- * than read to its last sample — the Sun's and the planets' rule.
- */
-export const TABLE_MARGIN_MS = 30 * 86_400_000
 
 /**
  * Catmull-Rom points per table interval when a table is redrawn as a line — the
@@ -42,20 +35,19 @@ export function tableEndSeconds(table) {
  *
  * - The time scale must be the one the backend serves now: a TDB table from
  *   before 2026-10-21 runs 69 s late.
- * - `history`: the table must reach back to the clock's lower bound
- *   (`defaultMinMs`). A table that starts later is one stored before the history
- *   existed (2026-10-27): still valid going forward, but it would stop the clock
- *   at the 1st of the month going back. Without it, "now" need only be inside.
- * - `marginMs`: how long before its end a table is given up (TABLE_MARGIN_MS for
- *   a yearly one).
+ * - `marginMs`: how long before its end a table is given up.
  *
- * @param {{history?: boolean, marginMs?: number}} [options]
+ * (2026-11-05, lot 3: the `history` option is gone — it demanded a table reaching
+ * back to `defaultMinMs`, the 1st of the month minus 3 months. The Sun's and the
+ * planets' tables are now yearly slices checked one by one, `slices.js`, and
+ * the clock's lower bound is `clockBounds`.)
+ *
+ * @param {{marginMs?: number}} [options]
  */
-export function tableCovers(table, nowMs, { history = false, marginMs = 0 } = {}) {
+export function tableCovers(table, nowMs, { marginMs = 0 } = {}) {
   if (!table?.positions?.length) return false
   if (table.timeScale !== TIME_SCALE) return false
-  const startMs = table.start * 1000
-  if (history ? startMs > defaultMinMs(nowMs) : nowMs < startMs) return false
+  if (nowMs < table.start * 1000) return false
   return nowMs < tableEndSeconds(table) * 1000 - marginMs
 }
 

@@ -428,6 +428,10 @@ the daily one when the clock enters that year).
 
 ### `GET /api/small-body/trajectory/sun`
 
+> **Remplacée (2026-11-05, lot 3).** Le web ne l'appelle plus : l'outil de trajectoire lit
+> la table assemblée du Soleil de la scène (tranches `year=` de `/api/solar-system/positions?body=sun`).
+> La route reste servie, inchangée.
+
 The Sun's daily **geocentric** table (Horizons body `10`, centre `500@399`, UT /
 ICRF like the planets') on the same 6-year range: lets the web go heliocentric
 and place "the Earth at the object's instant".
@@ -486,7 +490,47 @@ place each NEO of the feed on its real path rather than on a schematic one.
 - HTTP 502 when Horizons itself can't be reached — nothing is known about any
   object then.
 
-## `GET /api/solar-system/positions?body=mars` (ou `body=sun`, `body=moon`)
+## `GET /api/solar-system/positions?body=mars&year=2027` (ou `body=sun`, `body=moon`)
+
+### Avec `year=` (lot 3, 2026-11-05) : la tranche annuelle
+
+`year` est un entier dans `[Y−1, Y+4]` (`Y` = année UTC courante), sinon **HTTP 400**
+`{"error": "year must be between <Y−1> and <Y+4>"}` (non entier, vide, négatif : idem). Une
+**tranche** = un corps × une année civile UTC, immuable ; les six années couvrent du 1/1 (Y−1) au
+1/1 (Y+5) 00:00 UTC, donc toujours [maintenant −1 an, maintenant +4 ans].
+
+```json
+{
+  "frame": "ICRF geocentric",
+  "time_scale": "UTC",
+  "units": "km",
+  "year": 2027,
+  "slice_start": 1798761600,
+  "slice_end": 1830297600,
+  "start": 1798588800,
+  "step_seconds": 86400,
+  "bodies": [{ "id": "mars", "name": "Mars", "radius_km": 3389.5,
+               "equatorial_radius_km": 3396.19, "polar_radius_km": 3376.2,
+               "positions": [[-129867207, 42071540, 26713933], "…"] }]
+}
+```
+
+- `slice_start` = 1/1 `year` 00:00 UTC, `slice_end` = 1/1 `year`+1 00:00 UTC (secondes Unix).
+- **Recouvrement : 2 lignes de chaque côté.** `start` = `slice_start − 2 × step_seconds` = instant de
+  `positions[0]` ; la dernière ligne est à `slice_end + 2 × step_seconds`, bornes incluses. Une tranche
+  lue seule est donc en Catmull-Rom complet sur toute son année. Mars 2027 : 370 lignes (365 + 4 + 1).
+- Pas = 1 j, sauf `moon`, `mercury`, `venus` à 6 h (21 600 s ; Lune 2028, bissextile : 1 469 lignes).
+- `positions` : `null` si Horizons n'a rien donné (gardé 1 h).
+- Cache serveur : une entrée par corps × année, clé `solar_system_<id>_y<year>_<step>_UTC_o2`, valeur
+  non nulle gardée 3 ans (immuable), nulle 1 h, échec de transport jamais gardé (502). **Aucun
+  en-tête `Cache-Control`** : un cache HTTP immuable empêcherait le client de se réparer après avoir
+  refusé une tranche (leçon du 2026-09-29). Une tranche coûte 1,0 à 1,2 s à Horizons ; 51 ko bruts au
+  pas de 1 j, 188 ko à 6 h (mesuré 2026-11-05).
+- `app:solar-system:warm` préchauffe ces tranches (voir plus bas).
+
+### Sans `year=` : **remplacée** (lot 3)
+
+> Le web ne l'appelle plus ; la fenêtre mensuelle ci-dessous reste servie à l'identique.
 
 One planet's real geocentric positions, from JPL Horizons — keyless, not on
 the NASA quota. `body` is required and must be one of `mercury`, `venus`,
@@ -574,7 +618,16 @@ for one keyless request a month.
 `?body=sun` is **not** accepted by the orbit route: the Sun has no orbit to draw
 here, and `planetIds()` is what those routes validate against.
 
-## `GET /api/solar-system/orbit?body=mars`
+## `GET /api/solar-system/orbit?body=mars&year=2027`
+
+**Avec `year=` (lot 3, 2026-11-05)** : même réponse que ci-dessous plus `"year": 2027`, mais la
+période sidérale part du **1/1 `year` 00:00 UTC** (`start` = cet instant). Mêmes règles de `year` que
+les positions (400 hors [Y−1, Y+4]). Mesuré : avec une époque au 1/1 de l'année affichée, la planète
+s'écarte de son trait de 993 km au plus dans l'année (Mercure ; Vénus 1 425, Mars 103, Jupiter 311) ;
+hors de la période, notamment avant l'époque, Jupiter quitte son trait de 352 687 km, Saturne
+844 874, Uranus ~1,2 Mkm. Cache : clé `solar_system_orbit_<id>_y<year>_UTC_360`, même politique que
+les positions. **Sans `year` : remplacée**, le web ne l'appelle plus ; la fenêtre mensuelle
+ci-dessous reste servie à l'identique.
 
 One planet's whole orbit as a polyline — 361 samples over one sidereal period.
 **Planets only**: the Sun is served by the positions route but has no orbit to
@@ -628,7 +681,14 @@ per planet.
   and the last sample. That is correct, not a gap to stitch.
 - `positions` is `null` when Horizons didn't answer; retried an hour later.
 
-## `GET /api/solar-system/orientation?body=mars`
+## `GET /api/solar-system/orientation?body=mars&year=2027`
+
+**Avec `year=` (lot 3, 2026-11-05)** : même réponse que ci-dessous plus `"year": 2027`, `epoch` = 1/1
+`year` 00:00 UTC. Mêmes règles de `year` (400 hors [Y−1, Y+4]). Mesuré : planètes ≤ 0,016° sur 6 ans,
+saut au 1/1 ≤ 0,005° ; Lune, pôle jusqu'à 1,98° d'une époque fixe contre 0,54° dans l'année avec
+une époque au 1/1 (saut ≈ 0,5° pôle, ≤ 0,56° méridien). Cache : clé
+`solar_system_orientation_<id>_y<year>`. **Sans `year` : remplacée**, le web ne l'appelle plus ; le
+comportement mensuel ci-dessous reste servi à l'identique.
 
 How one body is turned in space. `body` takes the nine planets (Pluto included) **and `moon`** —
 not `sun`, which is not a rigid body and whose surface rotates differentially.
@@ -788,6 +848,11 @@ otherwise the 9 largest. Pluto has Charon alone (the four small ones are 5 to 20
 
 Cron companion to the three solar-system routes. Fetches the planet tables and
 the moons of planets a visitor has actually centred on, before anyone asks.
+
+- **Since lot 3 (2026-11-05)** it warms the yearly `year=` slices for every year `Y−1` to `Y+4`:
+  positions of the 10 bodies, orbits of the 8 planets, orientation of the 9 bodies of
+  `PlanetOrientationClient::ids()` — skipping what is cached (cold ≈ 162 calls, then ≈ 27 on
+  1 January). It no longer warms the monthly window. Moons: unchanged.
 
 - **Lazy fill, eager refresh.** The route records which planets get looked at; the
   command refreshes only those. A moon nobody has ever looked at is never fetched,

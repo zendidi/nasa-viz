@@ -1,7 +1,8 @@
 /**
  * The asteroids the user tracks (docs/suivi-asteroides.md): for each, a marker
  * in its own colour and two traces, all read from the tables the backend serves
- * (`/api/small-body/trajectory`, `/precision`, `/trajectory/sun`).
+ * (`/api/small-body/trajectory`, `/precision`) and from the scene's own Sun table
+ * (since 2026-11-05, lot 3: no longer `/trajectory/sun`, see `syncSunTable`).
  *
  * Two instants live here since 2026-11-05: T, the scene's time (the clock, the
  * planets, the Earth that is drawn), and T′, the trajectory tool's cursor
@@ -24,7 +25,7 @@
  */
 
 import * as THREE from 'three'
-import { fetchPrecision, fetchTrajectory, fetchTrajectorySun, searchSmallBody } from '../data/api.js'
+import { fetchPrecision, fetchTrajectory, searchSmallBody } from '../data/api.js'
 import { escapeHtml } from '../neo/info.js'
 import { EARTH_ORBIT_COLOR } from '../scene/earthSystem.js'
 import { icrfToScene } from '../scene/geo.js'
@@ -93,10 +94,13 @@ const dateShort = (tSeconds) =>
  * @param {import('../scene/frame.js').ViewFrame} options.frame  the pivot and its placers
  * @param {(worldPos: THREE.Vector3, px: number) => number} options.minRadiusAt
  * @param {ReturnType<import('./cursor.js').createCursor>} options.cursor  the tool's T′ (owned by the controller)
+ * @param {{assembled: ?{start: number, stepSeconds: number, positions: number[][]}, revision: number,
+ *   state: {status: string, error: ?string}, retry: () => Promise<void>}} options.sunTable
+ *   the scene's Sun (ephemeris/sunTable.js): the one table the traces and the ghost Earth subtract
  * @param {{changed: () => void, spkidChanged: (oldSpkid: string, record: object) => void}} options.on
  *   `spkidChanged`: the object was re-resolved under a new SPK-ID (it got numbered)
  */
-export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, cursor, on }) {
+export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, cursor, sunTable, on }) {
   const { placeKm } = frame
   // Markers (what picking raycasts) and traces apart: the raycaster would hit a
   // line too, and a line has no object to report.
@@ -111,8 +115,38 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
 
   // --- the ghost Earth and the cursor's instant ---------------------------------------
 
-  /** The Sun's daily table (`/trajectory/sun`), shared by every object: loaded once, first. */
-  const sun = { status: 'idle', error: null, table: null }
+  /**
+   * The Sun's daily table, shared by every object: the scene's own, assembled from
+   * its yearly slices (2026-11-05, lot 3), adapted to the `{start, step_seconds,
+   * positions}` shape model.js reads. The same object until the scene's table
+   * changes (a slice landed, the wall year turned), which is how a change is seen.
+   */
+  const sun = { table: null, source: null, builtFor: null, revision: -1 }
+
+  /**
+   * The Sun's table for this instant, and the rebuild when it changed: every
+   * heliocentric line is redrawn from the new table (it used to be rebuilt by
+   * `loadSun` for each entry). Cheap when nothing changed (an identity test), so
+   * `syncCursor` calls it once a frame.
+   */
+  function syncSunTable() {
+    const assembled = sunTable.assembled
+    if (assembled !== sun.source) {
+      sun.source = assembled
+      sun.table = assembled ? { start: assembled.start, step_seconds: assembled.stepSeconds, positions: assembled.positions } : null
+    }
+    if (sun.table !== sun.builtFor) {
+      sun.builtFor = sun.table
+      for (const entry of entries.values()) buildHelio(entry)
+      sun.revision = sunTable.revision
+      on.changed()
+    } else if (sunTable.revision !== sun.revision) {
+      // A request started or ended without a new table: only the panel's line moved.
+      sun.revision = sunTable.revision
+      on.changed()
+    }
+    return sun.table
+  }
 
   const ghostMesh = new THREE.Mesh(
     ghostGeometry,
@@ -175,7 +209,6 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     mesh.userData.tracked = entry
     hit.userData.tracked = entry
     entries.set(rec.spkid, entry)
-    if (sun.status === 'idle') enqueue({ kind: 'sun' })
     enqueue({ kind: 'object', entry, resolved: false })
     return entry
   }
@@ -207,8 +240,9 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
    * (dashKeepsSegment): the dashes are cut the way the below-ecliptic ones are, in setKm.
    */
   function buildHelio(entry) {
-    if (!entry.object || !sun.table) return
-    const daily = heliocentricPath(entry.object.table, sun.table)
+    const sunTableNow = sun.table
+    if (!entry.object || !sunTableNow) return
+    const daily = heliocentricPath(entry.object.table, sunTableNow)
     // 2026-11-05: dense samples (5 min / 1 h, ±3 d) around each passage whose hourly slice is in. The
     // daily chord strayed up to 99 671 km from the true position at TP128's passage (7 490 km): the
     // marker, read from the precise table, left the line. Sun(t) from the Sun's daily table, as the
@@ -219,7 +253,7 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     const icrf = [0, 0, 0]
     const sunAt = [0, 0, 0]
     const { times, positions } = densifyHeliocentric(daily, dense, (time) => {
-      if (!positionAt(entry.object, time, icrf) || !sampleTable(sun.table, time, sunAt)) return null
+      if (!positionAt(entry.object, time, icrf) || !sampleTable(sunTableNow, time, sunAt)) return null
       return [icrf[0] - sunAt[0], icrf[1] - sunAt[1], icrf[2] - sunAt[2]]
     })
     const points = positions.map((p) => icrfToScene(p[0], p[1], p[2], new THREE.Vector3()))
@@ -307,20 +341,17 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
   // on this platform"), so at startup the saved objects all left together and
   // queued up in front of the ISS, the planets and the rest. Here they go one
   // after the other; an object removed while it waits just leaves the queue.
-  // The order is the job kind's: the Sun first (every trace needs it), then each
-  // object's daily table, then the hourly slices — a slice is a refinement, and
-  // must not hold a newly tracked object's first appearance behind it.
+  // The order is the job kind's: each object's daily table, then the hourly slices
+  // — a slice is a refinement, and must not hold a newly tracked object's first
+  // appearance behind it. (The Sun used to be the first kind of job; since
+  // 2026-11-05 it is the scene's own table, loaded by app/ephemerides.js.)
   // The status stays `loading` from the moment of `enqueue`.
-  const PRIORITY = { sun: 0, object: 1, slice: 2 }
-  /** @type {({kind: 'sun'} | {kind: 'object', entry: TrackedEntry, resolved: boolean} | {kind: 'slice', entry: TrackedEntry, year: number})[]} */
+  const PRIORITY = { object: 0, slice: 1 }
+  /** @type {({kind: 'object', entry: TrackedEntry, resolved: boolean} | {kind: 'slice', entry: TrackedEntry, year: number})[]} */
   const queue = []
   let pumping = false
 
   function enqueue(job) {
-    if (job.kind === 'sun') {
-      sun.status = 'loading'
-      sun.error = null
-    }
     if (job.kind === 'object') {
       job.entry.status = 'loading'
       job.entry.error = null
@@ -342,28 +373,13 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
     try {
       while (queue.length > 0) {
         const job = takeNext()
-        if (job.kind === 'sun') await loadSun()
-        else if (job.entry.removed) continue
+        if (job.entry.removed) continue
         else if (job.kind === 'object') await load(job.entry, job.resolved)
         else await loadSlice(job.entry, job.year)
       }
     } finally {
       pumping = false
     }
-  }
-
-  async function loadSun() {
-    try {
-      const res = await fetchTrajectorySun()
-      if (!(res.table?.positions?.length > 0)) throw new Error('table du Soleil vide')
-      sun.table = res.table
-      sun.status = 'ready'
-      for (const entry of entries.values()) buildHelio(entry)
-    } catch (err) {
-      sun.status = 'error'
-      sun.error = err.message
-    }
-    on.changed()
   }
 
   /**
@@ -479,8 +495,9 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
   function syncCursor(nowS, wallMs) {
     cursor.step(nowS, wallMs)
     tPrime = cursor.tPrimeAt(nowS, wallMs)
+    const sunNow = syncSunTable()
     ghostActive = false
-    if (tPrime !== nowS && sun.table && ghostEarthOffset(sun.table, nowS, tPrime, ghostIcrf)) {
+    if (tPrime !== nowS && sunNow && ghostEarthOffset(sunNow, nowS, tPrime, ghostIcrf)) {
       icrfToScene(ghostIcrf[0], ghostIcrf[1], ghostIcrf[2], ghostKm)
       ghostActive = ghostKm.lengthSq() > 0
     }
@@ -622,14 +639,21 @@ export function createTrackedScene({ scene, traces, labels, frame, minRadiusAt, 
       const entry = entries.get(spkid)
       if (entry && (entry.status === 'error' || entry.status === 'missing')) enqueue({ kind: 'object', entry, resolved: false })
     },
-    /** Retries the Sun's table, which every trace waits for. */
+    /** Retries the Sun's missing years, which every trace waits for. */
     reloadSun() {
-      if (sun.status === 'error') enqueue({ kind: 'sun' })
+      if (sunTable.state.status === 'error') sunTable.retry()
     },
-    /** The Sun's table: `idle` until something is tracked. */
-    sunState: () => ({ status: sun.status, error: sun.error }),
-    /** The span of the daily tables (the Sun's, which the objects share), or null while it is not in. */
-    range: () => (sun.table ? { startS: sun.table.start, endS: tableEnd(sun.table) } : null),
+    /** The Sun's table: `loading` until the scene has one, `error` when its request failed with none. */
+    sunState: () => sunTable.state,
+    /**
+     * The span of the Sun's assembled table (the scene's own), or null while it is
+     * not in. Read live from the scene's table, not from this frame's copy, so a
+     * slice that has just landed moves the cursor's bounds at once.
+     */
+    range() {
+      const assembled = sunTable.assembled
+      return assembled ? { startS: assembled.start, endS: assembled.start + (assembled.positions.length - 1) * assembled.stepSeconds } : null
+    },
     get: (spkid) => entries.get(spkid) ?? null,
     /** Geocentric positions, km, scene axes, of the objects currently placed — for the camera's reach. */
     positionsKm() {

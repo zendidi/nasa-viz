@@ -244,6 +244,116 @@ final class SolarSystemClient
         return $now->setTimezone(new \DateTimeZone('UTC'))->modify('first day of this month')->setTime(0, 0);
     }
 
+    // --- Yearly slices (lot 3, 2026-11-05) -------------------------------------
+    //
+    // A slice is one body × one civil UTC year, immutable. The web reads [now −1 an,
+    // now +4 ans], so the years served are Y−1..Y+4 (same range as small-body/precision).
+    // Everything below is the `year=` mode of the three routes; the monthly window above
+    // stays for the calls that carry no `year`.
+
+    /** Years served behind / ahead of the current UTC year Y: [Y-1, Y+4], 6 slices. */
+    public const YEARS_BEFORE = 1;
+    public const YEARS_AFTER = 4;
+
+    /**
+     * Rows of overlap on each side of a slice, in steps (not seconds: a 6 h body spills 12 h,
+     * a daily one 48 h). Two, so a slice read alone is in full Catmull-Rom over its whole year.
+     */
+    public const SLICE_OVERLAP_ROWS = 2;
+
+    /** An immutable slice outlives its use: it is served until Y+1 ends at the latest, so 3 years is plenty. */
+    public const SLICE_TTL_SECONDS = 3 * 365 * 86400;
+    /** A slice Horizons did not answer for is retried within the hour. */
+    public const NULL_TTL_SECONDS = 3600;
+
+    /** @return array{int, int} the first and last year served, [Y-1, Y+4] */
+    public static function yearRange(\DateTimeImmutable $now): array
+    {
+        $year = (int) $now->setTimezone(new \DateTimeZone('UTC'))->format('Y');
+
+        return [$year - self::YEARS_BEFORE, $year + self::YEARS_AFTER];
+    }
+
+    public static function isYearInRange(int $year, \DateTimeImmutable $now): bool
+    {
+        [$min, $max] = self::yearRange($now);
+
+        return $year >= $min && $year <= $max;
+    }
+
+    /** @return list<int> every year served, oldest first */
+    public static function years(\DateTimeImmutable $now): array
+    {
+        [$min, $max] = self::yearRange($now);
+
+        return range($min, $max);
+    }
+
+    /** 1 January of `$year` 00:00 UTC: the slice's start, and the epoch of its orbit and orientation. */
+    public static function yearStart(int $year): \DateTimeImmutable
+    {
+        return new \DateTimeImmutable(sprintf('%04d-01-01 00:00:00', $year), new \DateTimeZone('UTC'));
+    }
+
+    /**
+     * What a position slice asks Horizons for: the civil year plus SLICE_OVERLAP_ROWS rows on
+     * each side, both ends included. `start` is the instant of positions[0].
+     * Measured 2026-11-05: 1,0 to 1,2 s per slice, 51 ko raw daily, 188 ko at 6 h.
+     *
+     * @return array{slice_start: int, slice_end: int, start: int, stop: int, step_seconds: int}
+     */
+    public static function sliceWindow(string $id, int $year): array
+    {
+        $step = self::stepSeconds($id);
+        $sliceStart = self::yearStart($year)->getTimestamp();
+        $sliceEnd = self::yearStart($year + 1)->getTimestamp();
+        $overlap = self::SLICE_OVERLAP_ROWS * $step;
+
+        return [
+            'slice_start' => $sliceStart,
+            'slice_end' => $sliceEnd,
+            'start' => $sliceStart - $overlap,
+            'stop' => $sliceEnd + $overlap,
+            'step_seconds' => $step,
+        ];
+    }
+
+    /** One key per body × year × step: everything that changes the content is in it (`o2` = two overlap rows). */
+    public static function slicePositionsKey(string $id, int $year): string
+    {
+        return sprintf('solar_system_%s_y%d_%d_%s_o%d', $id, $year, self::stepSeconds($id), HorizonsClient::TIME_SCALE, self::SLICE_OVERLAP_ROWS);
+    }
+
+    public static function sliceOrbitKey(string $id, int $year): string
+    {
+        return sprintf('solar_system_orbit_%s_y%d_%s_%d', $id, $year, HorizonsClient::TIME_SCALE, self::ORBIT_INTERVALS);
+    }
+
+    public static function sliceOrientationKey(string $id, int $year): string
+    {
+        return sprintf('solar_system_orientation_%s_y%d', $id, $year);
+    }
+
+    /**
+     * One body's position slice for `$year`; null when Horizons has nothing.
+     *
+     * @return list<array{int, int, int}>|null
+     *
+     * @throws ExceptionInterface on transport failure
+     */
+    public function getSlicePositions(string $id, int $year): ?array
+    {
+        $window = self::sliceWindow($id, $year);
+        $tables = $this->horizons->getMajorBodyVectors(
+            [$id => self::BODIES[$id][0]],
+            new \DateTimeImmutable('@'.$window['start']),
+            new \DateTimeImmutable('@'.$window['stop']),
+            self::STEP_SECONDS === $window['step_seconds'] ? self::STEP_SIZE : sprintf('%dm', intdiv($window['step_seconds'], 60)),
+        );
+
+        return $tables[$id]['positions'] ?? null;
+    }
+
     /** Where a position table starts: HISTORY_MONTHS before the window, still a 1st of the month. */
     public static function positionsStart(\DateTimeImmutable $windowStart): \DateTimeImmutable
     {

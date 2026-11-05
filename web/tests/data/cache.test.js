@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { loadCached, saveCached } from '../../src/data/cache.js'
+import { cachedKeys, loadCached, removeCached, saveCached } from '../../src/data/cache.js'
 
 // cache.js est le chemin normal pour des données fraîches sans dépenser le
 // quota NASA : il doit être best-effort -- ne jamais lever, quel que soit
@@ -13,6 +13,11 @@ function fakeStorage(overrides = {}) {
     map,
     getItem: (k) => (map.has(k) ? map.get(k) : null),
     setItem: (k, v) => void map.set(k, String(v)),
+    removeItem: (k) => void map.delete(k),
+    key: (i) => [...map.keys()][i] ?? null,
+    get length() {
+      return map.size
+    },
     ...overrides,
   }
 }
@@ -63,5 +68,26 @@ describe('cache', () => {
     })
     expect(() => saveCached('neo', 1)).not.toThrow()
     expect(loadCached('neo')).toBeNull()
+  })
+
+  it('removeCached oublie la clé préfixée, et seulement elle', () => {
+    saveCached('positions-sun-2024', 1)
+    saveCached('neo', 2)
+    removeCached('positions-sun-2024')
+    expect(loadCached('positions-sun-2024')).toBeNull()
+    expect(loadCached('neo').data).toBe(2)
+  })
+
+  it('cachedKeys liste les clés du viewer sans préfixe, pas celles des autres applications', () => {
+    saveCached('neo', 1)
+    saveCached('orbit-mars-2026', 1)
+    globalThis.localStorage.setItem('autre-appli:x', '1')
+    expect(cachedKeys().sort()).toEqual(['neo', 'orbit-mars-2026'])
+  })
+
+  it('sans localStorage : removeCached ne lève pas, cachedKeys rend []', () => {
+    delete globalThis.localStorage
+    expect(() => removeCached('neo')).not.toThrow()
+    expect(cachedKeys()).toEqual([])
   })
 })
